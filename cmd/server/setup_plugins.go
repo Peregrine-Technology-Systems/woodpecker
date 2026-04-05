@@ -24,6 +24,7 @@ import (
 	"go.woodpecker-ci.org/woodpecker/v3/server"
 	"go.woodpecker-ci.org/woodpecker/v3/server/plugin"
 	"go.woodpecker-ci.org/woodpecker/v3/server/plugin/gcppubsub"
+	"go.woodpecker-ci.org/woodpecker/v3/server/plugin/statusapi"
 )
 
 // setupPlugins initializes the plugin registry, event bus, and
@@ -56,7 +57,8 @@ func loadPlugin(ctx context.Context, name string, c *cli.Command, registry *plug
 	switch name {
 	case "gcppubsub":
 		return loadGCPPubSub(ctx, c, registry)
-	// Phase 4: case "status-api":
+	case "status-api":
+		return loadStatusAPI(c, registry)
 	// Phase 5: case "external-dispatch":
 	default:
 		return fmt.Errorf("unknown plugin: %s", name)
@@ -77,5 +79,17 @@ func loadGCPPubSub(ctx context.Context, c *cli.Command, registry *plugin.Registr
 
 	registry.RegisterEventHook(pub)
 	log.Info().Str("project", project).Str("topic", topic).Msg("gcppubsub plugin loaded")
+	return nil
+}
+
+func loadStatusAPI(c *cli.Command, registry *plugin.Registry) error {
+	token := c.String("plugin-status-api-token")
+	if token == "" {
+		return fmt.Errorf("status-api plugin requires WOODPECKER_PLUGIN_STATUS_API_TOKEN")
+	}
+
+	handler := statusapi.New(token)
+	registry.RegisterStatusHook(handler)
+	log.Info().Msg("status-api plugin loaded")
 	return nil
 }

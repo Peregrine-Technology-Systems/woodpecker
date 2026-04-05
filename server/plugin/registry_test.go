@@ -23,7 +23,6 @@ import (
 	"github.com/stretchr/testify/assert"
 
 	"go.woodpecker-ci.org/woodpecker/v3/server/model"
-	"go.woodpecker-ci.org/woodpecker/v3/server/store"
 )
 
 // mock implementations for testing
@@ -50,8 +49,8 @@ type mockStatusHook struct {
 	closed     bool
 }
 
-func (m *mockStatusHook) Name() string                                      { return m.name }
-func (m *mockStatusHook) RegisterRoutes(_ *gin.RouterGroup, _ store.Store) { m.registered = true }
+func (m *mockStatusHook) Name() string                      { return m.name }
+func (m *mockStatusHook) RegisterRoutes(_ *gin.RouterGroup) { m.registered = true }
 func (m *mockStatusHook) Close() error {
 	m.closed = true
 	return nil

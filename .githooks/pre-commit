@@ -49,9 +49,9 @@ if [ -n "$GO_FILES" ]; then
     CHANGED_PKGS=""
     for f in $GO_FILES; do
         pkg_dir=$(dirname "$f")
-        # Skip web/ and cmd/server/ — web/ requires go:embed dist/* from
-        # frontend build, and cmd/server/ transitively imports web/
-        if echo "$pkg_dir" | grep -qE '^(web|cmd/server)(/|$)'; then continue; fi
+        # Skip packages that depend on web/ — it requires go:embed dist/*
+        # from the frontend build (handled by CI, not pre-commit)
+        if echo "$pkg_dir" | grep -qE '^(web|cmd/server|server/router)(/|$)'; then continue; fi
         pkg="go.woodpecker-ci.org/woodpecker/v3/${pkg_dir}"
         if ! echo "$CHANGED_PKGS" | grep -qF "$pkg"; then
             CHANGED_PKGS="$CHANGED_PKGS $pkg"

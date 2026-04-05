@@ -21,7 +21,6 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"go.woodpecker-ci.org/woodpecker/v3/server/model"
-	"go.woodpecker-ci.org/woodpecker/v3/server/store"
 )
 
 // EventType identifies the kind of pipeline lifecycle event.
@@ -65,9 +64,10 @@ type EventHook interface {
 
 // StatusHook registers REST endpoints for external status updates.
 // Each StatusHook owns a sub-path under /api/plugins/<name>/.
+// Handlers should use store.FromContext(c) to access the database.
 type StatusHook interface {
 	Name() string
-	RegisterRoutes(group *gin.RouterGroup, store store.Store)
+	RegisterRoutes(group *gin.RouterGroup)
 	Close() error
 }
 

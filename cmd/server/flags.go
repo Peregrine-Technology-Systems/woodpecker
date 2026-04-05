@@ -621,6 +621,11 @@ var flags = append([]cli.Flag{
 		Usage:   "Pub/Sub topic name for pipeline events",
 		Value:   "ci-events",
 	},
+	&cli.StringFlag{
+		Sources: cli.EnvVars("WOODPECKER_PLUGIN_STATUS_API_TOKEN"),
+		Name:    "plugin-status-api-token",
+		Usage:   "Bearer token for the status API plugin endpoints",
+	},
 }, logger.GlobalLoggerFlags...)
 
 // If woodpecker is running inside a container the default value for

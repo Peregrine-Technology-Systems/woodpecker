@@ -273,5 +273,20 @@ func apiRoutes(e *gin.RouterGroup) {
 				debugger.GET("/pprof/trace", debug.TraceHandler())
 			}
 		}
+
+		// Plugin routes — each StatusHook owns a sub-path under /api/plugins/<name>/
+		registerPluginRoutes(apiBase)
+	}
+}
+
+func registerPluginRoutes(apiBase *gin.RouterGroup) {
+	registry := server.Config.Services.Plugins
+	if registry == nil {
+		return
+	}
+
+	plugins := apiBase.Group("/plugins")
+	for _, hook := range registry.StatusHooks() {
+		hook.RegisterRoutes(plugins.Group("/" + hook.Name()))
 	}
 }
