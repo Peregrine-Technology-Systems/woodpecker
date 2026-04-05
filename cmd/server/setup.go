@@ -174,6 +174,11 @@ func setupEvilGlobals(ctx context.Context, c *cli.Command, s store.Store) (err e
 		return fmt.Errorf("could not setup log store: %w", err)
 	}
 
+	// plugins
+	if err := setupPlugins(ctx, c); err != nil {
+		return fmt.Errorf("could not setup plugins: %w", err)
+	}
+
 	// agents
 	server.Config.Agent.DisableUserRegisteredAgentRegistration = c.Bool("disable-user-agent-registration")
 
