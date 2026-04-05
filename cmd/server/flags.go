@@ -610,6 +610,17 @@ var flags = append([]cli.Flag{
 		Name:    "plugins",
 		Usage:   "Comma-separated list of plugins to enable (e.g. gcppubsub,status-api,external-dispatch)",
 	},
+	&cli.StringFlag{
+		Sources: cli.EnvVars("WOODPECKER_PLUGIN_GCPPUBSUB_PROJECT"),
+		Name:    "plugin-gcppubsub-project",
+		Usage:   "GCP project ID for the Pub/Sub plugin",
+	},
+	&cli.StringFlag{
+		Sources: cli.EnvVars("WOODPECKER_PLUGIN_GCPPUBSUB_TOPIC"),
+		Name:    "plugin-gcppubsub-topic",
+		Usage:   "Pub/Sub topic name for pipeline events",
+		Value:   "ci-events",
+	},
 }, logger.GlobalLoggerFlags...)
 
 // If woodpecker is running inside a container the default value for
