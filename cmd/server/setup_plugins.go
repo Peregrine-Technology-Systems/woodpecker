@@ -23,6 +23,7 @@ import (
 
 	"go.woodpecker-ci.org/woodpecker/v3/server"
 	"go.woodpecker-ci.org/woodpecker/v3/server/plugin"
+	"go.woodpecker-ci.org/woodpecker/v3/server/plugin/gcppubsub"
 )
 
 // setupPlugins initializes the plugin registry, event bus, and
@@ -34,7 +35,7 @@ func setupPlugins(ctx context.Context, c *cli.Command) error {
 
 	pluginNames := c.StringSlice("plugins")
 	for _, name := range pluginNames {
-		if err := loadPlugin(ctx, name, registry); err != nil {
+		if err := loadPlugin(ctx, name, c, registry); err != nil {
 			return fmt.Errorf("failed to load plugin %q: %w", name, err)
 		}
 	}
@@ -50,14 +51,31 @@ func setupPlugins(ctx context.Context, c *cli.Command) error {
 	return nil
 }
 
-// loadPlugin instantiates a plugin by name.
-// Concrete plugin implementations are added in later phases.
-func loadPlugin(_ context.Context, name string, _ *plugin.Registry) error {
+// loadPlugin instantiates a plugin by name and registers it with the registry.
+func loadPlugin(ctx context.Context, name string, c *cli.Command, registry *plugin.Registry) error {
 	switch name {
-	// Phase 3: case "gcppubsub":
+	case "gcppubsub":
+		return loadGCPPubSub(ctx, c, registry)
 	// Phase 4: case "status-api":
 	// Phase 5: case "external-dispatch":
 	default:
 		return fmt.Errorf("unknown plugin: %s", name)
 	}
+}
+
+func loadGCPPubSub(ctx context.Context, c *cli.Command, registry *plugin.Registry) error {
+	project := c.String("plugin-gcppubsub-project")
+	if project == "" {
+		return fmt.Errorf("gcppubsub plugin requires WOODPECKER_PLUGIN_GCPPUBSUB_PROJECT")
+	}
+
+	topic := c.String("plugin-gcppubsub-topic")
+	pub, err := gcppubsub.New(ctx, project, topic)
+	if err != nil {
+		return fmt.Errorf("gcppubsub: %w", err)
+	}
+
+	registry.RegisterEventHook(pub)
+	log.Info().Str("project", project).Str("topic", topic).Msg("gcppubsub plugin loaded")
+	return nil
 }

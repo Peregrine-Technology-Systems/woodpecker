@@ -47,8 +47,10 @@ type PipelineEvent struct {
 	Status     model.StatusValue `json:"status"`
 	Ref        string            `json:"ref"`
 	Branch     string            `json:"branch"`
+	Commit     string            `json:"commit"`
 	Author     string            `json:"author"`
 	Message    string            `json:"message"`
+	Event      string            `json:"event"`
 	StepName   string            `json:"step_name,omitempty"`
 	Timestamp  time.Time         `json:"timestamp"`
 }
