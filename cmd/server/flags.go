@@ -604,6 +604,12 @@ var flags = append([]cli.Flag{
 		Name:    "encryption-disable-flag",
 		Usage:   "Flag to decrypt all encrypted data and disable encryption on server",
 	},
+	// Plugin system
+	&cli.StringSliceFlag{
+		Sources: cli.EnvVars("WOODPECKER_PLUGINS"),
+		Name:    "plugins",
+		Usage:   "Comma-separated list of plugins to enable (e.g. gcppubsub,status-api,external-dispatch)",
+	},
 }, logger.GlobalLoggerFlags...)
 
 // If woodpecker is running inside a container the default value for
