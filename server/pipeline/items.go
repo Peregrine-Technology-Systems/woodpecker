@@ -30,6 +30,7 @@ import (
 	forge_types "go.woodpecker-ci.org/woodpecker/v3/server/forge/types"
 	"go.woodpecker-ci.org/woodpecker/v3/server/model"
 	"go.woodpecker-ci.org/woodpecker/v3/server/pipeline/stepbuilder"
+	"go.woodpecker-ci.org/woodpecker/v3/server/plugin"
 	"go.woodpecker-ci.org/woodpecker/v3/server/store"
 )
 
@@ -147,6 +148,7 @@ func createPipelineItems(c context.Context, forge forge.Forge, store store.Store
 		if uErr != nil {
 			log.Error().Err(uErr).Msgf("error setting error status of pipeline for %s#%d", repo.FullName, currentPipeline.Number)
 		} else {
+			EmitEvent(plugin.EventPipelineFailed, repo, currentPipeline, "")
 			updatePipelineStatus(c, forge, currentPipeline, repo, user)
 		}
 

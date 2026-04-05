@@ -24,6 +24,7 @@ import (
 	"go.woodpecker-ci.org/woodpecker/v3/server"
 	"go.woodpecker-ci.org/woodpecker/v3/server/forge"
 	"go.woodpecker-ci.org/woodpecker/v3/server/model"
+	"go.woodpecker-ci.org/woodpecker/v3/server/plugin"
 	"go.woodpecker-ci.org/woodpecker/v3/server/queue"
 	"go.woodpecker-ci.org/woodpecker/v3/server/store"
 )
@@ -84,6 +85,7 @@ func Cancel(ctx context.Context, _forge forge.Forge, store store.Store, repo *mo
 		return err
 	}
 
+	EmitEvent(plugin.EventPipelineKilled, repo, killedPipeline, "")
 	updatePipelineStatus(ctx, _forge, killedPipeline, repo, user)
 
 	if killedPipeline.Workflows, err = store.WorkflowGetTree(killedPipeline); err != nil {

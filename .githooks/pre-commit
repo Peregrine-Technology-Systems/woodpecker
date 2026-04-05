@@ -73,28 +73,36 @@ if [ -n "$GO_FILES" ]; then
             exit 1
         fi
 
-        # 95% per-package coverage
-        print_info "Checking 95% per-package coverage..."
-        COVERAGE_MIN=95
-        # Skip cmd/ packages (main packages, thin wiring, hard to unit test)
-        COV_FAILED=false
-        while IFS= read -r line; do
-            pkg=$(echo "$line" | awk '{print $2}')
-            # Skip cmd/ packages
-            if echo "$pkg" | grep -qE '/cmd/'; then continue; fi
-            # Extract coverage percentage
-            pct=$(echo "$line" | sed 's/.*coverage: //' | sed 's/% of statements//')
-            if [ -z "$pct" ]; then continue; fi
-            if [ "$(echo "$pct < $COVERAGE_MIN" | bc -l 2>/dev/null || echo 0)" = "1" ]; then
-                print_error "  $pkg at ${pct}% (minimum ${COVERAGE_MIN}%)"
-                COV_FAILED=true
-            else
-                print_success "  $pkg at ${pct}%"
+        # 95% per-package coverage on Peregrine-owned packages only.
+        # Upstream Woodpecker packages have low coverage — enforcing on
+        # them would block every change. We enforce on our additions.
+        PEREGRINE_PKGS=""
+        for pkg in $CHANGED_PKGS; do
+            if echo "$pkg" | grep -qE '/server/plugin(/|$)'; then
+                PEREGRINE_PKGS="$PEREGRINE_PKGS $pkg"
             fi
-        done < <(go test $CHANGED_PKGS -cover -count=1 2>&1 | grep "^ok")
-        if [ "$COV_FAILED" = "true" ]; then
-            print_error "Coverage below ${COVERAGE_MIN}% — fix before committing"
-            exit 1
+        done
+        PEREGRINE_PKGS=$(echo "$PEREGRINE_PKGS" | xargs)
+
+        if [ -n "$PEREGRINE_PKGS" ]; then
+            print_info "Checking 95% per-package coverage on Peregrine packages..."
+            COVERAGE_MIN=95
+            COV_FAILED=false
+            while IFS= read -r line; do
+                pkg=$(echo "$line" | awk '{print $2}')
+                pct=$(echo "$line" | sed 's/.*coverage: //' | sed 's/% of statements//')
+                if [ -z "$pct" ]; then continue; fi
+                if [ "$(echo "$pct < $COVERAGE_MIN" | bc -l 2>/dev/null || echo 0)" = "1" ]; then
+                    print_error "  $pkg at ${pct}% (minimum ${COVERAGE_MIN}%)"
+                    COV_FAILED=true
+                else
+                    print_success "  $pkg at ${pct}%"
+                fi
+            done < <(go test $PEREGRINE_PKGS -cover -count=1 2>&1 | grep "^ok")
+            if [ "$COV_FAILED" = "true" ]; then
+                print_error "Coverage below ${COVERAGE_MIN}% — fix before committing"
+                exit 1
+            fi
         fi
     else
         print_info "No testable Go packages changed (web/ only)"

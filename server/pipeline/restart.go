@@ -24,6 +24,7 @@ import (
 	"go.woodpecker-ci.org/woodpecker/v3/server"
 	forge_types "go.woodpecker-ci.org/woodpecker/v3/server/forge/types"
 	"go.woodpecker-ci.org/woodpecker/v3/server/model"
+	"go.woodpecker-ci.org/woodpecker/v3/server/plugin"
 	"go.woodpecker-ci.org/woodpecker/v3/server/store"
 )
 
@@ -76,6 +77,7 @@ func Restart(ctx context.Context, store store.Store, lastPipeline *model.Pipelin
 		if uErr != nil {
 			log.Debug().Err(uErr).Msg("failure to update pipeline status")
 		} else {
+			EmitEvent(plugin.EventPipelineFailed, repo, newPipeline, "")
 			updatePipelineStatus(ctx, forge, newPipeline, repo, user)
 		}
 		return newPipeline, nil
