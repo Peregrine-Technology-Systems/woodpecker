@@ -10,3 +10,4 @@
 - Add multi-stage Dockerfile: Node frontend build + Go server build with plugins, Alpine runtime with static-linked CGO for SQLite support (#650)
 - Add CI pipeline: pts-ci (test + lint on feature branches), pts-build (Docker build + push to Artifact Registry on main) (#651)
 - Build agent binary from fork source alongside server — both at gRPC version 15 (#658)
+- Fix gcppubsub publish "context canceled" — use background context for async Pub/Sub delivery (#667)

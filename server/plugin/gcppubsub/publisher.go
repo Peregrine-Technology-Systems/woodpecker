@@ -49,13 +49,13 @@ func New(ctx context.Context, project, topicName string) (*Publisher, error) {
 	topic.PublishSettings.CountThreshold = 100
 	topic.PublishSettings.DelayThreshold = 500 * time.Millisecond
 
-	pub := func(ctx context.Context, data []byte, attrs map[string]string) {
-		result := topic.Publish(ctx, &pubsub.Message{
+	pub := func(_ context.Context, data []byte, attrs map[string]string) {
+		result := topic.Publish(context.Background(), &pubsub.Message{
 			Data:       data,
 			Attributes: attrs,
 		})
 		go func() {
-			if _, err := result.Get(ctx); err != nil {
+			if _, err := result.Get(context.Background()); err != nil {
 				log.Warn().Err(err).Msg("pubsub publish failed")
 			}
 		}()
