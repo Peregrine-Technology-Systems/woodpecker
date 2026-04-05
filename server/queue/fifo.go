@@ -52,6 +52,7 @@ type fifo struct {
 	waitingOnDeps *list.List
 	extension     time.Duration
 	paused        bool
+	dispatchHook  DispatchFunc
 }
 
 // processTimeInterval is the time till the queue rearranges things,
@@ -248,6 +249,14 @@ func (q *fifo) KickAgentWorkers(agentID int64) {
 	}
 }
 
+// SetDispatchHook sets a function called for each pending task before
+// worker assignment. If it returns handled=true, the task moves to running.
+func (q *fifo) SetDispatchHook(fn DispatchFunc) {
+	q.Lock()
+	defer q.Unlock()
+	q.dispatchHook = fn
+}
+
 // helper function that loops through the queue and attempts to
 // match the item to a single subscriber until context got cancel.
 func (q *fifo) process() {
@@ -266,6 +275,25 @@ func (q *fifo) process() {
 
 		q.resubmitExpiredPipelines()
 		q.filterWaiting()
+
+		// External dispatch: offer pending tasks to the hook before agent assignment
+		if q.dispatchHook != nil {
+			for element := q.pending.Front(); element != nil; {
+				task, _ := element.Value.(*model.Task)
+				next := element.Next()
+				if handled, _ := q.dispatchHook(q.ctx, task); handled {
+					q.pending.Remove(element)
+					q.running[task.ID] = &entry{
+						item:     task,
+						done:     make(chan bool),
+						deadline: time.Now().Add(q.extension),
+					}
+					log.Debug().Str("task", task.ID).Msg("queue: task claimed by dispatch hook")
+				}
+				element = next
+			}
+		}
+
 		for pending, worker := q.assignToWorker(); pending != nil && worker != nil; pending, worker = q.assignToWorker() {
 			task, _ := pending.Value.(*model.Task)
 			task.AgentID = worker.agentID

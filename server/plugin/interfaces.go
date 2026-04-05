@@ -34,6 +34,7 @@ const (
 	EventPipelineFailed    EventType = "pipeline.failed"
 	EventPipelineKilled    EventType = "pipeline.killed"
 	EventStepCompleted     EventType = "step.completed"
+	EventTaskAvailable     EventType = "task.available"
 )
 
 // PipelineEvent carries data about a pipeline lifecycle transition.

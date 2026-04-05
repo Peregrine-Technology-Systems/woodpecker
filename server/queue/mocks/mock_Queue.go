@@ -635,3 +635,8 @@ func (_c *MockQueue_Wait_Call) RunAndReturn(run func(c context.Context, id strin
 	_c.Call.Return(run)
 	return _c
 }
+
+// SetDispatchHook provides a mock function for the type MockQueue.
+func (_mock *MockQueue) SetDispatchHook(fn queue.DispatchFunc) {
+	_mock.Called(fn)
+}
