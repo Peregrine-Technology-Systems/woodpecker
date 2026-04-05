@@ -23,7 +23,9 @@ import (
 
 	"go.woodpecker-ci.org/woodpecker/v3/server"
 	"go.woodpecker-ci.org/woodpecker/v3/server/plugin"
+	"go.woodpecker-ci.org/woodpecker/v3/server/plugin/externaldispatch"
 	"go.woodpecker-ci.org/woodpecker/v3/server/plugin/gcppubsub"
+	"go.woodpecker-ci.org/woodpecker/v3/server/plugin/statusapi"
 )
 
 // setupPlugins initializes the plugin registry, event bus, and
@@ -56,8 +58,10 @@ func loadPlugin(ctx context.Context, name string, c *cli.Command, registry *plug
 	switch name {
 	case "gcppubsub":
 		return loadGCPPubSub(ctx, c, registry)
-	// Phase 4: case "status-api":
-	// Phase 5: case "external-dispatch":
+	case "status-api":
+		return loadStatusAPI(c, registry)
+	case "external-dispatch":
+		return loadExternalDispatch(registry)
 	default:
 		return fmt.Errorf("unknown plugin: %s", name)
 	}
@@ -77,5 +81,30 @@ func loadGCPPubSub(ctx context.Context, c *cli.Command, registry *plugin.Registr
 
 	registry.RegisterEventHook(pub)
 	log.Info().Str("project", project).Str("topic", topic).Msg("gcppubsub plugin loaded")
+	return nil
+}
+
+func loadStatusAPI(c *cli.Command, registry *plugin.Registry) error {
+	token := c.String("plugin-status-api-token")
+	if token == "" {
+		return fmt.Errorf("status-api plugin requires WOODPECKER_PLUGIN_STATUS_API_TOKEN")
+	}
+
+	handler := statusapi.New(token)
+	registry.RegisterStatusHook(handler)
+	log.Info().Msg("status-api plugin loaded")
+	return nil
+}
+
+func loadExternalDispatch(registry *plugin.Registry) error {
+	dispatcher := externaldispatch.New(registry)
+	registry.RegisterDispatchHook(dispatcher)
+
+	// Wire the dispatch hook into the queue
+	if q := server.Config.Services.Queue; q != nil {
+		q.SetDispatchHook(dispatcher.Dispatch)
+	}
+
+	log.Info().Msg("external-dispatch plugin loaded")
 	return nil
 }

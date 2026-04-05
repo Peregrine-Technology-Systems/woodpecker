@@ -143,7 +143,16 @@ type Queue interface {
 
 	// KickAgentWorkers kicks all workers for a given agent.
 	KickAgentWorkers(agentID int64)
+
+	// SetDispatchHook sets a function called for each pending task before
+	// worker assignment. If it returns handled=true, the task moves directly
+	// to running without being assigned to an agent worker.
+	SetDispatchHook(fn DispatchFunc)
 }
+
+// DispatchFunc is called for each pending task before worker assignment.
+// Return handled=true to claim the task for external dispatch.
+type DispatchFunc func(ctx context.Context, task *model.Task) (handled bool, err error)
 
 // Config holds the configuration for the queue.
 type Config struct {
