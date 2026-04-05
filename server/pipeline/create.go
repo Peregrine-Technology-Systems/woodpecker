@@ -27,6 +27,7 @@ import (
 	"go.woodpecker-ci.org/woodpecker/v3/server/forge"
 	forge_types "go.woodpecker-ci.org/woodpecker/v3/server/forge/types"
 	"go.woodpecker-ci.org/woodpecker/v3/server/model"
+	"go.woodpecker-ci.org/woodpecker/v3/server/plugin"
 	"go.woodpecker-ci.org/woodpecker/v3/server/store"
 )
 
@@ -75,6 +76,8 @@ func Create(ctx context.Context, _store store.Store, repo *model.Repo, pipeline 
 		log.Error().Str("repo", repo.FullName).Err(err).Msg(msg.Error())
 		return nil, msg
 	}
+
+	EmitEvent(plugin.EventPipelineCreated, repo, pipeline, "")
 
 	// fetch the pipeline file from the forge
 	configService := server.Config.Services.Manager.ConfigServiceFromRepo(repo)
@@ -146,6 +149,8 @@ func Create(ctx context.Context, _store store.Store, repo *model.Repo, pipeline 
 		return nil, err
 	}
 
+	EmitEvent(plugin.EventPipelinePending, repo, pipeline, "")
+
 	pipeline, err = start(ctx, _forge, _store, pipeline, repoUser, repo, pipelineItems)
 	if err != nil {
 		msg := fmt.Sprintf("failed to start pipeline for %s", repo.FullName)
@@ -164,6 +169,7 @@ func updatePipelineWithErr(ctx context.Context, _forge forge.Forge, _store store
 	// update value in ref
 	*pipeline = *_pipeline
 
+	EmitEvent(plugin.EventPipelineFailed, repo, pipeline, "")
 	publishPipeline(ctx, _forge, pipeline, repo, repoUser)
 
 	return nil

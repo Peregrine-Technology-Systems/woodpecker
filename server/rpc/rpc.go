@@ -35,6 +35,7 @@ import (
 	"go.woodpecker-ci.org/woodpecker/v3/server/logging"
 	"go.woodpecker-ci.org/woodpecker/v3/server/model"
 	"go.woodpecker-ci.org/woodpecker/v3/server/pipeline"
+	"go.woodpecker-ci.org/woodpecker/v3/server/plugin"
 	"go.woodpecker-ci.org/woodpecker/v3/server/pubsub"
 	"go.woodpecker-ci.org/woodpecker/v3/server/queue"
 	"go.woodpecker-ci.org/woodpecker/v3/server/store"
@@ -200,6 +201,7 @@ func (s *RPC) Update(c context.Context, strWorkflowID string, state rpc.StepStat
 	}
 
 	if state.Exited {
+		pipeline.EmitEvent(plugin.EventStepCompleted, repo, currentPipeline, step.Name)
 		server.Config.Services.LogStore.StepFinished(step)
 	}
 
@@ -266,6 +268,7 @@ func (s *RPC) Init(c context.Context, strWorkflowID string, state rpc.WorkflowSt
 		if currentPipeline, err = pipeline.UpdateToStatusRunning(s.store, *currentPipeline, state.Started); err != nil {
 			log.Error().Err(err).Msgf("init: cannot update pipeline %d state", currentPipeline.ID)
 		}
+		pipeline.EmitEvent(plugin.EventPipelineStarted, repo, currentPipeline, "")
 	}
 
 	s.updateForgeStatus(c, repo, currentPipeline, workflow)
@@ -378,6 +381,7 @@ func (s *RPC) Done(c context.Context, strWorkflowID string, state rpc.WorkflowSt
 		if currentPipeline, err = pipeline.UpdateStatusToDone(s.store, *currentPipeline, pipeline.PipelineStatus(currentPipeline.Workflows), workflow.Finished); err != nil {
 			logger.Error().Err(err).Msgf("pipeline.UpdateStatusToDone: cannot update workflows final state")
 		}
+		pipeline.EmitEvent(plugin.EventPipelineCompleted, repo, currentPipeline, "")
 	}
 
 	s.updateForgeStatus(c, repo, currentPipeline, workflow)
