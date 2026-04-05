@@ -1,0 +1,31 @@
+when:
+  - event: push
+    branch:
+      exclude: [main, "merge/*", "sync/*", "release/*"]
+
+labels:
+  platform: linux
+  backend: local
+
+steps:
+  - name: test
+    image: bash
+    commands:
+      - scripts/woodpecker/pts-test.sh
+
+  - name: lint
+    image: bash
+    commands:
+      - scripts/woodpecker/pts-lint.sh
+    depends_on: []
+
+  - name: notify-status
+    image: bash
+    environment:
+      SLACK_WEBHOOK_URL:
+        from_secret: slack_webhook_url
+    commands:
+      - scripts/woodpecker/pts-notify.sh
+    when:
+      - status: [failure]
+    depends_on: [test, lint]
