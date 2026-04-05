@@ -1,0 +1,24 @@
+when:
+  - event: push
+    branch: main
+
+labels:
+  platform: linux
+  backend: local
+
+steps:
+  - name: build-and-push
+    image: bash
+    commands:
+      - scripts/woodpecker/pts-build.sh
+
+  - name: notify-status
+    image: bash
+    environment:
+      SLACK_WEBHOOK_URL:
+        from_secret: slack_webhook_url
+    commands:
+      - scripts/woodpecker/pts-notify.sh
+    when:
+      - status: [success, failure]
+    depends_on: [build-and-push]
