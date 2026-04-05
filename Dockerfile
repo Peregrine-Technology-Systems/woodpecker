@@ -30,13 +30,22 @@ RUN go mod download
 COPY . .
 COPY --from=frontend /src/web/dist web/dist/
 
-RUN CGO_ENABLED=0 go build \
-  -ldflags "-s -w -X go.woodpecker-ci.org/woodpecker/v3/version.Version=${VERSION}" \
+# CGO_ENABLED=1 required for SQLite (mattn/go-sqlite3)
+# Static link so binary works on Alpine/scratch (musl vs glibc)
+RUN CGO_ENABLED=1 go build \
+  -ldflags "-s -w -extldflags '-static' -X go.woodpecker-ci.org/woodpecker/v3/version.Version=${VERSION}" \
   -o /build/woodpecker-server \
   ./cmd/server
 
 # ── Stage 3: Runtime ─────────────────────────────────────────────
-FROM scratch
+# Use Alpine instead of scratch — CGO binary needs libc
+FROM docker.io/alpine:3.22
+
+RUN apk add --no-cache ca-certificates && \
+  addgroup -g 1000 woodpecker && \
+  adduser -u 1000 -G woodpecker -D woodpecker && \
+  mkdir -p /var/lib/woodpecker && \
+  chown woodpecker:woodpecker /var/lib/woodpecker
 
 ENV GODEBUG=netdns=go
 ENV WOODPECKER_IN_CONTAINER=true
@@ -44,11 +53,7 @@ ENV XDG_CACHE_HOME=/var/lib/woodpecker
 ENV XDG_DATA_HOME=/var/lib/woodpecker
 EXPOSE 8000 9000 80 443
 
-COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 COPY --from=build /build/woodpecker-server /bin/woodpecker-server
-COPY --from=build /etc/passwd /etc/passwd
-COPY --from=build /etc/group /etc/group
-COPY --from=build --chown=woodpecker:woodpecker /var/lib/woodpecker /var/lib/woodpecker
 
 USER woodpecker
 
