@@ -37,6 +37,12 @@ RUN CGO_ENABLED=1 go build \
   -o /build/woodpecker-server \
   ./cmd/server
 
+# Agent does not need CGO (no SQLite)
+RUN CGO_ENABLED=0 go build \
+  -ldflags "-s -w -X go.woodpecker-ci.org/woodpecker/v3/version.Version=${VERSION}" \
+  -o /build/woodpecker-agent \
+  ./cmd/agent
+
 # ── Stage 3: Runtime ─────────────────────────────────────────────
 # Use Alpine instead of scratch — CGO binary needs libc
 FROM docker.io/alpine:3.22

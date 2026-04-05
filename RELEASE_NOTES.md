@@ -9,3 +9,4 @@
 - Add External Dispatch plugin: intercepts queue task assignment, publishes task.available events for external agent dispatch via WebSocket (#646)
 - Add multi-stage Dockerfile: Node frontend build + Go server build with plugins, Alpine runtime with static-linked CGO for SQLite support (#650)
 - Add CI pipeline: pts-ci (test + lint on feature branches), pts-build (Docker build + push to Artifact Registry on main) (#651)
+- Build agent binary from fork source alongside server — both at gRPC version 15 (#658)
