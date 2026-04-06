@@ -127,10 +127,13 @@ func processQueueTasks(store store.Store, tasks []*model.Task, agentNameMap map[
 		if task.AgentID != 0 {
 			name, ok := getAgentName(store, agentNameMap, task.AgentID)
 			if !ok {
-				return nil, fmt.Errorf("agent not found for task %s", task.ID)
+				// Agent disappeared (server restart, pruned). Task is still
+				// valid — use placeholder name, don't error. The queue will
+				// reassign it when the deadline expires.
+				taskResponse.AgentName = fmt.Sprintf("agent-%d (disconnected)", task.AgentID)
+			} else {
+				taskResponse.AgentName = name
 			}
-
-			taskResponse.AgentName = name
 		}
 
 		if task.PipelineID != 0 {
