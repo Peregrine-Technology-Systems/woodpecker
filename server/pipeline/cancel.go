@@ -30,20 +30,33 @@ import (
 )
 
 // Cancel the pipeline and returns the status.
-func Cancel(ctx context.Context, _forge forge.Forge, store store.Store, repo *model.Repo, user *model.User, pipeline *model.Pipeline, cancelInfo *model.CancelInfo) error {
+// When preserveIndependent is true, workflows with no queue dependencies (depends_on: [])
+// are left running — used by cancelPreviousPipelines to avoid killing deploy workflows
+// on healthy agents when a new CI push supersedes a previous one (#822).
+func Cancel(ctx context.Context, _forge forge.Forge, _store store.Store, repo *model.Repo, user *model.User, pipeline *model.Pipeline, cancelInfo *model.CancelInfo, preserveIndependent bool) error {
 	if pipeline.Status != model.StatusRunning && pipeline.Status != model.StatusPending && pipeline.Status != model.StatusBlocked {
 		return &ErrBadRequest{Msg: "Cannot cancel a non-running or non-pending or non-blocked pipeline"}
 	}
 
-	workflows, err := store.WorkflowGetTree(pipeline)
+	workflows, err := _store.WorkflowGetTree(pipeline)
 	if err != nil {
 		return &ErrNotFound{Msg: err.Error()}
+	}
+
+	// Build set of independent workflow IDs (no queue dependencies)
+	independentIDs := make(map[int64]bool)
+	if preserveIndependent {
+		independentIDs = findIndependentWorkflows(_store, pipeline.ID)
 	}
 
 	// First cancel/evict workflows in the queue in one go
 	var workflowsToCancel []string
 	for _, w := range workflows {
 		if w.State == model.StatusRunning || w.State == model.StatusPending {
+			if independentIDs[w.ID] {
+				log.Info().Msgf("cancel: preserving independent workflow %d (%s) (#822)", w.ID, w.Name)
+				continue
+			}
 			workflowsToCancel = append(workflowsToCancel, fmt.Sprint(w.ID))
 		}
 	}
@@ -54,13 +67,21 @@ func Cancel(ctx context.Context, _forge forge.Forge, store store.Store, repo *mo
 		}
 	}
 
+	// Check if any workflows are still running (preserved independent ones)
+	hasPreservedRunning := false
 	hasPendingOnly := true
 
 	// Then update the DB status for pending pipelines
 	// Running ones will be set when the agents stop on the cancel signal
 	for _, workflow := range workflows {
+		if independentIDs[workflow.ID] {
+			if workflow.State == model.StatusRunning || workflow.State == model.StatusPending {
+				hasPreservedRunning = true
+			}
+			continue
+		}
 		if workflow.State == model.StatusPending {
-			if _, err = UpdateWorkflowToStatusSkipped(store, *workflow); err != nil {
+			if _, err = UpdateWorkflowToStatusSkipped(_store, *workflow); err != nil {
 				log.Error().Err(err).Msgf("cannot update workflow with id %d state", workflow.ID)
 			}
 		} else {
@@ -68,18 +89,25 @@ func Cancel(ctx context.Context, _forge forge.Forge, store store.Store, repo *mo
 		}
 		for _, step := range workflow.Children {
 			if step.State == model.StatusPending {
-				if _, err = UpdateStepToStatusSkipped(store, *step, 0, model.StatusCanceled); err != nil {
+				if _, err = UpdateStepToStatusSkipped(_store, *step, 0, model.StatusCanceled); err != nil {
 					log.Error().Err(err).Msgf("cannot update workflow with id %d state", workflow.ID)
 				}
 			}
 		}
 	}
 
+	// If independent workflows are still running, don't kill the pipeline — let them finish.
+	// Pipeline status will be computed when all workflows complete (rpc.Done).
+	if hasPreservedRunning {
+		log.Info().Msgf("cancel: pipeline %d has preserved independent workflows — staying running (#822)", pipeline.ID)
+		return nil
+	}
+
 	plState := model.StatusKilled
 	if hasPendingOnly {
 		plState = model.StatusCanceled
 	}
-	killedPipeline, err := UpdateToStatusKilled(store, *pipeline, cancelInfo, plState)
+	killedPipeline, err := UpdateToStatusKilled(_store, *pipeline, cancelInfo, plState)
 	if err != nil {
 		log.Error().Err(err).Msgf("UpdateToStatusKilled: %v", pipeline)
 		return err
@@ -88,12 +116,34 @@ func Cancel(ctx context.Context, _forge forge.Forge, store store.Store, repo *mo
 	EmitEvent(plugin.EventPipelineKilled, repo, killedPipeline, "")
 	updatePipelineStatus(ctx, _forge, killedPipeline, repo, user)
 
-	if killedPipeline.Workflows, err = store.WorkflowGetTree(killedPipeline); err != nil {
+	if killedPipeline.Workflows, err = _store.WorkflowGetTree(killedPipeline); err != nil {
 		return err
 	}
 	publishToTopic(killedPipeline, repo)
 
 	return nil
+}
+
+// findIndependentWorkflows returns workflow IDs that have no queue dependencies.
+// These are workflows with depends_on: [] in the pipeline config — they should
+// not be canceled when a pipeline is superseded by a new push.
+func findIndependentWorkflows(_store store.Store, pipelineID int64) map[int64]bool {
+	result := make(map[int64]bool)
+	tasks, err := _store.TaskList()
+	if err != nil {
+		log.Error().Err(err).Msg("findIndependentWorkflows: cannot list tasks")
+		return result
+	}
+	for _, task := range tasks {
+		if task.PipelineID == pipelineID && len(task.Dependencies) == 0 {
+			// Task ID is the string form of workflow ID
+			var wfID int64
+			if _, err := fmt.Sscan(task.ID, &wfID); err == nil {
+				result[wfID] = true
+			}
+		}
+	}
+	return result
 }
 
 func cancelPreviousPipelines(
@@ -145,7 +195,7 @@ func cancelPreviousPipelines(
 
 		if err = Cancel(ctx, _forge, _store, repo, user, active, &model.CancelInfo{
 			SupersededBy: pipeline.Number,
-		}); err != nil {
+		}, true); err != nil {
 			log.Error().
 				Err(err).
 				Str("ref", active.Ref).

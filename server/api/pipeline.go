@@ -495,7 +495,7 @@ func CancelPipeline(c *gin.Context) {
 
 	if err := pipeline.Cancel(c, _forge, _store, repo, user, pl, &model.CancelInfo{
 		CanceledByUser: user.Login,
-	}); err != nil {
+	}, false); err != nil {
 		handlePipelineErr(c, err)
 	} else {
 		c.Status(http.StatusNoContent)
