@@ -24,7 +24,19 @@ import (
 	"go.woodpecker-ci.org/woodpecker/v3/server/queue"
 )
 
+// deployTierBoost maps agent tier labels to score boosts for deploy workflows.
+// Higher boost = preferred tier. Agents without a tier label get no boost.
+var deployTierBoost = map[string]int{
+	"ondemand": 20, // non-preemptible, best for deploys
+	"n2":       15, // backup on-demand, second choice
+	// "spot" gets no boost — default fallback
+}
+
 func createFilterFunc(agentFilter rpc.Filter) queue.FilterFn {
+	return createFilterFuncWithDeploy(agentFilter, nil)
+}
+
+func createFilterFuncWithDeploy(agentFilter rpc.Filter, deployPatterns []string) queue.FilterFn {
 	return func(task *model.Task) (bool, int) {
 		// Create a copy of the labels for filtering to avoid modifying the original task
 		labels := maps.Clone(task.Labels)
@@ -69,6 +81,18 @@ func createFilterFunc(agentFilter rpc.Filter) queue.FilterFn {
 				return false, 0
 			}
 		}
+
+		// Deploy auto-routing: boost score for on-demand/n2 agents
+		// when the workflow name matches a deploy pattern.
+		if len(deployPatterns) > 0 {
+			if isDeployWorkflow(task.Name, deployPatterns) {
+				agentTier := agentFilter.Labels["tier"]
+				if boost, ok := deployTierBoost[agentTier]; ok {
+					score += boost
+				}
+			}
+		}
+
 		return true, score
 	}
 }
@@ -80,6 +104,17 @@ func requiredLabelsMissing(taskLabels, agentLabels map[string]string) bool {
 			if !ok || val != value {
 				return true
 			}
+		}
+	}
+	return false
+}
+
+// isDeployWorkflow checks if a workflow name matches any deploy pattern.
+func isDeployWorkflow(name string, patterns []string) bool {
+	name = strings.ToLower(name)
+	for _, p := range patterns {
+		if strings.Contains(name, strings.ToLower(p)) {
+			return true
 		}
 	}
 	return false

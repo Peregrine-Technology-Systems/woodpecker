@@ -143,6 +143,67 @@ func TestCreateFilterFunc(t *testing.T) {
 	}
 }
 
+func TestDeployAutoRouting(t *testing.T) {
+	patterns := []string{"deploy", "version-bump", "sync-back"}
+
+	deployTask := &model.Task{
+		Name:   "deploy",
+		Labels: map[string]string{"platform": "linux", "backend": "local"},
+	}
+	ciTask := &model.Task{
+		Name:   "ci",
+		Labels: map[string]string{"platform": "linux", "backend": "local"},
+	}
+
+	ondemandAgent := rpc.Filter{
+		Labels: map[string]string{"platform": "linux", "backend": "local", "tier": "ondemand"},
+	}
+	spotAgent := rpc.Filter{
+		Labels: map[string]string{"platform": "linux", "backend": "local", "tier": "spot"},
+	}
+	n2Agent := rpc.Filter{
+		Labels: map[string]string{"platform": "linux", "backend": "local", "tier": "n2"},
+	}
+
+	// Deploy workflow: on-demand agent gets +20 boost
+	filterOD := createFilterFuncWithDeploy(ondemandAgent, patterns)
+	matched, scoreOD := filterOD(deployTask)
+	assert.True(t, matched)
+
+	filterSpot := createFilterFuncWithDeploy(spotAgent, patterns)
+	matched, scoreSpot := filterSpot(deployTask)
+	assert.True(t, matched)
+
+	assert.Greater(t, scoreOD, scoreSpot, "on-demand should score higher than spot for deploy")
+
+	// N2 agent gets +15 boost — between on-demand and spot
+	filterN2 := createFilterFuncWithDeploy(n2Agent, patterns)
+	matched, scoreN2 := filterN2(deployTask)
+	assert.True(t, matched)
+	assert.Greater(t, scoreN2, scoreSpot, "n2 should score higher than spot for deploy")
+	assert.Greater(t, scoreOD, scoreN2, "on-demand should score higher than n2 for deploy")
+
+	// CI workflow: no boost, all agents score equally
+	_, ciScoreOD := filterOD(ciTask)
+	_, ciScoreSpot := filterSpot(ciTask)
+	assert.Equal(t, ciScoreOD, ciScoreSpot, "CI workflows should not get tier boost")
+}
+
+func TestIsDeployWorkflow(t *testing.T) {
+	patterns := []string{"deploy", "version-bump", "sync-back"}
+
+	assert.True(t, isDeployWorkflow("deploy", patterns))
+	assert.True(t, isDeployWorkflow("deploy-staging", patterns))
+	assert.True(t, isDeployWorkflow("version-bump", patterns))
+	assert.True(t, isDeployWorkflow("sync-back", patterns))
+	assert.True(t, isDeployWorkflow("Deploy", patterns))
+	assert.False(t, isDeployWorkflow("ci", patterns))
+	assert.False(t, isDeployWorkflow("test", patterns))
+	assert.False(t, isDeployWorkflow("lint", patterns))
+	assert.False(t, isDeployWorkflow("", patterns))
+	assert.False(t, isDeployWorkflow("deploy", nil))
+}
+
 func TestMissingRequiredLabels(t *testing.T) {
 	t.Parallel()
 

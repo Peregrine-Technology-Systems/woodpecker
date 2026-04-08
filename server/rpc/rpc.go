@@ -45,12 +45,13 @@ import (
 const updateAgentLastWorkDelay = time.Minute
 
 type RPC struct {
-	queue         queue.Queue
-	pubsub        *pubsub.Publisher
-	logger        logging.Log
-	store         store.Store
-	pipelineTime  *prometheus.GaugeVec
-	pipelineCount *prometheus.CounterVec
+	queue          queue.Queue
+	pubsub         *pubsub.Publisher
+	logger         logging.Log
+	store          store.Store
+	pipelineTime   *prometheus.GaugeVec
+	pipelineCount  *prometheus.CounterVec
+	deployPatterns []string // workflow names that should prefer on-demand agents
 }
 
 // Next blocks until it provides the next workflow to execute.
@@ -78,9 +79,14 @@ func (s *RPC) Next(c context.Context, agentFilter rpc.Filter) (*rpc.Workflow, er
 	// enforce labels from server by overwriting agent labels
 	maps.Copy(agentFilter.Labels, agentServerLabels)
 
+	// merge agent's custom labels (tier, etc.) so filter can score them
+	if agent.CustomLabels != nil {
+		maps.Copy(agentFilter.Labels, agent.CustomLabels)
+	}
+
 	log.Trace().Msgf("Agent %s[%d] tries to pull task with labels: %v", agent.Name, agent.ID, agentFilter.Labels)
 
-	filterFn := createFilterFunc(agentFilter)
+	filterFn := createFilterFuncWithDeploy(agentFilter, s.deployPatterns)
 
 	for {
 		// poll blocks until a task is available or the context is canceled / worker is kicked
