@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Feat: CI + auto-deploy pipeline — build on merge to main, push to AR, deploy to d3ci42 (ci-infrastructure#648)
 - Fix: TaskTimeout reduced from 60s to 15s — orphaned tasks requeue 4x faster after agent death (ci-infrastructure#774)
 - Feat: auto-route deploy workflows to on-demand agents — score-based tier preference (on-demand +20, n2 +15, spot default) with configurable patterns via WOODPECKER_DEPLOY_PATTERNS (ci-infrastructure#798)
 - Fix: merge agent CustomLabels into filter — tier label was never checked during assignment
