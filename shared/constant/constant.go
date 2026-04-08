@@ -39,5 +39,5 @@ var TrustedClonePlugins = []string{
 
 // TaskTimeout is the time till a running task is counted as dead.
 // Reduced from 60s to 15s for faster orphan requeue after agent death.
-// Extension interval = TaskTimeout/3 = 5s (was 20s).
-var TaskTimeout = 15 * time.Second
+// Kept at 60s — 15s was too aggressive, caused task expiry under CPU load.
+var TaskTimeout = 60 * time.Second
