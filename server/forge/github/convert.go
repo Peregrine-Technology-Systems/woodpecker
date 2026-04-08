@@ -36,6 +36,8 @@ const (
 	descFailure  = "the pipeline failed"
 	descBlocked  = "the pipeline requires approval"
 	descDeclined = "the pipeline was rejected"
+	descCanceled = "the pipeline was canceled"
+	descSkipped  = "the pipeline was skipped"
 	descError    = "oops, something went wrong"
 )
 
@@ -49,9 +51,9 @@ const (
 // GitHub commit status.
 func convertStatus(status model.StatusValue) string {
 	switch status {
-	case model.StatusPending, model.StatusRunning, model.StatusBlocked, model.StatusSkipped, model.StatusCanceled:
+	case model.StatusPending, model.StatusRunning, model.StatusBlocked:
 		return statusPending
-	case model.StatusFailure, model.StatusDeclined:
+	case model.StatusFailure, model.StatusDeclined, model.StatusSkipped, model.StatusCanceled:
 		return statusFailure
 	case model.StatusSuccess:
 		return statusSuccess
@@ -74,6 +76,10 @@ func convertDesc(status model.StatusValue) string {
 		return descBlocked
 	case model.StatusDeclined:
 		return descDeclined
+	case model.StatusCanceled:
+		return descCanceled
+	case model.StatusSkipped:
+		return descSkipped
 	default:
 		return descError
 	}
