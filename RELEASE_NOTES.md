@@ -18,3 +18,4 @@
 - Build agent binary from fork source alongside server — both at gRPC version 15 (#658)
 - Fix gcppubsub publish "context canceled" — use background context for async Pub/Sub delivery (#667)
 - Fix queue API 500 on missing agent — use placeholder name instead of erroring, prevents cascade cancellation of healthy pipelines (ci-infrastructure#678)
+

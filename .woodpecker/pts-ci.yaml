@@ -29,3 +29,4 @@ steps:
     when:
       - status: [failure]
     depends_on: [test, lint]
+# CI pipeline activated
