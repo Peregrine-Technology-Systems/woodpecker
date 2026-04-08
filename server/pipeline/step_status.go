@@ -129,7 +129,7 @@ func cancelPipelineFromStep(ctx context.Context, store store.Store, step *model.
 	}
 	return Cancel(ctx, _forge, store, repo, repoUser, pipeline, &model.CancelInfo{
 		CanceledByStep: step.Name,
-	})
+	}, false)
 }
 
 func UpdateStepToStatusSkipped(store store.Store, step model.Step, finished int64, status model.StatusValue) (*model.Step, error) {

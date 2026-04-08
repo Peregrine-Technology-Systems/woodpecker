@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Fix: workflow independence — Cancel preserves independent workflows (depends_on: []) when superseded by new push, preventing deploy kills on healthy agents (ci-infrastructure#822)
+- Fix: TaskTimeout increased to 5 minutes — safety net only, WebSocket hub handles orphan detection at 20s (ci-infrastructure#162)
 - Fix: deploy hold window — spot agents wait 30s for on-demand agents to boot before accepting deploy jobs
 - Feat: CI + auto-deploy pipeline — build on merge to main, push to AR, deploy to d3ci42 (ci-infrastructure#648)
 - Revert: TaskTimeout back to 60s — 15s caused task expiry under CPU load — orphaned tasks requeue 4x faster after agent death (ci-infrastructure#774)

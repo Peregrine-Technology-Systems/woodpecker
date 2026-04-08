@@ -37,7 +37,8 @@ var TrustedClonePlugins = []string{
 	"quay.io/woodpeckerci/plugin-git",
 }
 
-// TaskTimeout is the time till a running task is counted as dead.
-// Reduced from 60s to 15s for faster orphan requeue after agent death.
-// Kept at 60s — 15s was too aggressive, caused task expiry under CPU load.
-var TaskTimeout = 60 * time.Second
+// TaskTimeout is the queue lease duration — how long before an unextended task is requeued.
+// The WebSocket heartbeat hub (20s orphan detection) is the primary mechanism for detecting
+// dead agents. TaskTimeout is a safety net only — set high to avoid false expiry under CPU load.
+// History: 60s (original) → 15s (too aggressive, tasks expired under load) → 5min (#162).
+var TaskTimeout = 5 * time.Minute
