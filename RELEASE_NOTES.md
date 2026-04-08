@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Feat: auto-route deploy workflows to on-demand agents — score-based tier preference (on-demand +20, n2 +15, spot default) with configurable patterns via WOODPECKER_DEPLOY_PATTERNS (ci-infrastructure#798)
+- Fix: merge agent CustomLabels into filter — tier label was never checked during assignment
 - Fix: canceled/skipped pipelines update GitHub status to failure instead of stuck pending (#159)
 - Add plugin architecture core framework: EventHook, StatusHook, DispatchHook interfaces with registry and channel-based event bus (#642)
 - Add pipeline lifecycle event emission at all lifecycle points: created, pending, started, completed, failed, killed, step.completed (#643)

@@ -17,6 +17,8 @@ package grpc
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"strings"
 
 	"github.com/prometheus/client_golang/prometheus"
 	prometheus_auto "github.com/prometheus/client_golang/prometheus/promauto"
@@ -49,14 +51,38 @@ func NewWoodpeckerServer(queue queue.Queue, logger logging.Log, pubsub *pubsub.P
 		Help:      "Pipeline count.",
 	}, []string{"repo", "branch", "status", "pipeline"})
 	peer := RPC{
-		store:         store,
-		queue:         queue,
-		pubsub:        pubsub,
-		logger:        logger,
-		pipelineTime:  pipelineTime,
-		pipelineCount: pipelineCount,
+		store:          store,
+		queue:          queue,
+		pubsub:         pubsub,
+		logger:         logger,
+		pipelineTime:   pipelineTime,
+		pipelineCount:  pipelineCount,
+		deployPatterns: loadDeployPatterns(),
 	}
 	return &WoodpeckerServer{peer: peer}
+}
+
+// loadDeployPatterns reads WOODPECKER_DEPLOY_PATTERNS env var.
+// Default: deploy,version-bump,sync-back. Set to empty to disable.
+func loadDeployPatterns() []string {
+	raw := os.Getenv("WOODPECKER_DEPLOY_PATTERNS")
+	if raw == "" {
+		return []string{"deploy", "version-bump", "sync-back"}
+	}
+	if raw == "none" {
+		return nil
+	}
+	var patterns []string
+	for _, p := range strings.Split(raw, ",") {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			patterns = append(patterns, p)
+		}
+	}
+	if len(patterns) > 0 {
+		log.Info().Msgf("Deploy auto-routing patterns: %v", patterns)
+	}
+	return patterns
 }
 
 // Version returns the server- & grpc-version.
