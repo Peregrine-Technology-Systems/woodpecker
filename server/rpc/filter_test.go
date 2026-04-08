@@ -16,6 +16,7 @@ package grpc
 
 import (
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 
@@ -147,6 +148,7 @@ func TestDeployAutoRouting(t *testing.T) {
 	patterns := []string{"deploy", "version-bump", "sync-back"}
 
 	deployTask := &model.Task{
+		ID:     "score-test-deploy",
 		Name:   "deploy",
 		Labels: map[string]string{"platform": "linux", "backend": "local"},
 	}
@@ -154,6 +156,11 @@ func TestDeployAutoRouting(t *testing.T) {
 		Name:   "ci",
 		Labels: map[string]string{"platform": "linux", "backend": "local"},
 	}
+
+	// Pre-expire the hold window for scoring tests
+	deployFirstSeenMu.Lock()
+	deployFirstSeen["score-test-deploy"] = time.Now().Add(-deployHoldWindow - time.Second)
+	deployFirstSeenMu.Unlock()
 
 	ondemandAgent := rpc.Filter{
 		Labels: map[string]string{"platform": "linux", "backend": "local", "tier": "ondemand"},
@@ -187,6 +194,27 @@ func TestDeployAutoRouting(t *testing.T) {
 	_, ciScoreOD := filterOD(ciTask)
 	_, ciScoreSpot := filterSpot(ciTask)
 	assert.Equal(t, ciScoreOD, ciScoreSpot, "CI workflows should not get tier boost")
+
+	// Deploy hold window: spot agents reject during hold period
+	holdTask := &model.Task{
+		ID:     "hold-test-task",
+		Name:   "deploy",
+		Labels: map[string]string{"platform": "linux", "backend": "local"},
+	}
+
+	// Clear any prior state
+	deployFirstSeenMu.Lock()
+	delete(deployFirstSeen, "hold-test-task")
+	deployFirstSeenMu.Unlock()
+
+	filterSpotHold := createFilterFuncWithDeploy(spotAgent, patterns)
+	matchedHold, _ := filterSpotHold(holdTask)
+	assert.False(t, matchedHold, "spot should reject deploy task during hold window")
+
+	// On-demand should still accept during hold
+	filterODHold := createFilterFuncWithDeploy(ondemandAgent, patterns)
+	matchedODHold, _ := filterODHold(holdTask)
+	assert.True(t, matchedODHold, "on-demand should accept deploy task during hold window")
 }
 
 func TestIsDeployWorkflow(t *testing.T) {

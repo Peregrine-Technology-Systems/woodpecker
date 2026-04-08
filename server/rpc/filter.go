@@ -17,11 +17,24 @@ package grpc
 import (
 	"maps"
 	"strings"
+	"sync"
+	"time"
 
 	pipelineConsts "go.woodpecker-ci.org/woodpecker/v3/pipeline"
 	"go.woodpecker-ci.org/woodpecker/v3/rpc"
 	"go.woodpecker-ci.org/woodpecker/v3/server/model"
 	"go.woodpecker-ci.org/woodpecker/v3/server/queue"
+)
+
+// deployHoldWindow is how long spot agents wait before accepting deploy tasks,
+// giving on-demand agents time to boot and claim the job.
+const deployHoldWindow = 30 * time.Second
+
+// deployFirstSeen tracks when a deploy task was first evaluated.
+// After deployHoldWindow, spot agents are allowed to take it.
+var (
+	deployFirstSeen   = make(map[string]time.Time)
+	deployFirstSeenMu sync.Mutex
 )
 
 // deployTierBoost maps agent tier labels to score boosts for deploy workflows.
@@ -82,14 +95,31 @@ func createFilterFuncWithDeploy(agentFilter rpc.Filter, deployPatterns []string)
 			}
 		}
 
-		// Deploy auto-routing: boost score for on-demand/n2 agents
-		// when the workflow name matches a deploy pattern.
-		if len(deployPatterns) > 0 {
-			if isDeployWorkflow(task.Name, deployPatterns) {
-				agentTier := agentFilter.Labels["tier"]
-				if boost, ok := deployTierBoost[agentTier]; ok {
-					score += boost
+		// Deploy auto-routing: boost on-demand/n2 agents and hold
+		// deploy tasks from spot agents for deployHoldWindow seconds.
+		if len(deployPatterns) > 0 && isDeployWorkflow(task.Name, deployPatterns) {
+			agentTier := agentFilter.Labels["tier"]
+
+			// Boost on-demand/n2 agents
+			if boost, ok := deployTierBoost[agentTier]; ok {
+				score += boost
+			}
+
+			// Hold window: spot agents skip deploy tasks for 30s
+			// to give on-demand agents time to boot and claim them.
+			if agentTier == "spot" || agentTier == "" {
+				deployFirstSeenMu.Lock()
+				firstSeen, exists := deployFirstSeen[task.ID]
+				if !exists {
+					deployFirstSeen[task.ID] = time.Now()
+					firstSeen = time.Now()
 				}
+				deployFirstSeenMu.Unlock()
+
+				if time.Since(firstSeen) < deployHoldWindow {
+					return false, 0 // reject — waiting for on-demand agent
+				}
+				// Hold expired — let spot take it as fallback
 			}
 		}
 
