@@ -59,6 +59,17 @@ func (s *State) Done(id string) {
 	s.Unlock()
 }
 
+// RunningIDs returns the IDs of all currently running workflows.
+func (s *State) RunningIDs() []string {
+	s.Lock()
+	defer s.Unlock()
+	ids := make([]string, 0, len(s.Metadata))
+	for id := range s.Metadata {
+		ids = append(ids, id)
+	}
+	return ids
+}
+
 func (s *State) Healthy() bool {
 	s.Lock()
 	defer s.Unlock()

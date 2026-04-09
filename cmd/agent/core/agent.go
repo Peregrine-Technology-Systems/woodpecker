@@ -264,6 +264,23 @@ func run(ctx context.Context, c *cli.Command, backends []types.Backend) error {
 
 	log.Debug().Msgf("agent registered with ID %d", agentConfig.AgentID)
 
+	// Phase 0 (#860): WebSocket heartbeat extends queue leases, bypassing gRPC
+	if c.Bool("ws-heartbeat") {
+		wsClient := agent.NewWSHeartbeatClient(
+			c.String("server"),
+			agentToken,
+			agentConfig.AgentID,
+			hostname,
+			counter,
+			c.Bool("grpc-secure"),
+		)
+		serviceWaitingGroup.Go(func() error {
+			wsClient.Run(agentCtx)
+			return nil
+		})
+		log.Info().Msg("WebSocket heartbeat enabled (Phase 0 #860)")
+	}
+
 	serviceWaitingGroup.Go(func() error {
 		for {
 			err := client.ReportHealth(grpcCtx)
