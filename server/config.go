@@ -38,6 +38,7 @@ var Config = struct {
 		Manager    services.Manager
 		LogStore   log.Service
 		Plugins    *plugin.Registry
+		WSAgentRPC any // *grpc.RPC — set by server startup, used by WS agent handler
 	}
 	Server struct {
 		JWTSecret           string

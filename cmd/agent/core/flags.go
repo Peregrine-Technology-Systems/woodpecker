@@ -45,10 +45,11 @@ var flags = []cli.Flag{
 		Name:    "grpc-secure",
 		Usage:   "should the connection to WOODPECKER_SERVER be made using a secure transport",
 	},
-	&cli.BoolFlag{
-		Sources: cli.EnvVars("WOODPECKER_WS_HEARTBEAT"),
-		Name:    "ws-heartbeat",
-		Usage:   "enable WebSocket heartbeat for lease extension (Phase 0 #860)",
+	&cli.StringFlag{
+		Sources: cli.EnvVars("WOODPECKER_AGENT_TRANSPORT"),
+		Name:    "agent-transport",
+		Usage:   "agent-server transport: grpc or ws (WebSocket)",
+		Value:   "grpc",
 	},
 	&cli.BoolFlag{
 		Sources: cli.EnvVars("WOODPECKER_GRPC_VERIFY"),

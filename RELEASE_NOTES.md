@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- Feat: Phase 0 WebSocket heartbeat-as-extend — agents send heartbeat every 10s via /ws/heartbeat, server extends queue leases bypassing fragile gRPC Extend path. Feature-flagged: WOODPECKER_WS_HEARTBEAT=true (ci-infrastructure#860)
+- Feat: Full WebSocket agent transport — replaces gRPC for agent↔server communication. All 11 RPC methods (Next, Wait, Init, Done, Update, Extend, Log, RegisterAgent, UnregisterAgent, ReportHealth, Version) over single bidirectional WebSocket at /ws/agent. Fixes deploy workflows killed by gRPC disconnect (#3496, #3497, #3360, #857). Feature flag: WOODPECKER_AGENT_TRANSPORT=ws (default grpc for upstream compat) (ci-infrastructure#474)
 - Fix: TaskTimeout increased to 15min to match WOODPECKER_TIMEOUT — 5min was too short, deploy workflows killed mid-flight when gRPC Extend calls failed through Caddy (backend#3360)
 - Fix: findIndependentWorkflows uses persistent DependsOn field on Workflow model instead of transient TaskList — running deploy workflows were invisible after agent pickup and got killed on cancel (ci-infrastructure#853)
 - Fix: workflow independence — Cancel preserves independent workflows (depends_on: []) when superseded by new push, preventing deploy kills on healthy agents (ci-infrastructure#822)

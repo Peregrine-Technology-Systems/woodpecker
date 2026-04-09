@@ -67,7 +67,7 @@ func Load(noRouteHandler http.HandlerFunc, middleware ...gin.HandlerFunc) http.H
 		base.GET("/metrics", metrics.PromHandler())
 		base.GET("/version", api.Version)
 		base.GET("/healthz", api.Health)
-		base.GET("/ws/heartbeat", api.WSHeartbeat) // Phase 0 (#860): WebSocket lease extension
+		base.GET("/ws/agent", api.WSAgent) // Full WebSocket agent transport (#474)
 	}
 
 	apiRoutes(base)

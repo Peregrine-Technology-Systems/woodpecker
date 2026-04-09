@@ -36,6 +36,7 @@ import (
 	"go.woodpecker-ci.org/woodpecker/v3/server/model"
 	"go.woodpecker-ci.org/woodpecker/v3/server/pubsub"
 	"go.woodpecker-ci.org/woodpecker/v3/server/queue"
+	woodpeckerGrpc "go.woodpecker-ci.org/woodpecker/v3/server/rpc"
 	"go.woodpecker-ci.org/woodpecker/v3/server/services"
 	logService "go.woodpecker-ci.org/woodpecker/v3/server/services/log"
 	"go.woodpecker-ci.org/woodpecker/v3/server/services/log/addon"
@@ -173,6 +174,14 @@ func setupEvilGlobals(ctx context.Context, c *cli.Command, s store.Store) (err e
 	if err != nil {
 		return fmt.Errorf("could not setup log store: %w", err)
 	}
+
+	// WebSocket agent transport (#474) — shares business logic with gRPC
+	server.Config.Services.WSAgentRPC = woodpeckerGrpc.NewRPC(
+		server.Config.Services.Queue,
+		server.Config.Services.Logs,
+		server.Config.Services.Pubsub,
+		s,
+	)
 
 	// plugins
 	if err := setupPlugins(ctx, c); err != nil {
