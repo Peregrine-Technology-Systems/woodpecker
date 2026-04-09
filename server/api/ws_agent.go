@@ -58,11 +58,6 @@ func WSAgent(c *gin.Context) {
 	}
 	_store := store.FromContext(c)
 
-	// Send version on connect
-	sendEnvelope(conn, MsgVersion, "", VersionPayload{
-		ServerVersion: version.String(),
-	})
-
 	// Agent state
 	state := &wsAgentState{
 		conn:          conn,
@@ -70,6 +65,11 @@ func WSAgent(c *gin.Context) {
 		store:         _store,
 		cancelWaiters: make(map[string]context.CancelFunc),
 	}
+
+	// Send version on connect
+	state.send(MsgVersion, "", VersionPayload{
+		ServerVersion: version.String(),
+	})
 
 	// Read loop
 	for {
@@ -87,7 +87,7 @@ func WSAgent(c *gin.Context) {
 
 		var env Envelope
 		if err := json.Unmarshal(message, &env); err != nil {
-			sendAck(conn, env.Ref, "invalid envelope")
+			state.sendAck("", "invalid envelope")
 			continue
 		}
 
@@ -98,6 +98,7 @@ func WSAgent(c *gin.Context) {
 // wsAgentState tracks per-connection state for one agent.
 type wsAgentState struct {
 	mu            sync.Mutex
+	writeMu       sync.Mutex // protects WebSocket writes — gorilla/websocket is not thread-safe
 	conn          *websocket.Conn
 	rpc           *grpcserver.RPC
 	store         store.Store
@@ -142,19 +143,19 @@ func (s *wsAgentState) handleMessage(ctx context.Context, env Envelope, hostname
 	case MsgAgentUnregister:
 		s.handleUnregister(ctx, env, hostname)
 	default:
-		sendAck(s.conn, env.Ref, fmt.Sprintf("unknown message type: %s", env.Type))
+		s.sendAck(env.Ref, fmt.Sprintf("unknown message type: %s", env.Type))
 	}
 }
 
 func (s *wsAgentState) handleRegister(_ context.Context, env Envelope, hostname string) {
 	var p RegisterPayload
 	if err := json.Unmarshal(env.Payload, &p); err != nil {
-		sendAck(s.conn, env.Ref, "invalid register payload")
+		s.sendAck(env.Ref, "invalid register payload")
 		return
 	}
 
 	if s.store == nil {
-		sendAck(s.conn, env.Ref, "store not available")
+		s.sendAck(env.Ref, "store not available")
 		return
 	}
 
@@ -173,7 +174,7 @@ func (s *wsAgentState) handleRegister(_ context.Context, env Envelope, hostname 
 		// Agent may already exist — try to find by name
 		agents, listErr := s.store.AgentList(&model.ListOptions{All: true})
 		if listErr != nil {
-			sendAck(s.conn, env.Ref, err.Error())
+			s.sendAck(env.Ref, err.Error())
 			return
 		}
 		found := false
@@ -192,7 +193,7 @@ func (s *wsAgentState) handleRegister(_ context.Context, env Envelope, hostname 
 			}
 		}
 		if !found {
-			sendAck(s.conn, env.Ref, fmt.Sprintf("register failed: %v", err))
+			s.sendAck(env.Ref, fmt.Sprintf("register failed: %v", err))
 			return
 		}
 	}
@@ -202,13 +203,13 @@ func (s *wsAgentState) handleRegister(_ context.Context, env Envelope, hostname 
 	s.mu.Unlock()
 
 	log.Info().Int64("agent_id", agent.ID).Str("hostname", hostname).Msg("ws-agent: registered")
-	sendEnvelope(s.conn, MsgRegistered, env.Ref, RegisteredPayload{AgentID: agent.ID})
+	s.send(MsgRegistered, env.Ref, RegisteredPayload{AgentID: agent.ID})
 }
 
 func (s *wsAgentState) handleNext(ctx context.Context, env Envelope, hostname string) {
 	var p NextPayload
 	if err := json.Unmarshal(env.Payload, &p); err != nil {
-		sendAck(s.conn, env.Ref, "invalid next payload")
+		s.sendAck(env.Ref, "invalid next payload")
 		return
 	}
 
@@ -217,17 +218,17 @@ func (s *wsAgentState) handleNext(ctx context.Context, env Envelope, hostname st
 		agentCtx := s.agentCtx(ctx, hostname)
 		workflow, err := s.rpc.Next(agentCtx, rpc.Filter{Labels: p.FilterLabels})
 		if err != nil {
-			sendAck(s.conn, env.Ref, err.Error())
+			s.sendAck(env.Ref, err.Error())
 			return
 		}
 		if workflow == nil {
 			// No work available (context canceled or shutdown)
-			sendEnvelope(s.conn, MsgTaskAssign, env.Ref, nil)
+			s.send(MsgTaskAssign, env.Ref, nil)
 			return
 		}
 
 		config, _ := json.Marshal(workflow.Config)
-		sendEnvelope(s.conn, MsgTaskAssign, env.Ref, TaskAssignPayload{
+		s.send(MsgTaskAssign, env.Ref, TaskAssignPayload{
 			ID:      workflow.ID,
 			Timeout: workflow.Timeout,
 			Config:  config,
@@ -258,7 +259,7 @@ func (s *wsAgentState) startWaiter(ctx context.Context, workflowID, hostname str
 			return
 		}
 		if canceled {
-			sendEnvelope(s.conn, MsgTaskCancel, "", TaskCancelPayload{WorkflowID: workflowID})
+			s.send(MsgTaskCancel, "", TaskCancelPayload{WorkflowID: workflowID})
 		}
 	}()
 }
@@ -266,23 +267,23 @@ func (s *wsAgentState) startWaiter(ctx context.Context, workflowID, hostname str
 func (s *wsAgentState) handleInit(ctx context.Context, env Envelope, hostname string) {
 	var p InitPayload
 	if err := json.Unmarshal(env.Payload, &p); err != nil {
-		sendAck(s.conn, env.Ref, "invalid init payload")
+		s.sendAck(env.Ref, "invalid init payload")
 		return
 	}
 
 	agentCtx := s.agentCtx(ctx, hostname)
 	err := s.rpc.Init(agentCtx, p.WorkflowID, rpc.WorkflowState{Started: p.Started})
 	if err != nil {
-		sendAck(s.conn, env.Ref, err.Error())
+		s.sendAck(env.Ref, err.Error())
 		return
 	}
-	sendAck(s.conn, env.Ref, "")
+	s.sendAck(env.Ref, "")
 }
 
 func (s *wsAgentState) handleDone(ctx context.Context, env Envelope, hostname string) {
 	var p DonePayload
 	if err := json.Unmarshal(env.Payload, &p); err != nil {
-		sendAck(s.conn, env.Ref, "invalid done payload")
+		s.sendAck(env.Ref, "invalid done payload")
 		return
 	}
 
@@ -301,16 +302,16 @@ func (s *wsAgentState) handleDone(ctx context.Context, env Envelope, hostname st
 		Canceled: p.Canceled,
 	})
 	if err != nil {
-		sendAck(s.conn, env.Ref, err.Error())
+		s.sendAck(env.Ref, err.Error())
 		return
 	}
-	sendAck(s.conn, env.Ref, "")
+	s.sendAck(env.Ref, "")
 }
 
 func (s *wsAgentState) handleUpdate(ctx context.Context, env Envelope, hostname string) {
 	var p UpdatePayload
 	if err := json.Unmarshal(env.Payload, &p); err != nil {
-		sendAck(s.conn, env.Ref, "invalid update payload")
+		s.sendAck(env.Ref, "invalid update payload")
 		return
 	}
 
@@ -325,16 +326,16 @@ func (s *wsAgentState) handleUpdate(ctx context.Context, env Envelope, hostname 
 		Canceled: p.Canceled,
 	})
 	if err != nil {
-		sendAck(s.conn, env.Ref, err.Error())
+		s.sendAck(env.Ref, err.Error())
 		return
 	}
-	sendAck(s.conn, env.Ref, "")
+	s.sendAck(env.Ref, "")
 }
 
 func (s *wsAgentState) handleLog(ctx context.Context, env Envelope, hostname string) {
 	var p LogPayload
 	if err := json.Unmarshal(env.Payload, &p); err != nil {
-		sendAck(s.conn, env.Ref, "invalid log payload")
+		s.sendAck(env.Ref, "invalid log payload")
 		return
 	}
 
@@ -394,23 +395,26 @@ func (s *wsAgentState) handleHealth(ctx context.Context, env Envelope, hostname 
 func (s *wsAgentState) handleUnregister(ctx context.Context, env Envelope, hostname string) {
 	agentCtx := s.agentCtx(ctx, hostname)
 	_ = s.rpc.UnregisterAgent(agentCtx)
-	sendAck(s.conn, env.Ref, "")
+	s.sendAck(env.Ref, "")
 	log.Info().Str("hostname", hostname).Msg("ws-agent: unregistered")
 }
 
-// sendEnvelope marshals and sends an envelope.
-func sendEnvelope(conn *websocket.Conn, msgType, ref string, payload interface{}) {
+// send marshals and sends an envelope with write mutex protection.
+func (s *wsAgentState) send(msgType, ref string, payload interface{}) {
 	data, err := newEnvelope(msgType, ref, payload)
 	if err != nil {
 		log.Error().Err(err).Str("type", msgType).Msg("ws-agent: marshal failed")
 		return
 	}
-	if err := conn.WriteMessage(websocket.TextMessage, data); err != nil {
+	s.writeMu.Lock()
+	err = s.conn.WriteMessage(websocket.TextMessage, data)
+	s.writeMu.Unlock()
+	if err != nil {
 		log.Debug().Err(err).Str("type", msgType).Msg("ws-agent: send failed")
 	}
 }
 
-func sendAck(conn *websocket.Conn, ref, errMsg string) {
+func (s *wsAgentState) sendAck(ref, errMsg string) {
 	ok := errMsg == ""
-	sendEnvelope(conn, MsgAck, ref, AckPayload{OK: ok, Error: errMsg})
+	s.send(MsgAck, ref, AckPayload{OK: ok, Error: errMsg})
 }
