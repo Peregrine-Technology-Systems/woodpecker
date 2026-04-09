@@ -62,27 +62,10 @@ func NewRPC(queue queue.Queue, logger logging.Log, pubsub *pubsub.Publisher, sto
 	}
 }
 
-func NewWoodpeckerServer(queue queue.Queue, logger logging.Log, pubsub *pubsub.Publisher, store store.Store) proto.WoodpeckerServer {
-	pipelineTime := prometheus_auto.NewGaugeVec(prometheus.GaugeOpts{
-		Namespace: "woodpecker",
-		Name:      "pipeline_time",
-		Help:      "Pipeline time.",
-	}, []string{"repo", "branch", "status", "pipeline"})
-	pipelineCount := prometheus_auto.NewCounterVec(prometheus.CounterOpts{
-		Namespace: "woodpecker",
-		Name:      "pipeline_count",
-		Help:      "Pipeline count.",
-	}, []string{"repo", "branch", "status", "pipeline"})
-	peer := RPC{
-		store:          store,
-		queue:          queue,
-		pubsub:         pubsub,
-		logger:         logger,
-		pipelineTime:   pipelineTime,
-		pipelineCount:  pipelineCount,
-		deployPatterns: loadDeployPatterns(),
-	}
-	return &WoodpeckerServer{peer: peer}
+// NewWoodpeckerServer wraps an existing RPC peer as a gRPC server.
+// Use NewRPC() first to create the shared peer, then pass it here.
+func NewWoodpeckerServer(peer *RPC) proto.WoodpeckerServer {
+	return &WoodpeckerServer{peer: *peer}
 }
 
 // loadDeployPatterns reads WOODPECKER_DEPLOY_PATTERNS env var.
