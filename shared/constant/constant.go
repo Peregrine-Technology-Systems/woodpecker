@@ -40,5 +40,7 @@ var TrustedClonePlugins = []string{
 // TaskTimeout is the queue lease duration — how long before an unextended task is requeued.
 // The WebSocket heartbeat hub (20s orphan detection) is the primary mechanism for detecting
 // dead agents. TaskTimeout is a safety net only — set high to avoid false expiry under CPU load.
-// History: 60s (original) → 15s (too aggressive, tasks expired under load) → 5min (#162).
-var TaskTimeout = 5 * time.Minute
+// Must be >= WOODPECKER_TIMEOUT (15m) — deploy workflows take 5-10min and the agent's gRPC
+// Extend calls may fail silently through Caddy. 5min was too short (#3360 killed mid-deploy).
+// History: 60s (original) → 15s (too aggressive) → 5min (#162) → 15min (#3360).
+var TaskTimeout = 15 * time.Minute
