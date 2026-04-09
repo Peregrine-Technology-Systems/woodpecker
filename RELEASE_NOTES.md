@@ -8,6 +8,7 @@
 - Fix: gRPC Wait() no longer cancels running workflows on connection errors — retries instead of returning error that triggers cancelWorkflowCtx (backend#3496, #3497)
 - Fix: WS server write mutex — gorilla/websocket concurrent write protection, prevents connection drops after agent registration
 - Fix: WS client reconnection — close pending channels on disconnect so Next() unblocks and reconnects
+- Fix: WS agent registration sets OrgID/OwnerID to IDNotSet — agents could not match tasks (org-id filter mismatch)
 - Fix: TaskTimeout increased to 15min to match WOODPECKER_TIMEOUT — 5min was too short, deploy workflows killed mid-flight when gRPC Extend calls failed through Caddy (backend#3360)
 - Fix: findIndependentWorkflows uses persistent DependsOn field on Workflow model instead of transient TaskList — running deploy workflows were invisible after agent pickup and got killed on cancel (ci-infrastructure#853)
 - Fix: workflow independence — Cancel preserves independent workflows (depends_on: []) when superseded by new push, preventing deploy kills on healthy agents (ci-infrastructure#822)

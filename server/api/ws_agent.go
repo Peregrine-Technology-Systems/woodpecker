@@ -162,6 +162,8 @@ func (s *wsAgentState) handleRegister(_ context.Context, env Envelope, hostname 
 	// Create or find system agent (same logic as gRPC auth_server.go)
 	agent := &model.Agent{
 		Name:         hostname,
+		OwnerID:      model.IDNotSet, // system agent — not owned by a user
+		OrgID:        model.IDNotSet, // global agent — can serve all orgs
 		Backend:      p.Backend,
 		Platform:     p.Platform,
 		Capacity:     int32(p.Capacity),
