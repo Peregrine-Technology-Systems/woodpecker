@@ -16,6 +16,7 @@ import (
 
 	"go.woodpecker-ci.org/woodpecker/v3/rpc"
 	"go.woodpecker-ci.org/woodpecker/v3/server"
+	"go.woodpecker-ci.org/woodpecker/v3/server/model"
 	grpcserver "go.woodpecker-ci.org/woodpecker/v3/server/rpc"
 	"go.woodpecker-ci.org/woodpecker/v3/server/store"
 	"go.woodpecker-ci.org/woodpecker/v3/version"
@@ -145,32 +146,63 @@ func (s *wsAgentState) handleMessage(ctx context.Context, env Envelope, hostname
 	}
 }
 
-func (s *wsAgentState) handleRegister(ctx context.Context, env Envelope, hostname string) {
+func (s *wsAgentState) handleRegister(_ context.Context, env Envelope, hostname string) {
 	var p RegisterPayload
 	if err := json.Unmarshal(env.Payload, &p); err != nil {
 		sendAck(s.conn, env.Ref, "invalid register payload")
 		return
 	}
 
-	agentCtx := s.agentCtx(ctx, hostname)
-	agentID, err := s.rpc.RegisterAgent(agentCtx, rpc.AgentInfo{
-		Platform:     p.Platform,
-		Backend:      p.Backend,
-		Capacity:     p.Capacity,
-		Version:      p.Version,
-		CustomLabels: p.CustomLabels,
-	})
-	if err != nil {
-		sendAck(s.conn, env.Ref, err.Error())
+	if s.store == nil {
+		sendAck(s.conn, env.Ref, "store not available")
 		return
 	}
 
+	// Create or find system agent (same logic as gRPC auth_server.go)
+	agent := &model.Agent{
+		Name:         hostname,
+		Backend:      p.Backend,
+		Platform:     p.Platform,
+		Capacity:     int32(p.Capacity),
+		Version:      p.Version,
+		CustomLabels: p.CustomLabels,
+		LastContact:  time.Now().Unix(),
+		Token:        server.Config.Server.AgentToken,
+	}
+	if err := s.store.AgentCreate(agent); err != nil {
+		// Agent may already exist — try to find by name
+		agents, listErr := s.store.AgentList(&model.ListOptions{All: true})
+		if listErr != nil {
+			sendAck(s.conn, env.Ref, err.Error())
+			return
+		}
+		found := false
+		for _, a := range agents {
+			if a.Name == hostname {
+				agent = a
+				agent.Backend = p.Backend
+				agent.Platform = p.Platform
+				agent.Capacity = int32(p.Capacity)
+				agent.Version = p.Version
+				agent.CustomLabels = p.CustomLabels
+				agent.LastContact = time.Now().Unix()
+				_ = s.store.AgentUpdate(agent)
+				found = true
+				break
+			}
+		}
+		if !found {
+			sendAck(s.conn, env.Ref, fmt.Sprintf("register failed: %v", err))
+			return
+		}
+	}
+
 	s.mu.Lock()
-	s.agentID = agentID
+	s.agentID = agent.ID
 	s.mu.Unlock()
 
-	log.Info().Int64("agent_id", agentID).Str("hostname", hostname).Msg("ws-agent: registered")
-	sendEnvelope(s.conn, MsgRegistered, env.Ref, RegisteredPayload{AgentID: agentID})
+	log.Info().Int64("agent_id", agent.ID).Str("hostname", hostname).Msg("ws-agent: registered")
+	sendEnvelope(s.conn, MsgRegistered, env.Ref, RegisteredPayload{AgentID: agent.ID})
 }
 
 func (s *wsAgentState) handleNext(ctx context.Context, env Envelope, hostname string) {
