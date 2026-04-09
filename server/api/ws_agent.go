@@ -58,6 +58,12 @@ func WSAgent(c *gin.Context) {
 	}
 	_store := store.FromContext(c)
 
+	// Connection-scoped context — lives for the entire WS connection.
+	// Do NOT use c.Request.Context() — gin may cancel it unexpectedly,
+	// killing queue.Poll goroutines mid-flight.
+	connCtx, connCancel := context.WithCancel(context.Background())
+	defer connCancel()
+
 	// Agent state
 	state := &wsAgentState{
 		conn:          conn,
@@ -91,7 +97,7 @@ func WSAgent(c *gin.Context) {
 			continue
 		}
 
-		state.handleMessage(c.Request.Context(), env, hostname)
+		state.handleMessage(connCtx, env, hostname)
 	}
 }
 
