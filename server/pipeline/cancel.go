@@ -43,10 +43,11 @@ func Cancel(ctx context.Context, _forge forge.Forge, _store store.Store, repo *m
 		return &ErrNotFound{Msg: err.Error()}
 	}
 
-	// Build set of independent workflow IDs (no queue dependencies)
+	// Build set of independent workflow IDs (no queue dependencies).
+	// Uses the persisted DependsOn field on workflows, NOT transient queue tasks.
 	independentIDs := make(map[int64]bool)
 	if preserveIndependent {
-		independentIDs = findIndependentWorkflows(_store, pipeline.ID)
+		independentIDs = findIndependentWorkflows(workflows)
 	}
 
 	// First cancel/evict workflows in the queue in one go
@@ -124,23 +125,20 @@ func Cancel(ctx context.Context, _forge forge.Forge, _store store.Store, repo *m
 	return nil
 }
 
-// findIndependentWorkflows returns workflow IDs that have no queue dependencies.
+// findIndependentWorkflows returns workflow IDs that have no dependencies.
 // These are workflows with depends_on: [] in the pipeline config — they should
-// not be canceled when a pipeline is superseded by a new push.
-func findIndependentWorkflows(_store store.Store, pipelineID int64) map[int64]bool {
+// not be canceled when a pipeline is superseded by a new push (#822).
+//
+// Uses the persisted DependsOn field on the Workflow model, NOT transient queue
+// tasks. The previous implementation used store.TaskList() which only returns
+// tasks still in the queue — once an agent picks up a task (Poll), it's deleted
+// from the task store. This caused running independent workflows to be killed
+// because they were no longer visible in TaskList().
+func findIndependentWorkflows(workflows []*model.Workflow) map[int64]bool {
 	result := make(map[int64]bool)
-	tasks, err := _store.TaskList()
-	if err != nil {
-		log.Error().Err(err).Msg("findIndependentWorkflows: cannot list tasks")
-		return result
-	}
-	for _, task := range tasks {
-		if task.PipelineID == pipelineID && len(task.Dependencies) == 0 {
-			// Task ID is the string form of workflow ID
-			var wfID int64
-			if _, err := fmt.Sscan(task.ID, &wfID); err == nil {
-				result[wfID] = true
-			}
+	for _, w := range workflows {
+		if len(w.DependsOn) == 0 {
+			result[w.ID] = true
 		}
 	}
 	return result

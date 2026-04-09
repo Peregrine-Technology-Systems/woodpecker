@@ -201,6 +201,7 @@ func setPipelineStepsOnPipeline(pipeline *model.Pipeline, pipelineItems []*stepb
 			item.Workflow.State = model.StatusBlocked
 		}
 		item.Workflow.PipelineID = pipeline.ID
+		item.Workflow.DependsOn = item.DependsOn
 		pipeline.Workflows = append(pipeline.Workflows, item.Workflow)
 	}
 

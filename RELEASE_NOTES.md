@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Fix: findIndependentWorkflows uses persistent DependsOn field on Workflow model instead of transient TaskList — running deploy workflows were invisible after agent pickup and got killed on cancel (ci-infrastructure#853)
 - Fix: workflow independence — Cancel preserves independent workflows (depends_on: []) when superseded by new push, preventing deploy kills on healthy agents (ci-infrastructure#822)
 - Fix: TaskTimeout increased to 5 minutes — safety net only, WebSocket hub handles orphan detection at 20s (ci-infrastructure#162)
 - Fix: deploy hold window — spot agents wait 30s for on-demand agents to boot before accepting deploy jobs
