@@ -144,6 +144,15 @@ func (c *WSClient) readPump() {
 			c.connCancel()
 		}
 		c.mu.Unlock()
+
+		// Unblock all pending request/response channels so callers can reconnect.
+		// Without this, Next() hangs forever after server restart.
+		c.pendingMu.Lock()
+		for ref, ch := range c.pending {
+			close(ch)
+			delete(c.pending, ref)
+		}
+		c.pendingMu.Unlock()
 	}()
 
 	for {
@@ -237,7 +246,10 @@ func (c *WSClient) sendAndWait(ctx context.Context, msgType string, payload inte
 	c.pendingMu.Unlock()
 
 	select {
-	case env := <-ch:
+	case env, ok := <-ch:
+		if !ok {
+			return fmt.Errorf("connection lost")
+		}
 		if env.Type == "ack" {
 			var ack struct {
 				OK    bool   `json:"ok"`
@@ -302,7 +314,10 @@ func (c *WSClient) RegisterAgent(ctx context.Context, info rpc.AgentInfo) (int64
 	c.pendingMu.Unlock()
 
 	select {
-	case env := <-ch:
+	case env, ok := <-ch:
+		if !ok {
+			return 0, fmt.Errorf("connection lost during registration")
+		}
 		if env.Type == "registered" {
 			var p struct {
 				AgentID int64 `json:"agent_id"`
@@ -356,7 +371,12 @@ func (c *WSClient) Next(ctx context.Context, f rpc.Filter) (*rpc.Workflow, error
 	c.pendingMu.Unlock()
 
 	select {
-	case env := <-ch:
+	case env, ok := <-ch:
+		if !ok {
+			// Channel closed — connection dropped, readPump cleaned up.
+			// Return nil to trigger reconnect on next runner iteration.
+			return nil, nil
+		}
 		if env.Type == "task.assign" && env.Payload != nil {
 			var p struct {
 				ID      string          `json:"id"`

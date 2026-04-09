@@ -215,9 +215,12 @@ func (s *wsAgentState) handleNext(ctx context.Context, env Envelope, hostname st
 
 	// Run in goroutine — queue.Poll blocks until work available
 	go func() {
+		log.Debug().Int64("agent_id", s.agentID).Str("hostname", hostname).
+			Any("filter", p.FilterLabels).Msg("ws-agent: polling for work")
 		agentCtx := s.agentCtx(ctx, hostname)
 		workflow, err := s.rpc.Next(agentCtx, rpc.Filter{Labels: p.FilterLabels})
 		if err != nil {
+			log.Error().Err(err).Int64("agent_id", s.agentID).Msg("ws-agent: Next() error")
 			s.sendAck(env.Ref, err.Error())
 			return
 		}
