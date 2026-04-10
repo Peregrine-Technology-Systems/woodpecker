@@ -167,19 +167,24 @@ func (c *client) Wait(ctx context.Context, workflowID string) (canceled bool, er
 				log.Debug().Err(err).Msgf("grpc error: wait(): context canceled")
 				return false, nil
 			}
-			log.Error().Err(err).Msgf("grpc error: wait(): code: %v", status.Code(err))
-			return false, err
+			// gRPC connection dropped but workflow context is still alive (#3496).
+			// Do NOT return error — runner would cancel the running workflow.
+			// Retry instead — the workflow is still executing on this agent.
+			log.Warn().Err(err).Msgf("grpc error: wait(): connection lost, retrying (not canceling workflow)")
 		case
 			codes.Aborted,
 			codes.DataLoss,
 			codes.DeadlineExceeded,
 			codes.Internal,
 			codes.Unavailable:
-			// non-fatal errors
+			// non-fatal errors — retry
 			log.Warn().Err(err).Msgf("grpc error: wait(): code: %v", status.Code(err))
 		default:
-			log.Error().Err(err).Msgf("grpc error: wait(): code: %v", status.Code(err))
-			return false, err
+			// Non-retryable errors — but still don't cancel the workflow.
+			// Return (false, nil) instead of (false, err) to prevent runner
+			// from killing an active workflow on transient gRPC issues (#3496).
+			log.Error().Err(err).Msgf("grpc error: wait(): code: %v (not canceling workflow)", status.Code(err))
+			return false, nil
 		}
 
 		select {

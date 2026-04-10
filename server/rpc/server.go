@@ -39,7 +39,8 @@ type WoodpeckerServer struct {
 	peer RPC
 }
 
-func NewWoodpeckerServer(queue queue.Queue, logger logging.Log, pubsub *pubsub.Publisher, store store.Store) proto.WoodpeckerServer {
+// NewRPC creates the business logic peer for both gRPC and WebSocket transports.
+func NewRPC(queue queue.Queue, logger logging.Log, pubsub *pubsub.Publisher, store store.Store) *RPC {
 	pipelineTime := prometheus_auto.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace: "woodpecker",
 		Name:      "pipeline_time",
@@ -50,7 +51,7 @@ func NewWoodpeckerServer(queue queue.Queue, logger logging.Log, pubsub *pubsub.P
 		Name:      "pipeline_count",
 		Help:      "Pipeline count.",
 	}, []string{"repo", "branch", "status", "pipeline"})
-	peer := RPC{
+	return &RPC{
 		store:          store,
 		queue:          queue,
 		pubsub:         pubsub,
@@ -59,7 +60,12 @@ func NewWoodpeckerServer(queue queue.Queue, logger logging.Log, pubsub *pubsub.P
 		pipelineCount:  pipelineCount,
 		deployPatterns: loadDeployPatterns(),
 	}
-	return &WoodpeckerServer{peer: peer}
+}
+
+// NewWoodpeckerServer wraps an existing RPC peer as a gRPC server.
+// Use NewRPC() first to create the shared peer, then pass it here.
+func NewWoodpeckerServer(peer *RPC) proto.WoodpeckerServer {
+	return &WoodpeckerServer{peer: *peer}
 }
 
 // loadDeployPatterns reads WOODPECKER_DEPLOY_PATTERNS env var.

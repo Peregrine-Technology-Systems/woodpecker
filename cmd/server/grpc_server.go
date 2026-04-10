@@ -48,12 +48,9 @@ func runGrpcServer(ctx context.Context, c *cli.Command, _store store.Store) erro
 		}),
 	)
 
-	woodpeckerServer := woodpeckerGrpcServer.NewWoodpeckerServer(
-		server.Config.Services.Queue,
-		server.Config.Services.Logs,
-		server.Config.Services.Pubsub,
-		_store,
-	)
+	// Use the shared RPC peer (created in setup.go, shared with WS transport)
+	rpcPeer := server.Config.Services.WSAgentRPC.(*woodpeckerGrpcServer.RPC)
+	woodpeckerServer := woodpeckerGrpcServer.NewWoodpeckerServer(rpcPeer)
 	proto.RegisterWoodpeckerServer(grpcServer, woodpeckerServer)
 
 	woodpeckerAuthServer := woodpeckerGrpcServer.NewWoodpeckerAuthServer(

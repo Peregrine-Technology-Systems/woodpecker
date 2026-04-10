@@ -113,71 +113,92 @@ func run(ctx context.Context, c *cli.Command, backends []types.Backend) error {
 			})
 	}
 
-	var transport grpc.DialOption
-	if c.Bool("grpc-secure") {
-		log.Trace().Msg("use ssl for grpc")
-		transport = grpc.WithTransportCredentials(grpc_credentials.NewTLS(&tls.Config{InsecureSkipVerify: c.Bool("grpc-skip-insecure")}))
-	} else {
-		transport = grpc.WithTransportCredentials(insecure.NewCredentials())
-	}
-
-	authConn, err := grpc.NewClient(
-		c.String("server"),
-		transport,
-		grpc.WithKeepaliveParams(keepalive.ClientParameters{
-			Time:    c.Duration("grpc-keepalive-time"),
-			Timeout: c.Duration("grpc-keepalive-timeout"),
-		}),
-	)
-	if err != nil {
-		return fmt.Errorf("could not create new gRPC 'channel' for authentication: %w", err)
-	}
-	defer authConn.Close()
-
 	agentConfig := readAgentConfig(agentConfigPath)
-
 	agentToken := c.String("grpc-token")
-	grpcClientCtx, grpcClientCtxCancel := context.WithCancelCause(context.Background())
-	defer grpcClientCtxCancel(nil)
-	authClient := agent_rpc.NewAuthGrpcClient(authConn, agentToken, agentConfig.AgentID)
-	authInterceptor, err := agent_rpc.NewAuthInterceptor(grpcClientCtx, authClient, authInterceptorRefreshInterval) //nolint:contextcheck
-	if err != nil {
-		return fmt.Errorf("agent could not auth: %w", err)
-	}
-
-	conn, err := grpc.NewClient(
-		c.String("server"),
-		transport,
-		grpc.WithKeepaliveParams(keepalive.ClientParameters{
-			Time:    c.Duration("grpc-keepalive-time"),
-			Timeout: c.Duration("grpc-keepalive-timeout"),
-		}),
-		grpc.WithUnaryInterceptor(authInterceptor.Unary()),
-		grpc.WithStreamInterceptor(authInterceptor.Stream()),
-	)
-	if err != nil {
-		return fmt.Errorf("could not create new gRPC 'channel' for normal orchestration: %w", err)
-	}
-	defer conn.Close()
-
-	client := agent_rpc.NewGrpcClient(ctx, conn)
 	agentConfigPersisted := atomic.Bool{}
 
-	grpcCtx := metadata.NewOutgoingContext(grpcClientCtx, metadata.Pairs("hostname", hostname))
+	// Transport selection: WebSocket or gRPC (#474)
+	var client rpc.Peer
+	var grpcCtx context.Context
 
-	// check if grpc server version is compatible with agent
-	grpcServerVersion, err := client.Version(grpcCtx) //nolint:contextcheck
-	if err != nil {
-		log.Error().Err(err).Msg("could not get grpc server version")
-		return err
-	}
-	if grpcServerVersion.GrpcVersion != agent_rpc.ClientGrpcVersion {
-		err := errors.New("GRPC version mismatch")
-		log.Error().Err(err).Msgf("server version %s does report grpc version %d but we only understand %d",
-			grpcServerVersion.ServerVersion,
-			grpcServerVersion.GrpcVersion,
-			agent_rpc.ClientGrpcVersion)
-		return err
+	if c.String("agent-transport") == "ws" {
+		// ── WebSocket transport ──────────────────────────────────
+		log.Info().Msg("using WebSocket agent transport")
+		client = agent_rpc.NewWSClient(agentCtx, c.String("server"), agentToken, hostname, c.Bool("grpc-secure"))
+
+		// Version check (non-fatal for WS — protocol is JSON, not versioned)
+		serverVersion, err := client.Version(agentCtx)
+		if err != nil {
+			log.Warn().Err(err).Msg("could not get server version via WebSocket")
+		} else {
+			log.Info().Str("server", serverVersion.ServerVersion).Msg("connected to server")
+		}
+
+		grpcCtx = agentCtx // no gRPC metadata needed
+	} else {
+		// ── gRPC transport (default, upstream compatible) ────────
+		var transport grpc.DialOption
+		if c.Bool("grpc-secure") {
+			log.Trace().Msg("use ssl for grpc")
+			transport = grpc.WithTransportCredentials(grpc_credentials.NewTLS(&tls.Config{InsecureSkipVerify: c.Bool("grpc-skip-insecure")}))
+		} else {
+			transport = grpc.WithTransportCredentials(insecure.NewCredentials())
+		}
+
+		authConn, err := grpc.NewClient(
+			c.String("server"),
+			transport,
+			grpc.WithKeepaliveParams(keepalive.ClientParameters{
+				Time:    c.Duration("grpc-keepalive-time"),
+				Timeout: c.Duration("grpc-keepalive-timeout"),
+			}),
+		)
+		if err != nil {
+			return fmt.Errorf("could not create new gRPC 'channel' for authentication: %w", err)
+		}
+		defer authConn.Close()
+
+		grpcClientCtx, grpcClientCtxCancel := context.WithCancelCause(context.Background())
+		defer grpcClientCtxCancel(nil)
+		authClient := agent_rpc.NewAuthGrpcClient(authConn, agentToken, agentConfig.AgentID)
+		authInterceptor, err := agent_rpc.NewAuthInterceptor(grpcClientCtx, authClient, authInterceptorRefreshInterval) //nolint:contextcheck
+		if err != nil {
+			return fmt.Errorf("agent could not auth: %w", err)
+		}
+
+		conn, err := grpc.NewClient(
+			c.String("server"),
+			transport,
+			grpc.WithKeepaliveParams(keepalive.ClientParameters{
+				Time:    c.Duration("grpc-keepalive-time"),
+				Timeout: c.Duration("grpc-keepalive-timeout"),
+			}),
+			grpc.WithUnaryInterceptor(authInterceptor.Unary()),
+			grpc.WithStreamInterceptor(authInterceptor.Stream()),
+		)
+		if err != nil {
+			return fmt.Errorf("could not create new gRPC 'channel' for normal orchestration: %w", err)
+		}
+		defer conn.Close()
+
+		client = agent_rpc.NewGrpcClient(ctx, conn)
+
+		grpcCtx = metadata.NewOutgoingContext(grpcClientCtx, metadata.Pairs("hostname", hostname))
+
+		// check if grpc server version is compatible with agent
+		grpcServerVersion, err := client.Version(grpcCtx) //nolint:contextcheck
+		if err != nil {
+			log.Error().Err(err).Msg("could not get grpc server version")
+			return err
+		}
+		if grpcServerVersion.GrpcVersion != agent_rpc.ClientGrpcVersion {
+			err := errors.New("GRPC version mismatch")
+			log.Error().Err(err).Msgf("server version %s does report grpc version %d but we only understand %d",
+				grpcServerVersion.ServerVersion,
+				grpcServerVersion.GrpcVersion,
+				agent_rpc.ClientGrpcVersion)
+			return err
+		}
 	}
 
 	// new engine
@@ -223,15 +244,14 @@ func run(ctx context.Context, c *cli.Command, backends []types.Backend) error {
 	}
 
 	serviceWaitingGroup.Go(func() error {
-		// we close grpc client context once unregister was handled
-		defer grpcClientCtxCancel(nil)
 		// we wait till agent context is done
 		<-agentCtx.Done()
 		// Remove stateless agents from server
 		if !agentConfigPersisted.Load() {
 			log.Debug().Msg("unregister agent from server ...")
-			// we want to run it explicit run when context got canceled so run it in background
-			err := client.UnregisterAgent(grpcClientCtx)
+			unregCtx, unregCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer unregCancel()
+			err := client.UnregisterAgent(unregCtx)
 			if err != nil {
 				log.Err(err).Msg("failed to unregister agent from server")
 			} else {
@@ -263,23 +283,6 @@ func run(ctx context.Context, c *cli.Command, backends []types.Backend) error {
 	}
 
 	log.Debug().Msgf("agent registered with ID %d", agentConfig.AgentID)
-
-	// Phase 0 (#860): WebSocket heartbeat extends queue leases, bypassing gRPC
-	if c.Bool("ws-heartbeat") {
-		wsClient := agent.NewWSHeartbeatClient(
-			c.String("server"),
-			agentToken,
-			agentConfig.AgentID,
-			hostname,
-			counter,
-			c.Bool("grpc-secure"),
-		)
-		serviceWaitingGroup.Go(func() error {
-			wsClient.Run(agentCtx)
-			return nil
-		})
-		log.Info().Msg("WebSocket heartbeat enabled (Phase 0 #860)")
-	}
 
 	serviceWaitingGroup.Go(func() error {
 		for {
