@@ -143,13 +143,19 @@ func GetPipelines(c *gin.Context) {
 		filter.Events = wel
 	}
 
-	if status := c.Query("status"); status != "" {
-		ps := model.StatusValue(status)
-		if err := ps.Validate(); err != nil {
-			_ = c.AbortWithError(http.StatusBadRequest, err)
-			return
+	if statuses := c.QueryArray("status"); len(statuses) > 0 {
+		for _, s := range statuses {
+			ps := model.StatusValue(s)
+			if err := ps.Validate(); err != nil {
+				_ = c.AbortWithError(http.StatusBadRequest, err)
+				return
+			}
+			filter.Statuses = append(filter.Statuses, ps)
 		}
-		filter.Status = ps
+		// Backward compat: also set single Status for queries with one value
+		if len(filter.Statuses) == 1 {
+			filter.Status = filter.Statuses[0]
+		}
 	}
 
 	if before := c.Query("before"); before != "" {

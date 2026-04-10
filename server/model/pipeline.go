@@ -69,7 +69,8 @@ type PipelineFilter struct {
 	Branch      string
 	Events      []WebhookEvent
 	RefContains string
-	Status      StatusValue
+	Status      StatusValue   // single status filter (backward compat)
+	Statuses    []StatusValue // multiple status filter (#881)
 }
 
 // IsMultiPipeline checks if step list contain more than one parent step.
