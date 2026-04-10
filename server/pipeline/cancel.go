@@ -68,6 +68,18 @@ func Cancel(ctx context.Context, _forge forge.Forge, _store store.Store, repo *m
 		}
 	}
 
+	// #891: Also call Done() for running workflows. ErrorAtOnce removes tasks
+	// from pending/waiting, but running tasks assigned to dead agents stay in
+	// the queue's running map until the agent calls rpc.Done() — which never
+	// happens if the agent crashed. Done() ensures cleanup regardless.
+	for _, w := range workflows {
+		if w.State == model.StatusRunning && !independentIDs[w.ID] {
+			if err := server.Config.Services.Queue.Done(ctx, fmt.Sprint(w.ID), model.StatusKilled); err != nil {
+				log.Debug().Err(err).Msgf("queue.Done for running workflow %d (may already be removed)", w.ID)
+			}
+		}
+	}
+
 	// Check if any workflows are still running (preserved independent ones)
 	hasPreservedRunning := false
 	hasPendingOnly := true
