@@ -34,6 +34,7 @@ import (
 	"go.woodpecker-ci.org/woodpecker/v3/server/forge/setup"
 	"go.woodpecker-ci.org/woodpecker/v3/server/logging"
 	"go.woodpecker-ci.org/woodpecker/v3/server/model"
+	"go.woodpecker-ci.org/woodpecker/v3/server/pipeline"
 	"go.woodpecker-ci.org/woodpecker/v3/server/pubsub"
 	"go.woodpecker-ci.org/woodpecker/v3/server/queue"
 	woodpeckerGrpc "go.woodpecker-ci.org/woodpecker/v3/server/rpc"
@@ -174,6 +175,11 @@ func setupEvilGlobals(ctx context.Context, c *cli.Command, s store.Store) (err e
 	if err != nil {
 		return fmt.Errorf("could not setup log store: %w", err)
 	}
+
+	// #891: Reconcile orphaned "running" pipelines after restart.
+	// The in-memory queue is lost on restart — pipelines that were running
+	// have no queue task and will never complete. Mark them as killed.
+	pipeline.ReconcileOrphaned(s)
 
 	// WebSocket agent transport (#474) — shares business logic with gRPC
 	server.Config.Services.WSAgentRPC = woodpeckerGrpc.NewRPC(
