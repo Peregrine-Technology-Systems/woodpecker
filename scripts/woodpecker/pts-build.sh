@@ -12,6 +12,14 @@ echo "==> Building Docker image: ${IMAGE}:${VERSION}"
 # Authenticate to Artifact Registry using agent SA
 gcloud auth configure-docker us-central1-docker.pkg.dev --quiet 2>/dev/null || true
 
+# SSH setup for deploy to d3ci42 (#877)
+SSH_KEY=".deploy-ssh/id_ed25519"
+mkdir -p .deploy-ssh
+echo "$DEPLOY_SSH_KEY" > "$SSH_KEY"
+echo "" >> "$SSH_KEY"
+chmod 600 "$SSH_KEY"
+SSH_OPTS="-i $SSH_KEY -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR"
+
 docker build \
   --build-arg "VERSION=${VERSION}" \
   -t "${IMAGE}:${VERSION}" \
@@ -25,9 +33,9 @@ docker push "${IMAGE}:latest"
 echo "==> Deploying to d3ci42 (${SERVER_HOST})..."
 
 # Deploy via docker save + SSH (agent has SA key, no AR auth on server)
-docker save "${IMAGE}:${VERSION}" | ssh -o StrictHostKeyChecking=no "root@${SERVER_HOST}" "docker load"
+docker save "${IMAGE}:${VERSION}" | ssh $SSH_OPTS "root@${SERVER_HOST}" "docker load"
 
-ssh -o StrictHostKeyChecking=no "root@${SERVER_HOST}" "
+ssh $SSH_OPTS "root@${SERVER_HOST}" "
   cd /opt/woodpecker
   sed -i 's|woodpecker-server:v3.13.0-pts\.[0-9]*|woodpecker-server:${VERSION}|' docker-compose.yml
   docker compose up -d --force-recreate woodpecker-server

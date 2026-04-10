@@ -4,6 +4,7 @@
 
 - Fix: cancel pipeline also calls queue.Done() for running workflows — prevents ghost tasks when agent is dead and can't call rpc.Done() (ci-infrastructure#891)
 - Fix: startup reconciliation kills orphaned "running" pipelines
+- Fix: pts-build.sh uses deploy SSH key from Woodpecker secrets — previously used agent default SSH which didn't have d3ci42 access (ci-infrastructure#877)
 - Fix: suppress noisy "sql: no rows" errors from unregistered WS agents — guard Next() on agentID, suppress context canceled on disconnect (ci-infrastructure#891) — after server restart, pipelines stuck in running state with no queue task are marked as killed (ci-infrastructure#891)
 - Fix: pipeline list API supports multiple status values — `?status=running&status=pending` now returns both. Single status query returned only the first value, causing scaler to miss pending pipelines (ci-infrastructure#881)
 - Feat: Full WebSocket agent transport — replaces gRPC for agent↔server communication. All 11 RPC methods (Next, Wait, Init, Done, Update, Extend, Log, RegisterAgent, UnregisterAgent, ReportHealth, Version) over single bidirectional WebSocket at /ws/agent. Fixes deploy workflows killed by gRPC disconnect (#3496, #3497, #3360, #857). Feature flag: WOODPECKER_AGENT_TRANSPORT=ws (default grpc for upstream compat) (ci-infrastructure#474)
