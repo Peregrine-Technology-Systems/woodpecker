@@ -301,6 +301,10 @@ func TestCancel_NoPreserve(t *testing.T) {
 		return len(ids) == 2
 	}), mock.Anything).Return(nil)
 
+	// #891: Done() called for both running workflows to clean up queue
+	mockQueue.On("Done", mock.Anything, "30", model.StatusKilled).Return(nil)
+	mockQueue.On("Done", mock.Anything, "31", model.StatusKilled).Return(nil)
+
 	// Pipeline killed (not pending-only since both are running)
 	mockStore.On("UpdatePipeline", mock.MatchedBy(func(p *model.Pipeline) bool {
 		return p.ID == 3 && p.Status == model.StatusKilled
@@ -314,6 +318,57 @@ func TestCancel_NoPreserve(t *testing.T) {
 
 	assert.NoError(t, err)
 	mockStore.AssertCalled(t, "UpdatePipeline", mock.Anything)
+}
+
+// TestCancel_RunningWorkflow_QueueDone ensures that canceling a pipeline with
+// running workflows calls queue.Done() in addition to ErrorAtOnce().
+// Without this, ghost tasks stay in the queue's running map when the agent is
+// dead — ErrorAtOnce only removes pending/waiting tasks, not running ones that
+// the agent should have cleaned up via rpc.Done() (#891).
+func TestCancel_RunningWorkflow_QueueDone(t *testing.T) {
+	mockStore, mockQueue := setupCancelTest(t)
+
+	pipeline := &model.Pipeline{
+		ID:     5,
+		Number: 500,
+		Status: model.StatusRunning,
+	}
+	repo := &model.Repo{ID: 1, FullName: "org/scanner"}
+	user := &model.User{ID: 1}
+
+	workflows := []*model.Workflow{
+		{
+			ID:        50,
+			Name:      "ci",
+			State:     model.StatusRunning,
+			DependsOn: []string{},
+			Children:  []*model.Step{},
+		},
+	}
+
+	mockStore.On("WorkflowGetTree", pipeline).Return(workflows, nil)
+
+	// ErrorAtOnce called for the running workflow
+	mockQueue.On("ErrorAtOnce", mock.Anything, []string{"50"}, mock.Anything).Return(nil)
+
+	// #891: queue.Done() must ALSO be called for running workflows to ensure
+	// the task is removed from the queue's running map even if the agent is dead
+	mockQueue.On("Done", mock.Anything, "50", model.StatusKilled).Return(nil)
+
+	// Pipeline killed
+	mockStore.On("UpdatePipeline", mock.MatchedBy(func(p *model.Pipeline) bool {
+		return p.ID == 5 && p.Status == model.StatusKilled
+	})).Return(nil)
+
+	mockStore.On("WorkflowGetTree", mock.AnythingOfType("*model.Pipeline")).Return(workflows, nil)
+
+	err := Cancel(context.Background(), nil, mockStore, repo, user, pipeline, &model.CancelInfo{
+		CanceledByUser: "system",
+	}, false)
+
+	assert.NoError(t, err)
+	// Verify Done was called — this is the critical assertion
+	mockQueue.AssertCalled(t, "Done", mock.Anything, "50", model.StatusKilled)
 }
 
 // TestCancel_RejectsNonRunningPipeline verifies guard clause.
