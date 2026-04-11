@@ -152,11 +152,10 @@ func (s *RPC) Extend(c context.Context, workflowID string) error {
 	return s.queue.Extend(c, agent.ID, workflowID)
 }
 
-// ReleaseAgentTasks releases all running tasks assigned to a dead agent (#3).
+// ReleaseAgentTasks releases all running tasks assigned to a dead agent (#3, #4).
 // Called when a WebSocket connection drops — releases tasks immediately
 // instead of waiting for TaskTimeout (15 minutes).
-// Updates both the queue (removes running task) AND the pipeline database
-// (marks workflow/pipeline as killed).
+// Updates the queue, workflow, steps, parent pipeline, and forge status (GitHub).
 func (s *RPC) ReleaseAgentTasks(c context.Context, agentID int64) {
 	info := s.queue.Info(c)
 	var orphaned []string
@@ -176,27 +175,82 @@ func (s *RPC) ReleaseAgentTasks(c context.Context, agentID int64) {
 		log.Error().Err(err).Msg("failed to release agent tasks from queue")
 	}
 
-	// Update pipeline database — mark workflows as killed so
-	// GetActivePipelineDetails doesn't see them as running (#3)
+	// Update pipeline database — mirror the completion logic from rpc.Done()
+	// so the pipeline reaches a terminal state and GitHub gets notified (#4)
 	for _, workflowIDStr := range orphaned {
 		workflowID, err := strconv.ParseInt(workflowIDStr, 10, 64)
 		if err != nil {
 			continue
 		}
+
 		workflow, err := s.store.WorkflowLoad(workflowID)
 		if err != nil {
 			log.Error().Err(err).Int64("workflow_id", workflowID).
-				Msg("failed to load orphaned workflow")
+				Msg("release: failed to load workflow")
 			continue
 		}
-		now := time.Now().Unix()
-		if _, err := pipeline.UpdateWorkflowStatusToDone(s.store, *workflow, rpc.WorkflowState{
-			Finished: now,
-			Error:    "agent disconnected",
-		}); err != nil {
+
+		// Load children (steps) so WorkflowStatus can evaluate them
+		workflow.Children, err = s.store.StepListFromWorkflowFind(workflow)
+		if err != nil {
 			log.Error().Err(err).Int64("workflow_id", workflowID).
-				Msg("failed to mark orphaned workflow as done")
+				Msg("release: failed to load workflow steps")
 		}
+
+		now := time.Now().Unix()
+
+		// Mark pending/running steps as killed
+		for _, step := range workflow.Children {
+			if step.Running() || step.State == model.StatusPending {
+				step.State = model.StatusKilled
+				step.Finished = now
+				step.Error = "agent disconnected"
+				if err := s.store.StepUpdate(step); err != nil {
+					log.Error().Err(err).Int64("step_id", step.ID).
+						Msg("release: failed to kill step")
+				}
+			}
+		}
+
+		// Mark workflow as killed
+		workflow.State = model.StatusKilled
+		workflow.Finished = now
+		workflow.Error = "agent disconnected"
+		if err := s.store.WorkflowUpdate(workflow); err != nil {
+			log.Error().Err(err).Int64("workflow_id", workflowID).
+				Msg("release: failed to kill workflow")
+		}
+
+		// Update parent pipeline status
+		currentPipeline, err := s.store.GetPipeline(workflow.PipelineID)
+		if err != nil {
+			log.Error().Err(err).Int64("pipeline_id", workflow.PipelineID).
+				Msg("release: failed to load pipeline")
+			continue
+		}
+
+		currentPipeline.Workflows, err = s.store.WorkflowGetTree(currentPipeline)
+		if err != nil {
+			log.Error().Err(err).Int64("pipeline_id", currentPipeline.ID).
+				Msg("release: failed to load workflow tree")
+			continue
+		}
+
+		if !model.IsThereRunningStage(currentPipeline.Workflows) {
+			if _, err := pipeline.UpdateStatusToDone(s.store, *currentPipeline, pipeline.PipelineStatus(currentPipeline.Workflows), now); err != nil {
+				log.Error().Err(err).Int64("pipeline_id", currentPipeline.ID).
+					Msg("release: failed to finalize pipeline")
+			}
+		}
+
+		// Push status to GitHub so PR checks update
+		repo, err := s.store.GetRepo(currentPipeline.RepoID)
+		if err != nil {
+			log.Error().Err(err).Int64("repo_id", currentPipeline.RepoID).
+				Msg("release: failed to load repo")
+			continue
+		}
+		s.updateForgeStatus(c, repo, currentPipeline, workflow)
 	}
 }
 
