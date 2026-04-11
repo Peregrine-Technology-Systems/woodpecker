@@ -155,6 +155,8 @@ func (s *RPC) Extend(c context.Context, workflowID string) error {
 // ReleaseAgentTasks releases all running tasks assigned to a dead agent (#3).
 // Called when a WebSocket connection drops — releases tasks immediately
 // instead of waiting for TaskTimeout (15 minutes).
+// Updates both the queue (removes running task) AND the pipeline database
+// (marks workflow/pipeline as killed).
 func (s *RPC) ReleaseAgentTasks(c context.Context, agentID int64) {
 	info := s.queue.Info(c)
 	var orphaned []string
@@ -168,8 +170,33 @@ func (s *RPC) ReleaseAgentTasks(c context.Context, agentID int64) {
 	}
 	log.Warn().Int64("agent_id", agentID).Int("tasks", len(orphaned)).
 		Msg("releasing tasks from dead agent")
+
+	// Release from queue
 	if err := s.queue.ErrorAtOnce(c, orphaned, queue.ErrCancel); err != nil {
-		log.Error().Err(err).Msg("failed to release agent tasks")
+		log.Error().Err(err).Msg("failed to release agent tasks from queue")
+	}
+
+	// Update pipeline database — mark workflows as killed so
+	// GetActivePipelineDetails doesn't see them as running (#3)
+	for _, workflowIDStr := range orphaned {
+		workflowID, err := strconv.ParseInt(workflowIDStr, 10, 64)
+		if err != nil {
+			continue
+		}
+		workflow, err := s.store.WorkflowLoad(workflowID)
+		if err != nil {
+			log.Error().Err(err).Int64("workflow_id", workflowID).
+				Msg("failed to load orphaned workflow")
+			continue
+		}
+		now := time.Now().Unix()
+		if _, err := pipeline.UpdateWorkflowStatusToDone(s.store, *workflow, rpc.WorkflowState{
+			Finished: now,
+			Error:    "agent disconnected",
+		}); err != nil {
+			log.Error().Err(err).Int64("workflow_id", workflowID).
+				Msg("failed to mark orphaned workflow as done")
+		}
 	}
 }
 
