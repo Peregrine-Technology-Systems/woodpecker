@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Fix: WS agent reconnect backoff — linear delay (5s, 10s, 15s... up to 60s) when connections drop immediately. Prevents tight reconnect loops during server startup (woodpecker-server#3)
 - Fix: immediate task release on WebSocket agent disconnect — cleanup() calls ReleaseAgentTasks() to free running tasks in milliseconds instead of waiting 15min TaskTimeout. Prevents orphaned VMs from running idle (woodpecker-server#3)
 - Fix: cancel pipeline also calls queue.Done() for running workflows — prevents ghost tasks when agent is dead and can't call rpc.Done() (ci-infrastructure#891)
 - Fix: startup reconciliation kills orphaned "running" pipelines

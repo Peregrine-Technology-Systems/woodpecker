@@ -58,8 +58,10 @@ type WSClient struct {
 	logs chan *rpc.LogEntry
 
 	// Connection lifecycle
-	connCtx    context.Context
-	connCancel context.CancelFunc
+	connCtx            context.Context
+	connCancel         context.CancelFunc
+	lastConnectedAt    time.Time // when the last connection was established
+	shortLivedFailures int       // consecutive connections that dropped immediately
 }
 
 // NewWSClient creates a WebSocket-based rpc.Peer.
@@ -97,6 +99,7 @@ func (c *WSClient) connect(ctx context.Context) error {
 
 	c.conn = conn
 	c.connCtx, c.connCancel = context.WithCancel(ctx)
+	c.lastConnectedAt = time.Now()
 
 	// Start read pump
 	go c.readPump()
@@ -108,10 +111,37 @@ func (c *WSClient) connect(ctx context.Context) error {
 func (c *WSClient) ensureConnected(ctx context.Context) error {
 	c.mu.Lock()
 	connected := c.conn != nil
+	lastConnected := c.lastConnectedAt
 	c.mu.Unlock()
 
 	if connected {
 		return nil
+	}
+
+	// #3: If the last connection was very short-lived, the server isn't ready.
+	// Apply linear backoff (5s, 10s, 15s... up to 60s) to avoid tight reconnect loops.
+	if !lastConnected.IsZero() && time.Since(lastConnected) < wsReconnectMin {
+		c.mu.Lock()
+		c.shortLivedFailures++
+		failures := c.shortLivedFailures
+		c.mu.Unlock()
+
+		delay := time.Duration(failures) * wsReconnectMin
+		if delay > wsReconnectMax {
+			delay = wsReconnectMax
+		}
+		log.Warn().Int("failures", failures).Dur("delay", delay).
+			Msg("ws-client: short-lived connection, backing off")
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(delay):
+		}
+	} else if !lastConnected.IsZero() {
+		// Connection lasted long enough — reset failure counter
+		c.mu.Lock()
+		c.shortLivedFailures = 0
+		c.mu.Unlock()
 	}
 
 	b := backoff.NewExponentialBackOff()
