@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Fix: pts-build pipeline uses on-demand tier — Docker builds take 10-20min, spot VMs preempted every time (woodpecker-server#4)
 - Fix: ReleaseAgentTasks completes full pipeline lifecycle on agent disconnect — kills pending steps, finalizes parent pipeline, pushes status to GitHub. Previously only updated workflow, leaving pipeline as ghost and PR checks stuck at null (woodpecker-server#4)
 - Fix: ReleaseAgentTasks also updates pipeline database — queue was released but pipelines stayed `running` in DB, causing ghost pipelines visible to scaler (woodpecker-server#3)
 - Fix: WS agent reconnect backoff — linear delay (5s, 10s, 15s... up to 60s) when connections drop immediately. Prevents tight reconnect loops during server startup (woodpecker-server#3)

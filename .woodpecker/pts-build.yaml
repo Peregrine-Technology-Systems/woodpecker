@@ -5,6 +5,7 @@ when:
 labels:
   platform: linux
   backend: local
+  tier: ondemand
 
 steps:
   - name: build-and-push
