@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Fix: immediate task release on WebSocket agent disconnect — cleanup() calls ReleaseAgentTasks() to free running tasks in milliseconds instead of waiting 15min TaskTimeout. Prevents orphaned VMs from running idle (woodpecker-server#3)
 - Fix: cancel pipeline also calls queue.Done() for running workflows — prevents ghost tasks when agent is dead and can't call rpc.Done() (ci-infrastructure#891)
 - Fix: startup reconciliation kills orphaned "running" pipelines
 - Fix: pts-build.sh uses deploy SSH key from Woodpecker secrets — previously used agent default SSH which didn't have d3ci42 access (ci-infrastructure#877)

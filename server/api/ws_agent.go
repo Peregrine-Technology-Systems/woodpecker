@@ -114,9 +114,16 @@ type wsAgentState struct {
 
 func (s *wsAgentState) cleanup() {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	for _, cancel := range s.cancelWaiters {
 		cancel()
+	}
+	agentID := s.agentID
+	rpcPeer := s.rpc
+	s.mu.Unlock()
+
+	// #3: Release running tasks immediately — don't wait 15min TaskTimeout
+	if agentID > 0 && rpcPeer != nil {
+		rpcPeer.ReleaseAgentTasks(context.Background(), agentID)
 	}
 }
 

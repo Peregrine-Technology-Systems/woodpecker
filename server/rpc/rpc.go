@@ -152,6 +152,27 @@ func (s *RPC) Extend(c context.Context, workflowID string) error {
 	return s.queue.Extend(c, agent.ID, workflowID)
 }
 
+// ReleaseAgentTasks releases all running tasks assigned to a dead agent (#3).
+// Called when a WebSocket connection drops — releases tasks immediately
+// instead of waiting for TaskTimeout (15 minutes).
+func (s *RPC) ReleaseAgentTasks(c context.Context, agentID int64) {
+	info := s.queue.Info(c)
+	var orphaned []string
+	for _, task := range info.Running {
+		if task.AgentID == agentID {
+			orphaned = append(orphaned, task.ID)
+		}
+	}
+	if len(orphaned) == 0 {
+		return
+	}
+	log.Warn().Int64("agent_id", agentID).Int("tasks", len(orphaned)).
+		Msg("releasing tasks from dead agent")
+	if err := s.queue.ErrorAtOnce(c, orphaned, queue.ErrCancel); err != nil {
+		log.Error().Err(err).Msg("failed to release agent tasks")
+	}
+}
+
 // Update let agent updates the step state at the server.
 func (s *RPC) Update(c context.Context, strWorkflowID string, state rpc.StepState) error {
 	workflowID, err := strconv.ParseInt(strWorkflowID, 10, 64)
