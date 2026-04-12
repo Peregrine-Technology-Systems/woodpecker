@@ -87,10 +87,15 @@ func WSAgent(c *gin.Context) {
 	})
 	go state.pingLoop(connCtx)
 
-	// Send version on connect
-	state.send(MsgVersion, "", VersionPayload{
-		ServerVersion: version.String(),
-	})
+	// Send version after a short delay — immediate send after upgrade
+	// races with Caddy's reverse proxy bidirectional copy setup. Caddy
+	// sees unexpected data before its copy loop is ready and RSTs. (#5)
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		state.send(MsgVersion, "", VersionPayload{
+			ServerVersion: version.String(),
+		})
+	}()
 
 	// Read loop
 	for {

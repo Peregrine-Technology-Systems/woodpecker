@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Fix: delay MsgVersion send after WebSocket upgrade — immediate send races with Caddy reverse proxy setup, causing RST and agent disconnect loop. tcpdump confirmed Caddy sends RST when server data arrives before bidirectional copy is ready (woodpecker-server#5)
 - Fix: WebSocket ping/pong keepalive — server pings agents every 30s, expects pong within 60s. Prevents Caddy/GCP firewall/NAT from dropping idle connections. 323 agent disconnects in 10 hours without this (woodpecker-server#5)
 - Fix: pts-build pipeline uses on-demand tier — Docker builds take 10-20min, spot VMs preempted every time (woodpecker-server#4)
 - Fix: ReleaseAgentTasks completes full pipeline lifecycle on agent disconnect — kills pending steps, finalizes parent pipeline, pushes status to GitHub. Previously only updated workflow, leaving pipeline as ghost and PR checks stuck at null (woodpecker-server#4)
