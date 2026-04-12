@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Fix: WS client write mutex — concurrent goroutines (ReportHealth, Init, Done) writing to the same WebSocket connection caused gorilla/websocket panic. Agent crashed with exit code 2, restarted, reconnected, crashed again — the 3-second disconnect loop (woodpecker-server#5)
 - Fix: delay MsgVersion send after WebSocket upgrade — immediate send races with Caddy reverse proxy setup, causing RST and agent disconnect loop. tcpdump confirmed Caddy sends RST when server data arrives before bidirectional copy is ready (woodpecker-server#5)
 - Fix: WebSocket ping/pong keepalive — server pings agents every 30s, expects pong within 60s. Prevents Caddy/GCP firewall/NAT from dropping idle connections. 323 agent disconnects in 10 hours without this (woodpecker-server#5)
 - Fix: pts-build pipeline uses on-demand tier — Docker builds take 10-20min, spot VMs preempted every time (woodpecker-server#4)

@@ -43,6 +43,7 @@ type WSClient struct {
 	secure    bool
 
 	mu      sync.Mutex
+	writeMu sync.Mutex // protects WebSocket writes — gorilla/websocket panics on concurrent writes
 	conn    *websocket.Conn
 	agentID int64
 	refSeq  atomic.Int64
@@ -259,8 +260,11 @@ func (c *WSClient) send(msgType string, payload interface{}) (string, error) {
 		return ref, fmt.Errorf("not connected")
 	}
 
+	c.writeMu.Lock()
 	conn.SetWriteDeadline(time.Now().Add(wsWriteTimeout))
-	return ref, conn.WriteMessage(websocket.TextMessage, data)
+	err = conn.WriteMessage(websocket.TextMessage, data)
+	c.writeMu.Unlock()
+	return ref, err
 }
 
 // sendAndWait sends a message and waits for the ack.
