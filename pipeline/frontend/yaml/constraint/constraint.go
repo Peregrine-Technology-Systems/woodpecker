@@ -100,8 +100,6 @@ func (when *When) IncludesStatusSuccess(metadata metadata.Metadata, global bool,
 		return true
 	}
 	for _, c := range when.Constraints {
-		matches, err := c.Match(metadata, global, env)
-		fmt.Println("mat", matches, err, c.Status)
 		if matches, err := c.Match(metadata, global, env); err == nil && matches {
 			if len(c.Status) > 0 && !slices.Contains(c.Status, statusSuccess) {
 				return false

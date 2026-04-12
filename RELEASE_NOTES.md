@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Fix: workflow state stuck "pending" when steps skipped — steps with `when: status: [failure]` that were never dispatched stayed StatusPending, causing WorkflowStatus to return "pending" instead of "success". Broke `depends_on` chains — dependent workflows were skipped. Also removed stray `fmt.Println("mat"...)` debug output and fixed log stream Close() error on never-opened streams (woodpecker-server#6)
 - Fix: WS client write mutex — concurrent goroutines (ReportHealth, Init, Done) writing to the same WebSocket connection caused gorilla/websocket panic. Agent crashed with exit code 2, restarted, reconnected, crashed again — the 3-second disconnect loop (woodpecker-server#5)
 - Fix: delay MsgVersion send after WebSocket upgrade — immediate send races with Caddy reverse proxy setup, causing RST and agent disconnect loop. tcpdump confirmed Caddy sends RST when server data arrives before bidirectional copy is ready (woodpecker-server#5)
 - Fix: WebSocket ping/pong keepalive — server pings agents every 30s, expects pong within 60s. Prevents Caddy/GCP firewall/NAT from dropping idle connections. 323 agent disconnects in 10 hours without this (woodpecker-server#5)

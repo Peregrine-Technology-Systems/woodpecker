@@ -141,7 +141,8 @@ func (l *log) Close(_ context.Context, stepID int64) error {
 	s, ok := l.streams[stepID]
 	l.Unlock()
 	if !ok {
-		return ErrNotFound
+		// Stream was never opened (step skipped or failed before producing output)
+		return nil
 	}
 
 	s.Lock()

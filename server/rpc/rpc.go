@@ -457,6 +457,15 @@ func (s *RPC) Done(c context.Context, strWorkflowID string, state rpc.WorkflowSt
 	logger.Debug().Msgf("workflow state in store: %#v", workflow)
 	logger.Debug().Msgf("gRPC Done with state: %#v", state)
 
+	// Mark pending/running children as skipped before computing workflow status,
+	// so steps with when:status:[failure] that were never dispatched don't keep
+	// the workflow stuck in "pending" state.
+	s.completeChildrenIfParentCompleted(workflow)
+	workflow.Children, err = s.store.StepListFromWorkflowFind(workflow)
+	if err != nil {
+		return err
+	}
+
 	if workflow, err = pipeline.UpdateWorkflowStatusToDone(s.store, *workflow, state); err != nil {
 		logger.Error().Err(err).Msgf("pipeline.UpdateWorkflowStatusToDone: cannot update workflow state: %s", err)
 	}
@@ -483,7 +492,6 @@ func (s *RPC) Done(c context.Context, strWorkflowID string, state rpc.WorkflowSt
 	if err != nil {
 		return err
 	}
-	s.completeChildrenIfParentCompleted(workflow)
 
 	if !model.IsThereRunningStage(currentPipeline.Workflows) {
 		if currentPipeline, err = pipeline.UpdateStatusToDone(s.store, *currentPipeline, pipeline.PipelineStatus(currentPipeline.Workflows), workflow.Finished); err != nil {
@@ -676,7 +684,7 @@ func (s *RPC) checkAgentPermissionByWorkflow(_ context.Context, agent *model.Age
 
 func (s *RPC) completeChildrenIfParentCompleted(completedWorkflow *model.Workflow) {
 	for _, c := range completedWorkflow.Children {
-		if c.Running() {
+		if c.Running() || c.State == model.StatusPending {
 			if _, err := pipeline.UpdateStepToStatusSkipped(s.store, *c, completedWorkflow.Finished, model.StatusSkipped); err != nil {
 				log.Error().Err(err).Msgf("done: cannot update step_id %d child state", c.ID)
 			}
