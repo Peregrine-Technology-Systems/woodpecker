@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Fix: WebSocket ping/pong keepalive — server pings agents every 30s, expects pong within 60s. Prevents Caddy/GCP firewall/NAT from dropping idle connections. 323 agent disconnects in 10 hours without this (woodpecker-server#5)
 - Fix: pts-build pipeline uses on-demand tier — Docker builds take 10-20min, spot VMs preempted every time (woodpecker-server#4)
 - Fix: ReleaseAgentTasks completes full pipeline lifecycle on agent disconnect — kills pending steps, finalizes parent pipeline, pushes status to GitHub. Previously only updated workflow, leaving pipeline as ghost and PR checks stuck at null (woodpecker-server#4)
 - Fix: ReleaseAgentTasks also updates pipeline database — queue was released but pipelines stayed `running` in DB, causing ghost pipelines visible to scaler (woodpecker-server#3)
