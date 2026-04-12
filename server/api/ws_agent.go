@@ -22,6 +22,12 @@ import (
 	"go.woodpecker-ci.org/woodpecker/v3/version"
 )
 
+const (
+	wsPingInterval = 30 * time.Second // server sends ping every 30s
+	wsPongWait     = 60 * time.Second // client must respond within 60s
+	wsWriteWait    = 10 * time.Second // write deadline for control frames
+)
+
 var agentUpgrader = websocket.Upgrader{
 	CheckOrigin: func(_ *http.Request) bool { return true },
 }
@@ -72,6 +78,15 @@ func WSAgent(c *gin.Context) {
 		cancelWaiters: make(map[string]context.CancelFunc),
 	}
 
+	// WebSocket keepalive — ping/pong prevents intermediate network
+	// hops (Caddy, GCP firewall, NAT) from dropping idle connections (#5)
+	conn.SetReadDeadline(time.Now().Add(wsPongWait))
+	conn.SetPongHandler(func(string) error {
+		conn.SetReadDeadline(time.Now().Add(wsPongWait))
+		return nil
+	})
+	go state.pingLoop(connCtx)
+
 	// Send version on connect
 	state.send(MsgVersion, "", VersionPayload{
 		ServerVersion: version.String(),
@@ -110,6 +125,26 @@ type wsAgentState struct {
 	store         store.Store
 	agentID       int64
 	cancelWaiters map[string]context.CancelFunc // workflowID → cancel func for Wait goroutines
+}
+
+// pingLoop sends WebSocket ping frames at regular intervals.
+// Stops when the connection context is canceled.
+func (s *wsAgentState) pingLoop(ctx context.Context) {
+	ticker := time.NewTicker(wsPingInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			s.writeMu.Lock()
+			err := s.conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(wsWriteWait))
+			s.writeMu.Unlock()
+			if err != nil {
+				return
+			}
+		}
+	}
 }
 
 func (s *wsAgentState) cleanup() {
