@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- Fix: pts-build deploy kills own pipeline — server restart drops agent WebSocket mid-step. Detach restart with 2s delay so build step exits cleanly, added health-check step that polls /healthz until server is back (woodpecker-server#6)
+- Fix: pts-build deploy kills own pipeline — server restart drops agent WebSocket. Run restart + health check on d3ci42 via SSH (survives server restart), not as a separate agent step (woodpecker-server#6)
 - Fix: workflow state stuck "pending" when steps skipped — steps with `when: status: [failure]` that were never dispatched stayed StatusPending, causing WorkflowStatus to return "pending" instead of "success". Broke `depends_on` chains — dependent workflows were skipped. Also removed stray `fmt.Println("mat"...)` debug output and fixed log stream Close() error on never-opened streams (woodpecker-server#6)
 - Fix: WS client write mutex — concurrent goroutines (ReportHealth, Init, Done) writing to the same WebSocket connection caused gorilla/websocket panic. Agent crashed with exit code 2, restarted, reconnected, crashed again — the 3-second disconnect loop (woodpecker-server#5)
 - Fix: delay MsgVersion send after WebSocket upgrade — immediate send races with Caddy reverse proxy setup, causing RST and agent disconnect loop. tcpdump confirmed Caddy sends RST when server data arrives before bidirectional copy is ready (woodpecker-server#5)

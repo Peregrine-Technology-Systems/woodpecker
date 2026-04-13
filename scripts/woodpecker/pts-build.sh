@@ -38,10 +38,17 @@ docker save "${IMAGE}:${VERSION}" | ssh $SSH_OPTS "root@${SERVER_HOST}" "docker 
 ssh $SSH_OPTS "root@${SERVER_HOST}" "
   cd /opt/woodpecker
   sed -i 's|woodpecker-server:v3.13.0-pts\.[0-9]*|woodpecker-server:${VERSION}|' docker-compose.yml
-  # Detach the restart — the server coming back up kills the agent's WebSocket
-  # connection to us, so we must exit before the restart completes.
-  nohup sh -c 'sleep 2 && docker compose up -d --force-recreate woodpecker-server' > /tmp/wp-restart.log 2>&1 &
-  echo 'Server restart scheduled (2s delay)'
+  docker compose up -d --force-recreate woodpecker-server
+  echo 'Server restarted, waiting for health...'
+  for i in \$(seq 1 30); do
+    if curl -sf http://localhost:8000/healthz > /dev/null 2>&1; then
+      echo \"Server healthy: ${VERSION}\"
+      exit 0
+    fi
+    sleep 5
+  done
+  echo 'ERROR: Server not healthy after 150s'
+  exit 1
 "
 
-echo "==> Image deployed, server restarting: ${VERSION} on d3ci42"
+echo "==> Deploy complete: ${VERSION} on d3ci42"
