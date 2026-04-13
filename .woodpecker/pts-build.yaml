@@ -16,6 +16,23 @@ steps:
     commands:
       - scripts/woodpecker/pts-build.sh
 
+  - name: health-check
+    image: bash
+    commands:
+      - |
+        echo "==> Waiting for server to restart..."
+        for i in $(seq 1 30); do
+          VERSION=$(curl -sf https://d3ci42.peregrinetechsys.net/healthz 2>/dev/null | jq -r '.version // empty' 2>/dev/null) || true
+          if [ -n "$VERSION" ]; then
+            echo "==> Server healthy: $VERSION"
+            exit 0
+          fi
+          sleep 5
+        done
+        echo "==> ERROR: Server not healthy after 150s"
+        exit 1
+    depends_on: [build-and-push]
+
   - name: notify-status
     image: bash
     environment:
@@ -25,4 +42,4 @@ steps:
       - scripts/woodpecker/pts-notify.sh
     when:
       - status: [success, failure]
-    depends_on: [build-and-push]
+    depends_on: [health-check]
