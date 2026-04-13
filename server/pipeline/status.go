@@ -27,8 +27,9 @@ var statusPriorityOrder = []model.StatusValue{
 	// errors have highest priority.
 	model.StatusError,
 
-	// skipped and killed cannot appear together with running/pending.
+	// skipped and killed/superseded cannot appear together with running/pending.
 	model.StatusKilled,
+	model.StatusSuperseded,
 	model.StatusCanceled,
 
 	// running states
@@ -63,6 +64,13 @@ func MergeStatusValues(s, t model.StatusValue) model.StatusValue {
 		s = model.StatusKilled
 	}
 	if t == model.StatusCanceled {
+		t = model.StatusKilled
+	}
+	// superseded behaves like killed for merge purposes
+	if s == model.StatusSuperseded {
+		s = model.StatusKilled
+	}
+	if t == model.StatusSuperseded {
 		t = model.StatusKilled
 	}
 	return statusPriorityOrder[min(priorityMap[s], priorityMap[t])]

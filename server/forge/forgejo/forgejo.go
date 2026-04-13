@@ -624,7 +624,7 @@ func getStatus(status model.StatusValue) forgejo.StatusState {
 		return forgejo.StatusSuccess
 	case model.StatusFailure:
 		return forgejo.StatusFailure
-	case model.StatusKilled:
+	case model.StatusKilled, model.StatusSuperseded:
 		return forgejo.StatusFailure
 	case model.StatusDeclined:
 		return forgejo.StatusWarning

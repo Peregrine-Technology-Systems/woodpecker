@@ -67,6 +67,8 @@ func GetPipelineStatusDescription(status model.StatusValue) string {
 		return "Pipeline failed"
 	case model.StatusKilled:
 		return "Pipeline was canceled"
+	case model.StatusSuperseded:
+		return "Pipeline was superseded by a newer push"
 	case model.StatusBlocked:
 		return "Pipeline is pending approval"
 	case model.StatusDeclined:

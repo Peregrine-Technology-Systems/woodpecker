@@ -55,24 +55,25 @@ func (s WebhookEvent) Validate() error {
 type StatusValue string //	@name	StatusValue
 
 const (
-	StatusSkipped  StatusValue = "skipped"  // skipped as per condition of current workflow failed/success state
-	StatusPending  StatusValue = "pending"  // pending to be executed
-	StatusRunning  StatusValue = "running"  // currently running
-	StatusSuccess  StatusValue = "success"  // successfully finished
-	StatusFailure  StatusValue = "failure"  // failed to finish (exit code != 0)
-	StatusKilled   StatusValue = "killed"   // killed by user
-	StatusCanceled StatusValue = "canceled" // canceled but hasn't been started
-	StatusError    StatusValue = "error"    // error with the config / while parsing / some other system problem
-	StatusBlocked  StatusValue = "blocked"  // waiting for approval
-	StatusDeclined StatusValue = "declined" // blocked and declined
-	StatusCreated  StatusValue = "created"  // created / internal use only
+	StatusSkipped    StatusValue = "skipped"    // skipped as per condition of current workflow failed/success state
+	StatusPending    StatusValue = "pending"    // pending to be executed
+	StatusRunning    StatusValue = "running"    // currently running
+	StatusSuccess    StatusValue = "success"    // successfully finished
+	StatusFailure    StatusValue = "failure"    // failed to finish (exit code != 0)
+	StatusKilled     StatusValue = "killed"     // killed by user
+	StatusSuperseded StatusValue = "superseded" // canceled because a newer push arrived on the same branch (woodpecker-server#7)
+	StatusCanceled   StatusValue = "canceled"   // canceled but hasn't been started
+	StatusError      StatusValue = "error"      // error with the config / while parsing / some other system problem
+	StatusBlocked    StatusValue = "blocked"    // waiting for approval
+	StatusDeclined   StatusValue = "declined"   // blocked and declined
+	StatusCreated    StatusValue = "created"    // created / internal use only
 )
 
 var ErrInvalidStatusValue = errors.New("invalid status value")
 
 func (s StatusValue) Validate() error {
 	switch s {
-	case StatusSkipped, StatusPending, StatusRunning, StatusSuccess, StatusFailure, StatusKilled, StatusCanceled, StatusError, StatusBlocked, StatusDeclined, StatusCreated:
+	case StatusSkipped, StatusPending, StatusRunning, StatusSuccess, StatusFailure, StatusKilled, StatusSuperseded, StatusCanceled, StatusError, StatusBlocked, StatusDeclined, StatusCreated:
 		return nil
 	default:
 		return fmt.Errorf("%w: %s", ErrInvalidStatusValue, s)

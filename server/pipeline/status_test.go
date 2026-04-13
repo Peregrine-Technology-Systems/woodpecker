@@ -83,6 +83,22 @@ func TestStatusValueMerge(t *testing.T) {
 			t: model.StatusCanceled,
 			e: model.StatusKilled,
 		},
+		// superseded merges like killed (woodpecker-server#7)
+		{
+			s: model.StatusSuccess,
+			t: model.StatusSuperseded,
+			e: model.StatusKilled,
+		},
+		{
+			s: model.StatusFailure,
+			t: model.StatusSuperseded,
+			e: model.StatusKilled,
+		},
+		{
+			s: model.StatusSkipped,
+			t: model.StatusSuperseded,
+			e: model.StatusKilled,
+		},
 	}
 	for _, tt := range tests {
 		assert.Equal(t, tt.e, MergeStatusValues(tt.s, tt.t))

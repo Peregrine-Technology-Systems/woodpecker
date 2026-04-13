@@ -249,8 +249,8 @@ func TestCancel_PreserveIndependent_NoRunningIndependent(t *testing.T) {
 		return s.ID == 210 && s.State == model.StatusCanceled
 	})).Return(nil)
 
-	// No independent workflows still running -> pipeline killed.
-	// hasPendingOnly=true (promote is only pending), so status=canceled not killed.
+	// No independent workflows still running -> pipeline superseded (woodpecker-server#7).
+	// hasPendingOnly=true (promote is only pending), so status=canceled not superseded.
 	mockStore.On("UpdatePipeline", mock.MatchedBy(func(p *model.Pipeline) bool {
 		return p.ID == 2 && p.Status == model.StatusCanceled
 	})).Return(nil)
@@ -305,9 +305,9 @@ func TestCancel_NoPreserve(t *testing.T) {
 	mockQueue.On("Done", mock.Anything, "30", model.StatusKilled).Return(nil)
 	mockQueue.On("Done", mock.Anything, "31", model.StatusKilled).Return(nil)
 
-	// Pipeline killed (not pending-only since both are running)
+	// Pipeline superseded (not pending-only since both are running, SupersededBy > 0)
 	mockStore.On("UpdatePipeline", mock.MatchedBy(func(p *model.Pipeline) bool {
-		return p.ID == 3 && p.Status == model.StatusKilled
+		return p.ID == 3 && p.Status == model.StatusSuperseded
 	})).Return(nil)
 
 	// Second WorkflowGetTree after kill
