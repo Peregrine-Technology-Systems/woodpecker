@@ -31,14 +31,15 @@ const (
 )
 
 const (
-	descPending  = "this pipeline is pending"
-	descSuccess  = "the pipeline was successful"
-	descFailure  = "the pipeline failed"
-	descBlocked  = "the pipeline requires approval"
-	descDeclined = "the pipeline was rejected"
-	descCanceled = "the pipeline was canceled"
-	descSkipped  = "the pipeline was skipped"
-	descError    = "oops, something went wrong"
+	descPending    = "this pipeline is pending"
+	descSuccess    = "the pipeline was successful"
+	descFailure    = "the pipeline failed"
+	descBlocked    = "the pipeline requires approval"
+	descDeclined   = "the pipeline was rejected"
+	descCanceled   = "the pipeline was canceled"
+	descSuperseded = "the pipeline was superseded by a newer push"
+	descSkipped    = "the pipeline was skipped"
+	descError      = "oops, something went wrong"
 )
 
 const (
@@ -53,7 +54,7 @@ func convertStatus(status model.StatusValue) string {
 	switch status {
 	case model.StatusPending, model.StatusRunning, model.StatusBlocked:
 		return statusPending
-	case model.StatusFailure, model.StatusDeclined, model.StatusSkipped, model.StatusCanceled:
+	case model.StatusFailure, model.StatusDeclined, model.StatusSkipped, model.StatusCanceled, model.StatusSuperseded:
 		return statusFailure
 	case model.StatusSuccess:
 		return statusSuccess
@@ -78,6 +79,8 @@ func convertDesc(status model.StatusValue) string {
 		return descDeclined
 	case model.StatusCanceled:
 		return descCanceled
+	case model.StatusSuperseded:
+		return descSuperseded
 	case model.StatusSkipped:
 		return descSkipped
 	default:

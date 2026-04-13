@@ -116,7 +116,13 @@ func Cancel(ctx context.Context, _forge forge.Forge, _store store.Store, repo *m
 		return nil
 	}
 
+	// Use superseded status when canceled by a newer push, killed otherwise (woodpecker-server#7)
 	plState := model.StatusKilled
+	eventType := plugin.EventPipelineKilled
+	if cancelInfo != nil && cancelInfo.SupersededBy > 0 {
+		plState = model.StatusSuperseded
+		eventType = plugin.EventPipelineSuperseded
+	}
 	if hasPendingOnly {
 		plState = model.StatusCanceled
 	}
@@ -126,7 +132,7 @@ func Cancel(ctx context.Context, _forge forge.Forge, _store store.Store, repo *m
 		return err
 	}
 
-	EmitEvent(plugin.EventPipelineKilled, repo, killedPipeline, "")
+	EmitEvent(eventType, repo, killedPipeline, "")
 	updatePipelineStatus(ctx, _forge, killedPipeline, repo, user)
 
 	if killedPipeline.Workflows, err = _store.WorkflowGetTree(killedPipeline); err != nil {

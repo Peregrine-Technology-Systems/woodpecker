@@ -31,7 +31,7 @@ func getStatus(status model.StatusValue) gitlab.BuildStateValue {
 		return gitlab.Success
 	case model.StatusFailure, model.StatusError:
 		return gitlab.Failed
-	case model.StatusKilled:
+	case model.StatusKilled, model.StatusSuperseded:
 		return gitlab.Canceled
 	default:
 		return gitlab.Failed

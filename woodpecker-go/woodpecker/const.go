@@ -29,14 +29,15 @@ const (
 
 // Status values.
 const (
-	StatusBlocked = "blocked"
-	StatusSkipped = "skipped"
-	StatusPending = "pending"
-	StatusRunning = "running"
-	StatusSuccess = "success"
-	StatusFailure = "failure"
-	StatusKilled  = "killed"
-	StatusError   = "error"
+	StatusBlocked    = "blocked"
+	StatusSkipped    = "skipped"
+	StatusPending    = "pending"
+	StatusRunning    = "running"
+	StatusSuccess    = "success"
+	StatusFailure    = "failure"
+	StatusKilled     = "killed"
+	StatusSuperseded = "superseded"
+	StatusError      = "error"
 )
 
 // LogEntryType identifies the type of line in the logs.

@@ -64,7 +64,7 @@ func New(r *model.Repo, b *model.Pipeline, url string) *CCProjects {
 	// ensure the last pipeline status accepts a valid
 	// ccmenu enumeration
 	switch b.Status {
-	case model.StatusError, model.StatusKilled:
+	case model.StatusError, model.StatusKilled, model.StatusSuperseded:
 		proj.LastBuildStatus = "Exception"
 	case model.StatusSuccess:
 		proj.LastBuildStatus = "Success"

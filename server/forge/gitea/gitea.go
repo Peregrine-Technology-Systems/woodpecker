@@ -631,7 +631,7 @@ func getStatus(status model.StatusValue) gitea.StatusState {
 		return gitea.StatusSuccess
 	case model.StatusFailure:
 		return gitea.StatusFailure
-	case model.StatusKilled:
+	case model.StatusKilled, model.StatusSuperseded:
 		return gitea.StatusFailure
 	case model.StatusDeclined:
 		return gitea.StatusWarning

@@ -105,6 +105,7 @@ func TestEventTypeMapping(t *testing.T) {
 		{plugin.EventPipelineCompleted, "pipeline.success"},
 		{plugin.EventPipelineFailed, "pipeline.failed"},
 		{plugin.EventPipelineKilled, "pipeline.killed"},
+		{plugin.EventPipelineSuperseded, "pipeline.superseded"},
 		{plugin.EventStepCompleted, "step.completed"},
 	}
 	for _, tt := range tests {
@@ -123,6 +124,7 @@ func TestSeverityMapping(t *testing.T) {
 	}{
 		{"pipeline.failed", "critical"},
 		{"pipeline.killed", "warning"},
+		{"pipeline.superseded", "info"},
 		{"pipeline.success", "info"},
 		{"pipeline.created", "info"},
 	}
@@ -209,6 +211,7 @@ func TestAllEventTypesPublish(t *testing.T) {
 		plugin.EventPipelineCompleted,
 		plugin.EventPipelineFailed,
 		plugin.EventPipelineKilled,
+		plugin.EventPipelineSuperseded,
 		plugin.EventStepCompleted,
 	}
 	for _, et := range types {

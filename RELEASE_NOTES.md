@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Feat: `superseded` pipeline status distinct from `killed` — pipelines canceled by a newer push on the same branch now show `superseded` instead of `killed`. Separates expected behavior (rapid merges) from real problems (agent death, timeout). Includes Pub/Sub event, all forge status mappings, badges, and Go client (woodpecker-server#7)
 - Fix: pts-build no longer restarts server — pipeline stages image and updates docker-compose.yml only. Server restart is a separate manual step, because the pipeline cannot survive restarting its own server (woodpecker-server#6)
 - Fix: workflow state stuck "pending" when steps skipped — steps with `when: status: [failure]` that were never dispatched stayed StatusPending, causing WorkflowStatus to return "pending" instead of "success". Broke `depends_on` chains — dependent workflows were skipped. Also removed stray `fmt.Println("mat"...)` debug output and fixed log stream Close() error on never-opened streams (woodpecker-server#6)
 - Fix: WS client write mutex — concurrent goroutines (ReportHealth, Init, Done) writing to the same WebSocket connection caused gorilla/websocket panic. Agent crashed with exit code 2, restarted, reconnected, crashed again — the 3-second disconnect loop (woodpecker-server#5)

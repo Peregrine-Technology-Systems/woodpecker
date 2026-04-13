@@ -27,14 +27,15 @@ import (
 type EventType string
 
 const (
-	EventPipelineCreated   EventType = "pipeline.created"
-	EventPipelinePending   EventType = "pipeline.pending"
-	EventPipelineStarted   EventType = "pipeline.started"
-	EventPipelineCompleted EventType = "pipeline.completed"
-	EventPipelineFailed    EventType = "pipeline.failed"
-	EventPipelineKilled    EventType = "pipeline.killed"
-	EventStepCompleted     EventType = "step.completed"
-	EventTaskAvailable     EventType = "task.available"
+	EventPipelineCreated    EventType = "pipeline.created"
+	EventPipelinePending    EventType = "pipeline.pending"
+	EventPipelineStarted    EventType = "pipeline.started"
+	EventPipelineCompleted  EventType = "pipeline.completed"
+	EventPipelineFailed     EventType = "pipeline.failed"
+	EventPipelineKilled     EventType = "pipeline.killed"
+	EventPipelineSuperseded EventType = "pipeline.superseded"
+	EventStepCompleted      EventType = "step.completed"
+	EventTaskAvailable      EventType = "task.available"
 )
 
 // PipelineEvent carries data about a pipeline lifecycle transition.

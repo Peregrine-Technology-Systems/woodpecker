@@ -41,7 +41,7 @@ func getBadgeStatusLabelAndColor(status *model.StatusValue) (string, Color) {
 		return badgeStatusFailure, ColorRed
 	case model.StatusPending, model.StatusRunning:
 		return badgeStatusStarted, ColorYellow
-	case model.StatusError, model.StatusKilled:
+	case model.StatusError, model.StatusKilled, model.StatusSuperseded:
 		return badgeStatusError, ColorGray
 	default:
 		return badgeStatusNone, ColorGray
