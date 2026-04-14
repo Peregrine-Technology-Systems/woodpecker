@@ -35,9 +35,10 @@ echo "==> Deploying to d3ci42 (${SERVER_HOST})..."
 # Deploy via docker save + SSH (agent has SA key, no AR auth on server)
 docker save "${IMAGE}:${VERSION}" | ssh $SSH_OPTS "root@${SERVER_HOST}" "docker load"
 
+# Use flock to prevent concurrent sed race with scaler deploy (#330)
 ssh $SSH_OPTS "root@${SERVER_HOST}" "
-  cd /opt/woodpecker
-  sed -i 's|woodpecker-server:v3.13.0-pts\.[0-9]*|woodpecker-server:${VERSION}|' docker-compose.yml
+  flock /opt/woodpecker/docker-compose.yml.lock \
+    sed -i 's|woodpecker-server:v3.13.0-pts\.[0-9]*|woodpecker-server:${VERSION}|' /opt/woodpecker/docker-compose.yml
 "
 
 echo "==> Image staged: ${VERSION} on d3ci42"
