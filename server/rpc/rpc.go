@@ -152,9 +152,9 @@ func (s *RPC) Extend(c context.Context, workflowID string) error {
 	return s.queue.Extend(c, agent.ID, workflowID)
 }
 
-// ReleaseAgentTasks releases all running tasks assigned to a dead agent (#3, #4).
-// Called when a WebSocket connection drops — releases tasks immediately
-// instead of waiting for TaskTimeout (15 minutes).
+// ReleaseAgentTasks releases all running tasks assigned to a disconnecting agent (#3, #4, #8).
+// Called on EVERY WebSocket disconnect (clean or unexpected) — releases tasks
+// immediately instead of waiting for TaskTimeout (15 minutes).
 // Updates the queue, workflow, steps, parent pipeline, and forge status (GitHub).
 func (s *RPC) ReleaseAgentTasks(c context.Context, agentID int64) {
 	info := s.queue.Info(c)
@@ -164,11 +164,21 @@ func (s *RPC) ReleaseAgentTasks(c context.Context, agentID int64) {
 			orphaned = append(orphaned, task.ID)
 		}
 	}
+
+	// #8: Log running tasks with mismatched or zero AgentID for debugging ghost tasks
+	if len(orphaned) == 0 && len(info.Running) > 0 {
+		for _, task := range info.Running {
+			log.Debug().Int64("agent_id", agentID).Int64("task_agent_id", task.AgentID).
+				Str("task_id", task.ID).Str("task_name", task.Name).
+				Msg("release: running task not matched — possible ghost")
+		}
+	}
+
 	if len(orphaned) == 0 {
 		return
 	}
 	log.Warn().Int64("agent_id", agentID).Int("tasks", len(orphaned)).
-		Msg("releasing tasks from dead agent")
+		Msg("releasing tasks from disconnecting agent")
 
 	// Release from queue
 	if err := s.queue.ErrorAtOnce(c, orphaned, queue.ErrCancel); err != nil {
