@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Packer puts Go at /usr/local/go/bin; /etc/profile.d/go.sh adds it to PATH for
+# login shells only. This script runs under non-login bash, so export directly.
+export PATH="/usr/local/go/bin:$PATH"
+
 echo "==> Running tests on Peregrine plugin packages..."
 
 # Our packages only — upstream packages are not our coverage responsibility
