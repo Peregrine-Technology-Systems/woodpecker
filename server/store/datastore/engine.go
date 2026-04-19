@@ -32,7 +32,11 @@ type storage struct {
 const perPage = 50
 
 func NewEngine(opts *store.Opts) (store.Store, error) {
-	engine, err := xorm.NewEngine(opts.Driver, opts.Config)
+	dsn := opts.Config
+	if opts.Driver == "sqlite3" {
+		dsn = applySqliteDefaults(dsn)
+	}
+	engine, err := xorm.NewEngine(opts.Driver, dsn)
 	if err != nil {
 		return nil, err
 	}

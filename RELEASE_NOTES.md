@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Fix: apply safe SQLite DSN defaults (`_busy_timeout=30000`, `_journal_mode=WAL`, `_synchronous=NORMAL`, `_txlock=immediate`) automatically when driver is sqlite3. Operator-supplied values win. Prevents `database is locked` 500s on `/api/hook` under concurrent webhook bursts (woodpecker-server#10)
 - Fix: ReleaseAgentTasks logs ghost running tasks with mismatched AgentID — diagnostic for orphaned queue entries after clean disconnect (woodpecker-server#8)
 - Fix: pts-build uses flock on docker-compose.yml to prevent concurrent sed race with scaler deploy (peregrine-ci-scaler#330)
 - Feat: `superseded` pipeline status distinct from `killed` — pipelines canceled by a newer push on the same branch now show `superseded` instead of `killed`. Separates expected behavior (rapid merges) from real problems (agent death, timeout). Includes Pub/Sub event, all forge status mappings, badges, and Go client (woodpecker-server#7)
