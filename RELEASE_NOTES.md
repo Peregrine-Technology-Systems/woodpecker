@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Feat: `partial` pipeline status distinct from `killed` — when one workflow in a pipeline succeeds while a sibling is killed/superseded/canceled, the aggregate status now reports `partial` instead of `killed`. Preserves the information that some work shipped. Concrete trigger: peregrine-ci-scaler#391 (deploy killed mid-build but version-bump succeeded → tag exists, sync-back PRs landed, but pipeline reported `killed`). `MergeStatusValues` extended; `failure` still dominates (failure + killed = killed unchanged); `partial + heavier` (running, failure, error) loses to the heavier state (woodpecker-server#28)
 - Fix: apply safe SQLite DSN defaults (`_busy_timeout=30000`, `_journal_mode=WAL`, `_synchronous=NORMAL`, `_txlock=immediate`) automatically when driver is sqlite3. Operator-supplied values win. Prevents `database is locked` 500s on `/api/hook` under concurrent webhook bursts (woodpecker-server#10)
 - Fix: pts-test.sh and pts-lint.sh export `/usr/local/go/bin` on PATH. Packer's `/etc/profile.d/go.sh` only runs for login shells; Woodpecker's non-login bash never sourced it, so every feature-branch CI run failed with `go: command not found` (woodpecker-server#11)
 - Fix: ReleaseAgentTasks logs ghost running tasks with mismatched AgentID — diagnostic for orphaned queue entries after clean disconnect (woodpecker-server#8)

@@ -59,6 +59,7 @@ const (
 	StatusPending    StatusValue = "pending"    // pending to be executed
 	StatusRunning    StatusValue = "running"    // currently running
 	StatusSuccess    StatusValue = "success"    // successfully finished
+	StatusPartial    StatusValue = "partial"    // some workflows succeeded, others killed/superseded/canceled (woodpecker-server#28)
 	StatusFailure    StatusValue = "failure"    // failed to finish (exit code != 0)
 	StatusKilled     StatusValue = "killed"     // killed by user
 	StatusSuperseded StatusValue = "superseded" // canceled because a newer push arrived on the same branch (woodpecker-server#7)
@@ -73,7 +74,7 @@ var ErrInvalidStatusValue = errors.New("invalid status value")
 
 func (s StatusValue) Validate() error {
 	switch s {
-	case StatusSkipped, StatusPending, StatusRunning, StatusSuccess, StatusFailure, StatusKilled, StatusSuperseded, StatusCanceled, StatusError, StatusBlocked, StatusDeclined, StatusCreated:
+	case StatusSkipped, StatusPending, StatusRunning, StatusSuccess, StatusPartial, StatusFailure, StatusKilled, StatusSuperseded, StatusCanceled, StatusError, StatusBlocked, StatusDeclined, StatusCreated:
 		return nil
 	default:
 		return fmt.Errorf("%w: %s", ErrInvalidStatusValue, s)
