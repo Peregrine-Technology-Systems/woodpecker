@@ -73,10 +73,11 @@ func TestStatusValueMerge(t *testing.T) {
 			t: model.StatusCanceled,
 			e: model.StatusKilled,
 		},
+		// success + canceled → partial (was killed, woodpecker-server#28)
 		{
 			s: model.StatusSuccess,
 			t: model.StatusCanceled,
-			e: model.StatusKilled,
+			e: model.StatusPartial,
 		},
 		{
 			s: model.StatusFailure,
@@ -84,10 +85,11 @@ func TestStatusValueMerge(t *testing.T) {
 			e: model.StatusKilled,
 		},
 		// superseded merges like killed (woodpecker-server#7)
+		// success + superseded → partial (was killed, woodpecker-server#28)
 		{
 			s: model.StatusSuccess,
 			t: model.StatusSuperseded,
-			e: model.StatusKilled,
+			e: model.StatusPartial,
 		},
 		{
 			s: model.StatusFailure,
@@ -98,6 +100,50 @@ func TestStatusValueMerge(t *testing.T) {
 			s: model.StatusSkipped,
 			t: model.StatusSuperseded,
 			e: model.StatusKilled,
+		},
+		// success + killed → partial (woodpecker-server#28).
+		// Preserves the information that one workflow shipped while another was interrupted.
+		{
+			s: model.StatusSuccess,
+			t: model.StatusKilled,
+			e: model.StatusPartial,
+		},
+		// partial absorbs further success or killed.
+		{
+			s: model.StatusPartial,
+			t: model.StatusSuccess,
+			e: model.StatusPartial,
+		},
+		{
+			s: model.StatusPartial,
+			t: model.StatusKilled,
+			e: model.StatusPartial,
+		},
+		{
+			s: model.StatusPartial,
+			t: model.StatusSuperseded,
+			e: model.StatusPartial,
+		},
+		{
+			s: model.StatusPartial,
+			t: model.StatusPartial,
+			e: model.StatusPartial,
+		},
+		// partial loses to heavier states.
+		{
+			s: model.StatusPartial,
+			t: model.StatusFailure,
+			e: model.StatusFailure,
+		},
+		{
+			s: model.StatusPartial,
+			t: model.StatusError,
+			e: model.StatusError,
+		},
+		{
+			s: model.StatusPartial,
+			t: model.StatusRunning,
+			e: model.StatusRunning,
 		},
 	}
 	for _, tt := range tests {

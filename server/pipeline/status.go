@@ -38,6 +38,7 @@ var statusPriorityOrder = []model.StatusValue{
 
 	// finished states
 	model.StatusFailure,
+	model.StatusPartial, // mixed success+killed; less severe than failure, more than pure success (woodpecker-server#28)
 	model.StatusSuccess,
 
 	// skipped due to status condition
@@ -73,5 +74,32 @@ func MergeStatusValues(s, t model.StatusValue) model.StatusValue {
 	if t == model.StatusSuperseded {
 		t = model.StatusKilled
 	}
+
+	// Partial: at least one workflow succeeded AND at least one was killed.
+	// Distinguishes "deploy succeeded but version-bump killed" from "everything killed".
+	// (woodpecker-server#28)
+	sSuccess, tSuccess := s == model.StatusSuccess, t == model.StatusSuccess
+	sKilled, tKilled := s == model.StatusKilled, t == model.StatusKilled
+	sPartial, tPartial := s == model.StatusPartial, t == model.StatusPartial
+	if (sSuccess && tKilled) || (tSuccess && sKilled) {
+		return model.StatusPartial
+	}
+	if sPartial && tPartial {
+		return model.StatusPartial
+	}
+	if sPartial || tPartial {
+		other := t
+		if tPartial {
+			other = s
+		}
+		// Partial absorbs further successes and further killed-likes.
+		if other == model.StatusSuccess || other == model.StatusKilled {
+			return model.StatusPartial
+		}
+		// Otherwise the non-partial side is heavier (running, pending, error, failure,
+		// blocked, declined, created) and wins.
+		return other
+	}
+
 	return statusPriorityOrder[min(priorityMap[s], priorityMap[t])]
 }
