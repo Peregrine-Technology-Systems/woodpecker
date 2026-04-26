@@ -72,7 +72,17 @@ func Restart(ctx context.Context, store store.Store, lastPipeline *model.Pipelin
 		return nil, errors.New(msg)
 	}
 
-	if len(configs) == 0 {
+	// #36: if the old pipeline has no linked configs (observed today on
+	// deployment-event pipelines that errored before steps ran — see
+	// peregrine-grafana #266 → restart #267), fall back to the fresh files
+	// just fetched from the forge. configService.Fetch already pulled them
+	// at lastPipeline.Commit when oldConfigData was empty. Persist them as
+	// new Config rows and link to the new pipeline so subsequent
+	// createPipelineItems has something to work with.
+	//
+	// Only error out if BOTH the database link AND the forge fetch returned
+	// nothing — that's the genuine "pipeline definition not found" case.
+	if len(configs) == 0 && len(pipelineFiles) == 0 {
 		newPipeline, uErr := UpdateToStatusError(store, *newPipeline, errors.New("pipeline definition not found"))
 		if uErr != nil {
 			log.Debug().Err(uErr).Msg("failure to update pipeline status")
@@ -81,6 +91,21 @@ func Restart(ctx context.Context, store store.Store, lastPipeline *model.Pipelin
 			updatePipelineStatus(ctx, forge, newPipeline, repo, user)
 		}
 		return newPipeline, nil
+	}
+	if len(configs) == 0 {
+		log.Info().
+			Str("repo", repo.FullName).
+			Int64("pipeline_id", lastPipeline.ID).
+			Str("event", string(lastPipeline.Event)).
+			Int("files", len(pipelineFiles)).
+			Msg("restart: no linked configs — persisting fresh files from forge (#36)")
+		recovered, recErr := recoverConfigsFromForge(store, repo.ID, pipelineFiles)
+		if recErr != nil {
+			msg := fmt.Sprintf("failure to recover config for %s: %s", repo.FullName, recErr)
+			log.Error().Err(recErr).Msg(msg)
+			return nil, errors.New(msg)
+		}
+		configs = recovered
 	}
 	if err := linkPipelineConfigs(store, configs, newPipeline.ID); err != nil {
 		msg := fmt.Sprintf("failure to persist pipeline config for %s.", repo.FullName)
@@ -123,6 +148,22 @@ func linkPipelineConfigs(store store.Store, configs []*model.Config, pipelineID 
 		}
 	}
 	return nil
+}
+
+// recoverConfigsFromForge persists freshly-fetched pipeline yaml files as
+// Config rows and returns them, so a restart whose database link is missing
+// can still proceed with content fetched directly from the forge. Idempotent
+// on content via ConfigPersist's hash-based dedup. (#36)
+func recoverConfigsFromForge(store store.Store, repoID int64, files []*forge_types.FileMeta) ([]*model.Config, error) {
+	out := make([]*model.Config, 0, len(files))
+	for _, f := range files {
+		persisted, err := store.ConfigPersist(&model.Config{RepoID: repoID, Data: f.Data, Name: f.Name})
+		if err != nil {
+			return nil, fmt.Errorf("persist recovered config %q: %w", f.Name, err)
+		}
+		out = append(out, persisted)
+	}
+	return out, nil
 }
 
 func createNewOutOfOld(old *model.Pipeline) *model.Pipeline {
