@@ -24,10 +24,19 @@ import (
 )
 
 // PipelineStatus determine pipeline status based on corresponding workflow list.
+//
+// Seed with the first workflow's actual state, not a synthetic StatusSuccess.
+// The synthetic seed combined with a single killed workflow incorrectly
+// yielded StatusPartial after #28 introduced the success+killed → partial
+// rule (one killed workflow is not "partial" — partial requires at least one
+// actual success AND at least one killed).
 func PipelineStatus(workflows []*model.Workflow) model.StatusValue {
-	status := model.StatusSuccess
+	if len(workflows) == 0 {
+		return model.StatusSuccess
+	}
 
-	for _, p := range workflows {
+	status := workflows[0].State
+	for _, p := range workflows[1:] {
 		status = MergeStatusValues(status, p.State)
 	}
 

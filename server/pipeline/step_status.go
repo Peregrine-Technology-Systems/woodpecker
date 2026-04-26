@@ -17,6 +17,7 @@ package pipeline
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -27,6 +28,29 @@ import (
 	"go.woodpecker-ci.org/woodpecker/v3/server/model"
 	"go.woodpecker-ci.org/woodpecker/v3/server/store"
 )
+
+// ErrStepUpdateRejectedTerminal is returned by UpdateStepStatus when the step
+// is in a terminal state (success, failure, killed, canceled, blocked, skipped,
+// declined, error). Callers can detect this with errors.Is and translate it
+// into a gRPC FailedPrecondition so the agent knows its work has been
+// abandoned server-side and stops sending updates. (#31)
+var ErrStepUpdateRejectedTerminal = errors.New("step is in terminal state and does not expect rpc state updates")
+
+// isTerminalStepState reports whether a step state cannot legitimately
+// receive further RPC updates from agents.
+func isTerminalStepState(state model.StatusValue) bool {
+	switch state {
+	case model.StatusSuccess,
+		model.StatusFailure,
+		model.StatusKilled,
+		model.StatusError,
+		model.StatusBlocked,
+		model.StatusDeclined,
+		model.StatusSkipped:
+		return true
+	}
+	return false
+}
 
 // UpdateStepStatus updates step status based on agent reports via RPC.
 func UpdateStepStatus(ctx context.Context, store store.Store, step *model.Step, state rpc.StepState) error {
@@ -93,6 +117,14 @@ func UpdateStepStatus(ctx context.Context, store store.Store, step *model.Step, 
 		}
 
 	default:
+		// #31: if the step is in a terminal state, the agent is stuck running
+		// work the server has already abandoned. Return a sentinel error so the
+		// gRPC handler can translate to FailedPrecondition and signal the agent
+		// to stop. For unrecognized non-terminal states (defensive — shouldn't
+		// happen with a well-formed model), keep the legacy unwrapped error.
+		if isTerminalStepState(step.State) {
+			return fmt.Errorf("%w (state=%s)", ErrStepUpdateRejectedTerminal, step.State)
+		}
 		return fmt.Errorf("step has state %s and does not expect rpc state updates", step.State)
 	}
 

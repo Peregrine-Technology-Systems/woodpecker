@@ -315,6 +315,18 @@ func (s *RPC) Update(c context.Context, strWorkflowID string, state rpc.StepStat
 	}
 
 	if err := pipeline.UpdateStepStatus(c, s.store, step, state); err != nil {
+		// #31: if the step is in a terminal state server-side, propagate the
+		// sentinel back to the gRPC layer so it can return FailedPrecondition.
+		// The agent uses that to stop sending updates for abandoned work.
+		// Other (unknown-state) errors stay as log-only — historical behavior.
+		if errors.Is(err, pipeline.ErrStepUpdateRejectedTerminal) {
+			log.Warn().
+				Err(err).
+				Str("step_uuid", state.StepUUID).
+				Int64("agent_id", agent.ID).
+				Msg("rpc.update: rejecting update for step in terminal state — agent should stop")
+			return err
+		}
 		log.Error().Err(err).Msg("rpc.update: cannot update step")
 	}
 

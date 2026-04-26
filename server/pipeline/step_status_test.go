@@ -15,6 +15,7 @@
 package pipeline
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -253,4 +254,57 @@ func TestUpdateStepToStatusSkipped(t *testing.T) {
 		assert.Equal(t, model.StatusSuccess, step.State)
 		assert.Equal(t, int64(100), step.Finished)
 	})
+}
+
+// TestUpdateStepStatus_TerminalStateRejection (#31): when an agent posts an
+// RPC update for a step the server has already moved into a terminal state,
+// UpdateStepStatus must return ErrStepUpdateRejectedTerminal so the gRPC
+// handler can translate it to FailedPrecondition. The store must NOT be
+// touched (no spurious StepUpdate call).
+func TestUpdateStepStatus_TerminalStateRejection(t *testing.T) {
+	t.Parallel()
+
+	terminalStates := []model.StatusValue{
+		model.StatusSuccess,
+		model.StatusFailure,
+		model.StatusKilled,
+		model.StatusError,
+		model.StatusBlocked,
+		model.StatusDeclined,
+		model.StatusSkipped,
+	}
+
+	for _, state := range terminalStates {
+		t.Run(string(state), func(t *testing.T) {
+			t.Parallel()
+			// Fresh mock per case — must NOT see a StepUpdate call. Using the
+			// raw NewMockStore (not mockStoreStep) so an unexpected call would
+			// fail the test rather than being silently allowed.
+			s := mocks.NewMockStore(t)
+			step := &model.Step{State: state}
+
+			err := UpdateStepStatus(t.Context(), s, step, rpc.StepState{Exited: true, ExitCode: 0})
+
+			assert.Error(t, err)
+			assert.True(t, errors.Is(err, ErrStepUpdateRejectedTerminal),
+				"errors.Is(err, ErrStepUpdateRejectedTerminal) must be true; got %v", err)
+		})
+	}
+}
+
+// TestUpdateStepStatus_NonTerminalUnknownState_LegacyError keeps the
+// historical unwrapped-error behavior for unknown non-terminal states, so
+// callers that match on string don't break.
+func TestUpdateStepStatus_NonTerminalUnknownState_LegacyError(t *testing.T) {
+	t.Parallel()
+	s := mocks.NewMockStore(t)
+	// "started" is not in the recognized switch cases AND not in the
+	// isTerminalStepState set — should fall through to the legacy path.
+	step := &model.Step{State: model.StatusValue("started")}
+
+	err := UpdateStepStatus(t.Context(), s, step, rpc.StepState{})
+
+	assert.Error(t, err)
+	assert.False(t, errors.Is(err, ErrStepUpdateRejectedTerminal),
+		"unknown non-terminal state must NOT match the terminal sentinel; got %v", err)
 }

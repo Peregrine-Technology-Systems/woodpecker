@@ -17,16 +17,20 @@ package grpc
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"strings"
 
 	"github.com/prometheus/client_golang/prometheus"
 	prometheus_auto "github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/rs/zerolog/log"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
 	"go.woodpecker-ci.org/woodpecker/v3/rpc"
 	"go.woodpecker-ci.org/woodpecker/v3/rpc/proto"
 	"go.woodpecker-ci.org/woodpecker/v3/server/logging"
+	"go.woodpecker-ci.org/woodpecker/v3/server/pipeline"
 	"go.woodpecker-ci.org/woodpecker/v3/server/pubsub"
 	"go.woodpecker-ci.org/woodpecker/v3/server/queue"
 	"go.woodpecker-ci.org/woodpecker/v3/server/store"
@@ -144,6 +148,13 @@ func (s *WoodpeckerServer) Update(c context.Context, req *proto.UpdateRequest) (
 	}
 	res := new(proto.Empty)
 	err := s.peer.Update(c, req.GetId(), state)
+	// #31: translate the terminal-step rejection into a gRPC FailedPrecondition
+	// so the agent can react (stop sending updates for abandoned work) rather
+	// than treating it like a generic unknown error and retrying. Other errors
+	// pass through unchanged (they are typically transient store errors).
+	if err != nil && errors.Is(err, pipeline.ErrStepUpdateRejectedTerminal) {
+		return res, status.Error(codes.FailedPrecondition, err.Error())
+	}
 	return res, err
 }
 
