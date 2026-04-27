@@ -43,13 +43,17 @@ func start(ctx context.Context, forge forge.Forge, store store.Store, activePipe
 	return activePipeline, nil
 }
 
-func prepareStart(ctx context.Context, forge forge.Forge, store store.Store, activePipeline *model.Pipeline, user *model.User, repo *model.Repo) error {
+// prepareStart persists the workflows so the rest of Create() has stable
+// state to act on. It deliberately does NOT call publishPipeline here —
+// publishPipeline triggers forge.Status (synchronous network call) which
+// must run AFTER updatePipelinePending in Create() so a slow forge can't
+// strand the pipeline at status=created (#30). publishPipeline runs once
+// later, inside start().
+func prepareStart(_ context.Context, _ forge.Forge, store store.Store, activePipeline *model.Pipeline, _ *model.User, repo *model.Repo) error {
 	if err := store.WorkflowsCreate(activePipeline.Workflows); err != nil {
 		log.Error().Err(err).Str("repo", repo.FullName).Msgf("error persisting steps for %s#%d", repo.FullName, activePipeline.Number)
 		return err
 	}
-
-	publishPipeline(ctx, forge, activePipeline, repo, user)
 	return nil
 }
 

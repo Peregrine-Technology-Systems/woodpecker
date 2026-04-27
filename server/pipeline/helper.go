@@ -16,6 +16,7 @@ package pipeline
 
 import (
 	"context"
+	"time"
 
 	"github.com/rs/zerolog/log"
 
@@ -23,9 +24,16 @@ import (
 	"go.woodpecker-ci.org/woodpecker/v3/server/model"
 )
 
+// forgeStatusTimeout caps each forge.Status call. A slow / hanging forge
+// (#30) must not block the pipeline state machine. Worst case per pipeline
+// is forgeStatusTimeout × len(Workflows).
+const forgeStatusTimeout = 5 * time.Second
+
 func updatePipelineStatus(ctx context.Context, forge forge.Forge, pipeline *model.Pipeline, repo *model.Repo, user *model.User) {
 	for _, workflow := range pipeline.Workflows {
-		err := forge.Status(ctx, user, repo, pipeline, workflow)
+		callCtx, cancel := context.WithTimeout(ctx, forgeStatusTimeout)
+		err := forge.Status(callCtx, user, repo, pipeline, workflow)
+		cancel()
 		if err != nil {
 			log.Error().Err(err).Msgf("error setting commit status for %s/%d", repo.FullName, pipeline.Number)
 			return
