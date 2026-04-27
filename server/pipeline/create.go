@@ -158,6 +158,19 @@ func Create(ctx context.Context, _store store.Store, repo *model.Repo, pipeline 
 		return nil, errors.New(msg)
 	}
 
+	// Defensive (#30): if any future code path leaves us at status=created
+	// after start() completes, force the transition. Workflows are already
+	// persisted at state=pending; the pipeline must mirror that or the
+	// scaler / queue dispatcher will never see this work as actionable.
+	if pipeline.Status == model.StatusCreated {
+		log.Warn().Str("repo", repo.FullName).Int64("pipeline_id", pipeline.ID).
+			Msg("post-start guard: pipeline still at status=created, forcing transition to pending")
+		if _, perr := UpdateToStatusPending(_store, *pipeline, ""); perr != nil {
+			log.Error().Err(perr).Str("repo", repo.FullName).Int64("pipeline_id", pipeline.ID).
+				Msg("post-start guard: forced transition to pending failed")
+		}
+	}
+
 	return pipeline, nil
 }
 
