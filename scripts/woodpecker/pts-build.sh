@@ -113,3 +113,142 @@ REMOTE
 )
 
 ssh $SSH_OPTS "root@${SERVER_HOST}" "flock /opt/woodpecker/docker-compose.yml.lock bash -s" <<<"$REMOTE_DEPLOY"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Phase 3 (#40): publish agent binary as GitHub Release asset + wake the
+# ci-image-builder VM so the matching CI agent VM image gets baked. Each
+# block is best-effort and logs without aborting on failure — server image
+# has already deployed by this point and is the load-bearing artifact.
+# ─────────────────────────────────────────────────────────────────────────────
+
+REPO_FULL="Peregrine-Technology-Systems/woodpecker"
+COMMIT_SHA=$(echo "${CI_COMMIT_SHA:-$(git rev-parse HEAD)}")
+GH_API="https://api.github.com"
+GH_AUTH="Authorization: Bearer ${GH_TOKEN:-}"
+
+if [ -z "${GH_TOKEN:-}" ]; then
+  echo ""
+  echo "==> Skipping GH Release + builder wake: GH_TOKEN not set"
+  echo "    Server image ${IMAGE}:${VERSION} is already deployed; only the"
+  echo "    Phase 3 producer-side flow is skipped."
+  exit 0
+fi
+
+echo ""
+echo "==> Phase 3a: extract agent binary from build stage"
+AGENT_BIN="/tmp/woodpecker-agent-${VERSION}"
+EXTRACT_TAG="pts-agent-extract:${VERSION}"
+EXTRACT_CONTAINER="pts-extract-${CI_PIPELINE_NUMBER:-$$}"
+
+if docker build --target build --build-arg "VERSION=${VERSION}" -t "${EXTRACT_TAG}" . >/dev/null 2>&1 \
+   && docker create --name "${EXTRACT_CONTAINER}" "${EXTRACT_TAG}" >/dev/null 2>&1 \
+   && docker cp "${EXTRACT_CONTAINER}:/build/woodpecker-agent" "${AGENT_BIN}" >/dev/null 2>&1; then
+  docker rm "${EXTRACT_CONTAINER}" >/dev/null 2>&1 || true
+  echo "    Agent binary: ${AGENT_BIN} ($(du -h "${AGENT_BIN}" | cut -f1))"
+else
+  docker rm "${EXTRACT_CONTAINER}" >/dev/null 2>&1 || true
+  echo "    ⚠️  Agent binary extraction failed; skipping GH Release + builder wake"
+  exit 0
+fi
+
+echo ""
+echo "==> Phase 3b: tag fork at build commit + create GH Release"
+# Idempotent tag creation
+if curl -sS -H "${GH_AUTH}" "${GH_API}/repos/${REPO_FULL}/git/refs/tags/${VERSION}" | grep -q '"ref"'; then
+  echo "    Tag ${VERSION} already exists; reusing"
+else
+  TAG_RESP=$(curl -sS -X POST -H "${GH_AUTH}" -H "Content-Type: application/json" \
+    "${GH_API}/repos/${REPO_FULL}/git/refs" \
+    -d "{\"ref\":\"refs/tags/${VERSION}\",\"sha\":\"${COMMIT_SHA}\"}")
+  if echo "${TAG_RESP}" | grep -q '"ref"'; then
+    echo "    Tag ${VERSION} → ${COMMIT_SHA:0:8}"
+  else
+    echo "    ⚠️  Failed to create tag ${VERSION}: $(echo "${TAG_RESP}" | head -c 200)"
+    exit 0
+  fi
+fi
+
+# Idempotent Release creation
+RELEASE_BODY="Automated release from pts-build pipeline ${CI_PIPELINE_NUMBER:-?}.\n\nServer image: \`${IMAGE}:${VERSION}\` deployed to d3ci42.\nAgent binary: attached as \`woodpecker-agent-linux-amd64\`."
+RELEASE_ID=$(curl -sS -H "${GH_AUTH}" "${GH_API}/repos/${REPO_FULL}/releases/tags/${VERSION}" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("id","") if isinstance(d,dict) else "")' 2>/dev/null || echo "")
+
+if [ -n "${RELEASE_ID}" ]; then
+  echo "    Release ${VERSION} already exists (id=${RELEASE_ID}); reusing"
+else
+  RELEASE_RESP=$(curl -sS -X POST -H "${GH_AUTH}" -H "Content-Type: application/json" \
+    "${GH_API}/repos/${REPO_FULL}/releases" \
+    -d "{\"tag_name\":\"${VERSION}\",\"name\":\"${VERSION}\",\"body\":\"${RELEASE_BODY}\",\"draft\":false,\"prerelease\":false}")
+  RELEASE_ID=$(echo "${RELEASE_RESP}" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("id","") if isinstance(d,dict) else "")' 2>/dev/null || echo "")
+  if [ -n "${RELEASE_ID}" ]; then
+    echo "    Created Release ${VERSION} (id=${RELEASE_ID})"
+  else
+    echo "    ⚠️  Failed to create Release: $(echo "${RELEASE_RESP}" | head -c 200)"
+    exit 0
+  fi
+fi
+
+# Replace asset on Release (idempotent re-runs)
+ASSET_NAME="woodpecker-agent-linux-amd64"
+EXISTING_ASSET_ID=$(curl -sS -H "${GH_AUTH}" "${GH_API}/repos/${REPO_FULL}/releases/${RELEASE_ID}/assets" \
+  | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+for a in (d if isinstance(d, list) else []):
+    if a.get('name') == '${ASSET_NAME}':
+        print(a.get('id', ''))
+        break
+" 2>/dev/null || echo "")
+
+if [ -n "${EXISTING_ASSET_ID}" ]; then
+  curl -sS -X DELETE -H "${GH_AUTH}" "${GH_API}/repos/${REPO_FULL}/releases/assets/${EXISTING_ASSET_ID}" >/dev/null
+  echo "    Replaced existing ${ASSET_NAME} asset"
+fi
+
+UPLOAD_RESP=$(curl -sS -X POST -H "${GH_AUTH}" -H "Content-Type: application/octet-stream" \
+  --data-binary "@${AGENT_BIN}" \
+  "https://uploads.github.com/repos/${REPO_FULL}/releases/${RELEASE_ID}/assets?name=${ASSET_NAME}")
+if echo "${UPLOAD_RESP}" | grep -q '"browser_download_url"'; then
+  echo "    Uploaded ${ASSET_NAME} ($(du -h "${AGENT_BIN}" | cut -f1)) to Release ${VERSION}"
+else
+  echo "    ⚠️  Asset upload failed: $(echo "${UPLOAD_RESP}" | head -c 200)"
+fi
+
+echo ""
+echo "==> Phase 3c: best-effort wake of ci-image-builder (#1255)"
+# Job-file pattern matches ci-infrastructure/terraform/scripts/builder-vm/wake.sh
+BUILDER_PROJECT="ci-runners-de"
+BUILDER_ZONE="us-central1-a"
+BUILDER_VM="ci-image-builder"
+BUILDER_BUCKET="${BUILDER_PROJECT}-image-builder-state"
+REQUEST_ID=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n' | awk '{
+    printf "%s-%s-%s-%s-%s",
+        substr($0,1,8), substr($0,9,4), substr($0,13,4),
+        substr($0,17,4), substr($0,21,12)
+}')
+NOW_ISO=$(date -u +%FT%TZ)
+
+JOB_FILE=$(mktemp)
+cat > "${JOB_FILE}" <<JOB
+{
+  "request_id": "${REQUEST_ID}",
+  "wp_version": "${VERSION}",
+  "scaler_version": "",
+  "triggered_by": "woodpecker-fork-pts-build-${CI_PIPELINE_NUMBER:-?}",
+  "created_at": "${NOW_ISO}"
+}
+JOB
+
+if gsutil -q cp "${JOB_FILE}" "gs://${BUILDER_BUCKET}/jobs/${REQUEST_ID}.json" 2>/dev/null; then
+  echo "    Wrote job: gs://${BUILDER_BUCKET}/jobs/${REQUEST_ID}.json"
+  if gcloud --quiet compute instances start "${BUILDER_VM}" --zone="${BUILDER_ZONE}" --project="${BUILDER_PROJECT}" 2>/dev/null; then
+    echo "    Started ${BUILDER_VM} (request_id=${REQUEST_ID})"
+  else
+    echo "    ⚠️  Could not start builder VM — job written; will be picked up on next wake. Non-blocking."
+  fi
+else
+  echo "    ⚠️  Could not write job file (likely IAM not yet granted to ci-agent SA on ${BUILDER_BUCKET}). Non-blocking — server image already deployed."
+fi
+rm -f "${JOB_FILE}"
+
+echo ""
+echo "✅ Phase 3 producer-side complete: tag ${VERSION}, GH Release with agent binary, wake request ${REQUEST_ID:-skipped}"
