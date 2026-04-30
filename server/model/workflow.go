@@ -15,6 +15,8 @@
 
 package model
 
+import "strings"
+
 // Workflow represents a workflow in the pipeline.
 type Workflow struct {
 	ID         int64             `json:"id"                   xorm:"pk autoincr 'id'"`
@@ -46,6 +48,37 @@ func (p *Workflow) Running() bool {
 // Failing returns true if the process state is failed, killed or error.
 func (p *Workflow) Failing() bool {
 	return p.State == StatusError || p.State == StatusKilled || p.State == StatusSuperseded || p.State == StatusFailure
+}
+
+// disconnectErrorSignatures matches workflow.Error strings produced by the
+// agent-disconnect kill paths in server/rpc/rpc.go (releaseAgentTasks and the
+// queue.Done propagation). These are infrastructure failures (spot VM
+// preemption, MIG resize-while-working, network partition) — they say nothing
+// about whether the SHA is mergeable. See KilledByAgentDisconnect.
+var disconnectErrorSignatures = []string{
+	"agent disconnected",
+}
+
+// KilledByAgentDisconnect returns true when the workflow was killed because
+// the agent running it disconnected (spot VM preemption, MIG resize, network
+// partition). Used to suppress forge.Status posts for these workflows so the
+// resulting "errored" check does not cascade into branch-protection blocks
+// (fork#44). The conservative read is: workflow is in StatusKilled AND its
+// Error field carries a known disconnect signature. Real failures (exit code
+// != 0, config errors, manual kills with explicit reasons) still post.
+func (p *Workflow) KilledByAgentDisconnect() bool {
+	if p == nil {
+		return false
+	}
+	if p.State != StatusKilled {
+		return false
+	}
+	for _, sig := range disconnectErrorSignatures {
+		if strings.Contains(p.Error, sig) {
+			return true
+		}
+	}
+	return false
 }
 
 // IsThereRunningStage determine if it contains workflows running or pending to run.

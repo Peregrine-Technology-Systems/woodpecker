@@ -4,7 +4,6 @@ import (
 	"context"
 	"testing"
 
-	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 
 	"go.woodpecker-ci.org/woodpecker/v3/server/model"
@@ -94,13 +93,17 @@ func TestReleaseAgentTasks_KillsWorkflowAndPipeline(t *testing.T) {
 		return p.Status == model.StatusKilled && p.Finished > 0
 	})).Return(nil)
 	s.On("GetRepo", int64(300)).Return(repo, nil)
-	// updateForgeStatus calls GetUser — allow it to fail gracefully
-	s.On("GetUser", mock.Anything).Return(nil, assert.AnError)
+	// fork#44: updateForgeStatus now early-returns BEFORE GetUser when the
+	// workflow was killed by agent disconnect (the case under test). The
+	// previous behavior was to GetUser → forge.Status with state=errored,
+	// which cascaded into branch-protection blocks. We now expect zero
+	// GetUser calls on this path.
 
 	rpc := RPC{queue: q, store: s}
 	rpc.ReleaseAgentTasks(context.Background(), 42)
 
 	s.AssertExpectations(t)
+	s.AssertNotCalled(t, "GetUser", mock.Anything)
 }
 
 func TestReleaseAgentTasks_OnlyReleasesMatchingAgent(t *testing.T) {
