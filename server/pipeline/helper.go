@@ -31,6 +31,17 @@ const forgeStatusTimeout = 5 * time.Second
 
 func updatePipelineStatus(ctx context.Context, forge forge.Forge, pipeline *model.Pipeline, repo *model.Repo, user *model.User) {
 	for _, workflow := range pipeline.Workflows {
+		// fork#44: don't post errored to GitHub on agent-disconnect kills.
+		// See updateForgeStatus in server/rpc/rpc.go for the full rationale.
+		if workflow.KilledByAgentDisconnect() {
+			log.Info().
+				Str("repo", repo.FullName).
+				Int64("pipeline_id", pipeline.ID).
+				Int64("workflow_id", workflow.ID).
+				Str("error", workflow.Error).
+				Msg("forge.Status: skipping post for agent-disconnect kill (#44)")
+			continue
+		}
 		callCtx, cancel := context.WithTimeout(ctx, forgeStatusTimeout)
 		err := forge.Status(callCtx, user, repo, pipeline, workflow)
 		cancel()

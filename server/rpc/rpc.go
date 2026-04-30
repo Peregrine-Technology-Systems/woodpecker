@@ -715,6 +715,22 @@ func (s *RPC) completeChildrenIfParentCompleted(completedWorkflow *model.Workflo
 }
 
 func (s *RPC) updateForgeStatus(ctx context.Context, repo *model.Repo, pipeline *model.Pipeline, workflow *model.Workflow) {
+	// fork#44: don't post errored to GitHub on agent-disconnect kills. They
+	// are infrastructure failures, not code failures, and an errored status
+	// blocks branch-protection-gated merges with "Required status check ...
+	// is errored" — even gh pr merge --admin can't override that. Skipping
+	// the post leaves the previous status valid; the auto-requeue path
+	// (peregrine-ci-scaler#741) re-runs the pipeline and posts fresh status.
+	if workflow != nil && workflow.KilledByAgentDisconnect() {
+		log.Info().
+			Str("repo", repo.FullName).
+			Int64("pipeline_id", pipeline.ID).
+			Int64("workflow_id", workflow.ID).
+			Str("error", workflow.Error).
+			Msg("forge.Status: skipping post for agent-disconnect kill (#44)")
+		return
+	}
+
 	user, err := s.store.GetUser(repo.UserID)
 	if err != nil {
 		log.Error().Err(err).Msgf("cannot get user with id '%d'", repo.UserID)

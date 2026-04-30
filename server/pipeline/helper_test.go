@@ -82,3 +82,80 @@ func TestUpdatePipelineStatus_SuccessFastPath(t *testing.T) {
 		"fast-path took %s (forge.Status mocked to return nil immediately)", elapsed)
 	mockForge.AssertExpectations(t)
 }
+
+// TestUpdatePipelineStatus_SkipsAgentDisconnect asserts that workflows killed
+// with Error="agent disconnected" do NOT trigger a forge.Status call. Posting
+// these as errored to GitHub blocks branch-protection-gated merges (fork#44).
+func TestUpdatePipelineStatus_SkipsAgentDisconnect(t *testing.T) {
+	mockForge := forge_mocks.NewMockForge(t)
+	// Only the non-disconnect workflow should reach forge.Status.
+	mockForge.On("Status", mock.Anything, mock.Anything, mock.Anything, mock.Anything,
+		mock.MatchedBy(func(w *model.Workflow) bool { return w.ID == 31 })).
+		Return(nil).Once()
+
+	pipeline := &model.Pipeline{
+		ID:     3,
+		Number: 3,
+		Workflows: []*model.Workflow{
+			{ID: 30, Name: "deploy", State: model.StatusKilled, Error: "agent disconnected"},
+			{ID: 31, Name: "ci", State: model.StatusSuccess},
+		},
+	}
+	repo := &model.Repo{FullName: "example/disconnect"}
+	user := &model.User{Login: "tester"}
+
+	updatePipelineStatus(context.Background(), mockForge, pipeline, repo, user)
+
+	// AssertExpectations verifies the mock was called exactly once (for ID=31)
+	// and not for ID=30 (the disconnect-killed workflow).
+	mockForge.AssertExpectations(t)
+}
+
+// TestUpdatePipelineStatus_AllDisconnectedSkipsAll asserts that when every
+// workflow is disconnect-killed, NO forge.Status call is made. This is the
+// pure infra-failure case — the operator/auto-requeue restarts and posts
+// fresh status; the killed pipeline must not leave an errored check behind.
+func TestUpdatePipelineStatus_AllDisconnectedSkipsAll(t *testing.T) {
+	mockForge := forge_mocks.NewMockForge(t)
+	// Zero forge.Status calls expected — set up no Once()/Twice()/Times.
+
+	pipeline := &model.Pipeline{
+		ID:     4,
+		Number: 4,
+		Workflows: []*model.Workflow{
+			{ID: 40, Name: "wake", State: model.StatusKilled, Error: "agent disconnected"},
+			{ID: 41, Name: "deploy", State: model.StatusKilled, Error: "agent disconnected"},
+		},
+	}
+	repo := &model.Repo{FullName: "example/all-disconnect"}
+	user := &model.User{Login: "tester"}
+
+	updatePipelineStatus(context.Background(), mockForge, pipeline, repo, user)
+
+	mockForge.AssertExpectations(t)
+	mockForge.AssertNotCalled(t, "Status",
+		mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything)
+}
+
+// TestUpdatePipelineStatus_RealFailureStillPosts asserts that a workflow
+// killed with a real error message (not "agent disconnected") still triggers
+// forge.Status — the suppression is narrow.
+func TestUpdatePipelineStatus_RealFailureStillPosts(t *testing.T) {
+	mockForge := forge_mocks.NewMockForge(t)
+	mockForge.On("Status", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
+		Return(nil).Once()
+
+	pipeline := &model.Pipeline{
+		ID:     5,
+		Number: 5,
+		Workflows: []*model.Workflow{
+			{ID: 50, Name: "test", State: model.StatusKilled, Error: "exit code 1: build failed"},
+		},
+	}
+	repo := &model.Repo{FullName: "example/real-fail"}
+	user := &model.User{Login: "tester"}
+
+	updatePipelineStatus(context.Background(), mockForge, pipeline, repo, user)
+
+	mockForge.AssertExpectations(t)
+}
