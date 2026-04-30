@@ -104,13 +104,29 @@ func setupStore(ctx context.Context, c *cli.Command) (store.Store, error) {
 	return store, nil
 }
 
-func checkSqliteFileExist(path string) error {
+func checkSqliteFileExist(dsn string) error {
+	path := sqliteFilePathFromDSN(dsn)
 	_, err := os.Stat(path)
 	if err != nil && os.IsNotExist(err) {
-		log.Warn().Msgf("no sqlite3 file found, will create one at '%s'", path)
+		log.Warn().Msgf("no sqlite file found at '%s', will create one (dsn '%s')", path, dsn)
 		return nil
 	}
 	return err
+}
+
+// sqliteFilePathFromDSN strips the optional "file:" scheme prefix and any
+// query-string parameters (e.g. "?_busy_timeout=5000&_journal_mode=WAL") from
+// the DSN, leaving just the on-disk path so os.Stat can find the actual file.
+// Without this, an existing DB at "/var/lib/woodpecker/woodpecker.sqlite"
+// stat'd as "file:/var/lib/woodpecker/woodpecker.sqlite?_busy_timeout=..."
+// returns ENOENT and emits a misleading "no sqlite file found" warning on
+// every server restart (fork#41).
+func sqliteFilePathFromDSN(dsn string) string {
+	path := strings.TrimPrefix(dsn, "file:")
+	if i := strings.Index(path, "?"); i >= 0 {
+		path = path[:i]
+	}
+	return path
 }
 
 func setupQueue(ctx context.Context, s store.Store) (queue.Queue, error) {
