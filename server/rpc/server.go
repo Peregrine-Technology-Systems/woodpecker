@@ -55,14 +55,24 @@ func NewRPC(queue queue.Queue, logger logging.Log, pubsub *pubsub.Publisher, sto
 		Name:      "pipeline_count",
 		Help:      "Pipeline count.",
 	}, []string{"repo", "branch", "status", "pipeline"})
+	// #31: Counts agent RPC updates rejected because the step is already in a
+	// terminal state server-side. Spike correlates with server-side state
+	// divergence (e.g. boot-time orphans not yet caught by ReconcileOrphaned).
+	// Steady-state should be near zero; non-zero rate is an alarm.
+	rpcUpdateRejectedTotal := prometheus_auto.NewCounter(prometheus.CounterOpts{
+		Namespace: "woodpecker",
+		Name:      "rpc_update_to_terminal_step_total",
+		Help:      "Agent RPC step-status updates rejected because the step is already in a terminal state server-side (#31). Indicator of agent ↔ server state divergence.",
+	})
 	return &RPC{
-		store:          store,
-		queue:          queue,
-		pubsub:         pubsub,
-		logger:         logger,
-		pipelineTime:   pipelineTime,
-		pipelineCount:  pipelineCount,
-		deployPatterns: loadDeployPatterns(),
+		store:                  store,
+		queue:                  queue,
+		pubsub:                 pubsub,
+		logger:                 logger,
+		pipelineTime:           pipelineTime,
+		pipelineCount:          pipelineCount,
+		rpcUpdateRejectedTotal: rpcUpdateRejectedTotal,
+		deployPatterns:         loadDeployPatterns(),
 	}
 }
 

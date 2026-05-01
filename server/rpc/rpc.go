@@ -45,13 +45,14 @@ import (
 const updateAgentLastWorkDelay = time.Minute
 
 type RPC struct {
-	queue          queue.Queue
-	pubsub         *pubsub.Publisher
-	logger         logging.Log
-	store          store.Store
-	pipelineTime   *prometheus.GaugeVec
-	pipelineCount  *prometheus.CounterVec
-	deployPatterns []string // workflow names that should prefer on-demand agents
+	queue                  queue.Queue
+	pubsub                 *pubsub.Publisher
+	logger                 logging.Log
+	store                  store.Store
+	pipelineTime           *prometheus.GaugeVec
+	pipelineCount          *prometheus.CounterVec
+	rpcUpdateRejectedTotal prometheus.Counter
+	deployPatterns         []string // workflow names that should prefer on-demand agents
 }
 
 // Next blocks until it provides the next workflow to execute.
@@ -320,6 +321,9 @@ func (s *RPC) Update(c context.Context, strWorkflowID string, state rpc.StepStat
 		// The agent uses that to stop sending updates for abandoned work.
 		// Other (unknown-state) errors stay as log-only — historical behavior.
 		if errors.Is(err, pipeline.ErrStepUpdateRejectedTerminal) {
+			if s.rpcUpdateRejectedTotal != nil {
+				s.rpcUpdateRejectedTotal.Inc()
+			}
 			log.Warn().
 				Err(err).
 				Str("step_uuid", state.StepUUID).
