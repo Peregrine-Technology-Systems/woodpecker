@@ -24,7 +24,9 @@ import (
 )
 
 func (s storage) OrgCreate(org *model.Org) error {
-	return s.orgCreate(org, s.engine.NewSession())
+	return s.wq.serialize(func() error {
+		return s.orgCreate(org, s.engine.NewSession())
+	})
 }
 
 func (s storage) orgCreate(org *model.Org, sess *xorm.Session) error {
@@ -40,7 +42,9 @@ func (s storage) OrgGet(id int64) (*model.Org, error) {
 }
 
 func (s storage) OrgUpdate(org *model.Org) error {
-	return s.orgUpdate(s.engine.NewSession(), org)
+	return s.wq.serialize(func() error {
+		return s.orgUpdate(s.engine.NewSession(), org)
+	})
 }
 
 func (s storage) orgUpdate(sess *xorm.Session, org *model.Org) error {
@@ -50,7 +54,9 @@ func (s storage) orgUpdate(sess *xorm.Session, org *model.Org) error {
 }
 
 func (s storage) OrgDelete(id int64) error {
-	return s.orgDelete(s.engine.NewSession(), id)
+	return s.wq.serialize(func() error {
+		return s.orgDelete(s.engine.NewSession(), id)
+	})
 }
 
 func (s storage) orgDelete(sess *xorm.Session, id int64) error {

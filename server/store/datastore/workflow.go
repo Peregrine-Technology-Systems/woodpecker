@@ -38,17 +38,19 @@ func (s storage) WorkflowGetTree(pipeline *model.Pipeline) ([]*model.Workflow, e
 }
 
 func (s storage) WorkflowsCreate(workflows []*model.Workflow) error {
-	sess := s.engine.NewSession()
-	defer sess.Close()
-	if err := sess.Begin(); err != nil {
-		return err
-	}
+	return s.wq.serialize(func() error {
+		sess := s.engine.NewSession()
+		defer sess.Close()
+		if err := sess.Begin(); err != nil {
+			return err
+		}
 
-	if err := s.workflowsCreate(sess, workflows); err != nil {
-		return err
-	}
+		if err := s.workflowsCreate(sess, workflows); err != nil {
+			return err
+		}
 
-	return sess.Commit()
+		return sess.Commit()
+	})
 }
 
 func (s storage) workflowsCreate(sess *xorm.Session, workflows []*model.Workflow) error {
@@ -66,21 +68,23 @@ func (s storage) workflowsCreate(sess *xorm.Session, workflows []*model.Workflow
 
 // WorkflowsReplace performs an atomic replacement of workflows and associated steps by deleting all existing workflows and steps and inserting the new ones.
 func (s storage) WorkflowsReplace(pipeline *model.Pipeline, workflows []*model.Workflow) error {
-	sess := s.engine.NewSession()
-	defer sess.Close()
-	if err := sess.Begin(); err != nil {
-		return err
-	}
+	return s.wq.serialize(func() error {
+		sess := s.engine.NewSession()
+		defer sess.Close()
+		if err := sess.Begin(); err != nil {
+			return err
+		}
 
-	if err := s.workflowsDelete(sess, pipeline.ID); err != nil {
-		return err
-	}
+		if err := s.workflowsDelete(sess, pipeline.ID); err != nil {
+			return err
+		}
 
-	if err := s.workflowsCreate(sess, workflows); err != nil {
-		return err
-	}
+		if err := s.workflowsCreate(sess, workflows); err != nil {
+			return err
+		}
 
-	return sess.Commit()
+		return sess.Commit()
+	})
 }
 
 func (s storage) workflowsDelete(sess *xorm.Session, pipelineID int64) error {
@@ -128,6 +132,8 @@ func (s storage) WorkflowLoad(id int64) (*model.Workflow, error) {
 }
 
 func (s storage) WorkflowUpdate(workflow *model.Workflow) error {
-	_, err := s.engine.ID(workflow.ID).AllCols().Update(workflow)
-	return err
+	return s.wq.serialize(func() error {
+		_, err := s.engine.ID(workflow.ID).AllCols().Update(workflow)
+		return err
+	})
 }

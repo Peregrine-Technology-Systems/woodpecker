@@ -27,39 +27,43 @@ func (s storage) ServerConfigGet(key string) (string, error) {
 }
 
 func (s storage) ServerConfigSet(key, value string) error {
-	config := &model.ServerConfig{
-		Key: key,
-	}
+	return s.wq.serialize(func() error {
+		config := &model.ServerConfig{
+			Key: key,
+		}
 
-	sess := s.engine.NewSession()
-	defer sess.Close()
-	if err := sess.Begin(); err != nil {
-		return err
-	}
+		sess := s.engine.NewSession()
+		defer sess.Close()
+		if err := sess.Begin(); err != nil {
+			return err
+		}
 
-	count, err := sess.Count(config)
-	if err != nil {
-		return err
-	}
+		count, err := sess.Count(config)
+		if err != nil {
+			return err
+		}
 
-	config.Value = value
+		config.Value = value
 
-	if count == 0 {
-		err = wrapInsert(sess.Insert(config))
-	} else {
-		_, err = sess.Where("`key` = ?", config.Key).Cols("value").Update(config)
-	}
-	if err != nil {
-		return err
-	}
+		if count == 0 {
+			err = wrapInsert(sess.Insert(config))
+		} else {
+			_, err = sess.Where("`key` = ?", config.Key).Cols("value").Update(config)
+		}
+		if err != nil {
+			return err
+		}
 
-	return sess.Commit()
+		return sess.Commit()
+	})
 }
 
 func (s storage) ServerConfigDelete(key string) error {
-	config := &model.ServerConfig{
-		Key: key,
-	}
+	return s.wq.serialize(func() error {
+		config := &model.ServerConfig{
+			Key: key,
+		}
 
-	return wrapDelete(s.engine.Delete(config))
+		return wrapDelete(s.engine.Delete(config))
+	})
 }

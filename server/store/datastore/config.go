@@ -48,25 +48,34 @@ func (s storage) configFindIdentical(sess *xorm.Session, repoID int64, hash, nam
 func (s storage) ConfigPersist(conf *model.Config) (*model.Config, error) {
 	conf.Hash = fmt.Sprintf("%x", sha256.Sum256(conf.Data))
 
-	sess := s.engine.NewSession()
-	defer sess.Close()
-	if err := sess.Begin(); err != nil {
+	var result *model.Config
+	err := s.wq.serialize(func() error {
+		sess := s.engine.NewSession()
+		defer sess.Close()
+		if err := sess.Begin(); err != nil {
+			return err
+		}
+
+		existingConfig, err := s.configFindIdentical(sess, conf.RepoID, conf.Hash, conf.Name)
+		if err != nil && !errors.Is(err, types.ErrRecordNotExist) {
+			return err
+		}
+		if existingConfig != nil {
+			result = existingConfig
+			return nil
+		}
+
+		if err := s.configCreate(sess, conf); err != nil {
+			return err
+		}
+
+		result = conf
+		return sess.Commit()
+	})
+	if err != nil {
 		return nil, err
 	}
-
-	existingConfig, err := s.configFindIdentical(sess, conf.RepoID, conf.Hash, conf.Name)
-	if err != nil && !errors.Is(err, types.ErrRecordNotExist) {
-		return nil, err
-	}
-	if existingConfig != nil {
-		return existingConfig, nil
-	}
-
-	if err := s.configCreate(sess, conf); err != nil {
-		return nil, err
-	}
-
-	return conf, sess.Commit()
+	return result, nil
 }
 
 func (s storage) configCreate(sess *xorm.Session, config *model.Config) error {
@@ -83,6 +92,8 @@ func (s storage) configCreate(sess *xorm.Session, config *model.Config) error {
 }
 
 func (s storage) PipelineConfigCreate(config *model.PipelineConfig) error {
-	// only Insert set auto created ID back to object
-	return wrapInsert(s.engine.Insert(config))
+	return s.wq.serialize(func() error {
+		// only Insert set auto created ID back to object
+		return wrapInsert(s.engine.Insert(config))
+	})
 }

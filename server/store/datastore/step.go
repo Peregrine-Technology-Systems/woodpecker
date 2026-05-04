@@ -79,8 +79,10 @@ func (s storage) stepCreate(sess *xorm.Session, steps []*model.Step) error {
 }
 
 func (s storage) StepUpdate(step *model.Step) error {
-	_, err := s.engine.ID(step.ID).AllCols().Update(step)
-	return err
+	return s.wq.serialize(func() error {
+		_, err := s.engine.ID(step.ID).AllCols().Update(step)
+		return err
+	})
 }
 
 func deleteStep(sess *xorm.Session, stepID int64) error {

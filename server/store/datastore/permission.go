@@ -32,17 +32,19 @@ func (s storage) PermFind(user *model.User, repo *model.Repo) (*model.Perm, erro
 }
 
 func (s storage) PermUpsert(perm *model.Perm) error {
-	sess := s.engine.NewSession()
-	defer sess.Close()
-	if err := sess.Begin(); err != nil {
-		return err
-	}
+	return s.wq.serialize(func() error {
+		sess := s.engine.NewSession()
+		defer sess.Close()
+		if err := sess.Begin(); err != nil {
+			return err
+		}
 
-	if err := s.permUpsert(sess, perm); err != nil {
-		return err
-	}
+		if err := s.permUpsert(sess, perm); err != nil {
+			return err
+		}
 
-	return sess.Commit()
+		return sess.Commit()
+	})
 }
 
 func (s storage) permUpsert(sess *xorm.Session, perm *model.Perm) error {
@@ -87,13 +89,15 @@ func userIDAndRepoIDCond(perm *model.Perm) builder.Cond {
 // where the repo_id is NOT IN the provided keepRepoIDs list. If keepRepoIDs
 // is empty, all permissions for the user are deleted.
 func (s storage) PermPrune(userID int64, keepRepoIDs []int64) error {
-	if len(keepRepoIDs) == 0 {
-		_, err := s.engine.Where(builder.Eq{"user_id": userID}).Delete(new(model.Perm))
-		return err
-	}
+	return s.wq.serialize(func() error {
+		if len(keepRepoIDs) == 0 {
+			_, err := s.engine.Where(builder.Eq{"user_id": userID}).Delete(new(model.Perm))
+			return err
+		}
 
-	_, err := s.engine.Where(builder.Eq{"user_id": userID}).
-		And(builder.NotIn("repo_id", keepRepoIDs)).
-		Delete(new(model.Perm))
-	return err
+		_, err := s.engine.Where(builder.Eq{"user_id": userID}).
+			And(builder.NotIn("repo_id", keepRepoIDs)).
+			Delete(new(model.Perm))
+		return err
+	})
 }
