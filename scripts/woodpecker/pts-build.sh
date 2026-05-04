@@ -28,6 +28,36 @@ COMMIT_SHA="${CI_COMMIT_SHA:-$(git rev-parse HEAD)}"
 
 echo "==> pts-build: ${VERSION} (${SHA_SHORT})"
 
+# ── GCS build cache (#851) ──
+# Restore Go build cache + module cache from GCS before compile.
+# On warm cache, go build skips recompiling unchanged packages — reduces
+# compile time from ~8 min to ~1 min. Best-effort: failure is non-fatal
+# (cold build still works). Save back after successful compile.
+BUILD_CACHE_BUCKET="gs://ci-runners-de-build-cache"
+GOCACHE="${HOME}/.cache/go-build"
+GOMODCACHE="${HOME}/go/pkg/mod"
+
+restore_cache() {
+    echo "==> Restoring build cache from GCS..."
+    gsutil -m -q rsync -r "${BUILD_CACHE_BUCKET}/go-build/" "${GOCACHE}/" 2>/dev/null && \
+        echo "    go-build cache restored ($(du -sh "${GOCACHE}" 2>/dev/null | cut -f1))" || \
+        echo "    go-build: no cache yet (cold build)"
+    gsutil -m -q rsync -r "${BUILD_CACHE_BUCKET}/go-mod/" "${GOMODCACHE}/" 2>/dev/null && \
+        echo "    go-mod cache restored ($(du -sh "${GOMODCACHE}" 2>/dev/null | cut -f1))" || \
+        echo "    go-mod: no cache yet"
+}
+
+save_cache() {
+    echo "==> Saving build cache to GCS..."
+    gsutil -m -q rsync -r "${GOCACHE}/" "${BUILD_CACHE_BUCKET}/go-build/" 2>/dev/null && \
+        echo "    go-build saved" || echo "    ⚠️  go-build save failed (non-fatal)"
+    gsutil -m -q rsync -r "${GOMODCACHE}/" "${BUILD_CACHE_BUCKET}/go-mod/" 2>/dev/null && \
+        echo "    go-mod saved" || echo "    ⚠️  go-mod save failed (non-fatal)"
+}
+
+mkdir -p "${GOCACHE}" "${GOMODCACHE}"
+restore_cache
+
 # ── SSH setup ──
 SSH_KEY=".deploy-ssh/id_ed25519"
 mkdir -p .deploy-ssh
@@ -83,6 +113,8 @@ CGO_ENABLED=0 go build \
     -ldflags "-s -w -X go.woodpecker-ci.org/woodpecker/v3/version.Version=${VERSION}" \
     -o bin/woodpecker-agent ./cmd/agent
 echo "    Agent: $(du -h bin/woodpecker-agent | cut -f1)"
+
+save_cache
 
 # ── Deploy server to d3ci42 ──
 echo ""
