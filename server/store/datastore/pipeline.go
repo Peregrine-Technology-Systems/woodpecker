@@ -135,63 +135,65 @@ func (s storage) GetPipelineCount() (int64, error) {
 
 // CreatePipeline creates a new pipeline with retry logic for unique constraint errors.
 func (s storage) CreatePipeline(pipeline *model.Pipeline, stepList ...*model.Step) error {
-	// Maximum number of retries
-	const maxRetries = 3
+	return s.wq.serialize(func() error {
+		// Maximum number of retries
+		const maxRetries = 3
 
-	// Create backoff configuration
-	exponentialBackoff := backoff.NewExponentialBackOff()
+		// Create backoff configuration
+		exponentialBackoff := backoff.NewExponentialBackOff()
 
-	// Execute with backoff retry
-	_, err := backoff.Retry(context.Background(), func() (struct{}, error) {
-		sess := s.engine.NewSession()
-		defer sess.Close()
-		if err := sess.Begin(); err != nil {
-			return struct{}{}, err
-		}
-
-		repoExist, err := sess.Where("id = ?", pipeline.RepoID).Exist(&model.Repo{})
-		if err != nil {
-			return struct{}{}, err
-		}
-
-		if !repoExist {
-			return struct{}{}, ErrorRepoNotExist{RepoID: pipeline.RepoID}
-		}
-
-		// calc pipeline number
-		var number int64
-		if _, err := sess.Select("MAX(number)").
-			Table(new(model.Pipeline)).
-			Where("repo_id = ?", pipeline.RepoID).
-			Get(&number); err != nil {
-			return struct{}{}, err
-		}
-		pipeline.Number = number + 1
-
-		pipeline.Created = time.Now().UTC().Unix()
-		// only Insert set auto created ID back to object
-		if err := wrapInsert(sess.Insert(pipeline)); err != nil {
-			if isUniqueConstraintError(err) {
+		// Execute with backoff retry
+		_, err := backoff.Retry(context.Background(), func() (struct{}, error) {
+			sess := s.engine.NewSession()
+			defer sess.Close()
+			if err := sess.Begin(); err != nil {
 				return struct{}{}, err
 			}
-			return struct{}{}, backoff.Permanent(err)
-		}
 
-		for i := range stepList {
-			stepList[i].PipelineID = pipeline.ID
+			repoExist, err := sess.Where("id = ?", pipeline.RepoID).Exist(&model.Repo{})
+			if err != nil {
+				return struct{}{}, err
+			}
+
+			if !repoExist {
+				return struct{}{}, ErrorRepoNotExist{RepoID: pipeline.RepoID}
+			}
+
+			// calc pipeline number
+			var number int64
+			if _, err := sess.Select("MAX(number)").
+				Table(new(model.Pipeline)).
+				Where("repo_id = ?", pipeline.RepoID).
+				Get(&number); err != nil {
+				return struct{}{}, err
+			}
+			pipeline.Number = number + 1
+
+			pipeline.Created = time.Now().UTC().Unix()
 			// only Insert set auto created ID back to object
-			if err := wrapInsert(sess.Insert(stepList[i])); err != nil {
+			if err := wrapInsert(sess.Insert(pipeline)); err != nil {
 				if isUniqueConstraintError(err) {
 					return struct{}{}, err
 				}
 				return struct{}{}, backoff.Permanent(err)
 			}
-		}
 
-		return struct{}{}, sess.Commit()
-	}, backoff.WithBackOff(exponentialBackoff), backoff.WithMaxTries(maxRetries))
+			for i := range stepList {
+				stepList[i].PipelineID = pipeline.ID
+				// only Insert set auto created ID back to object
+				if err := wrapInsert(sess.Insert(stepList[i])); err != nil {
+					if isUniqueConstraintError(err) {
+						return struct{}{}, err
+					}
+					return struct{}{}, backoff.Permanent(err)
+				}
+			}
 
-	return err
+			return struct{}{}, sess.Commit()
+		}, backoff.WithBackOff(exponentialBackoff), backoff.WithMaxTries(maxRetries))
+
+		return err
+	})
 }
 
 // isUniqueConstraintError checks if an error is a unique constraint violation error.
@@ -210,12 +212,16 @@ func isUniqueConstraintError(err error) bool {
 }
 
 func (s storage) UpdatePipeline(pipeline *model.Pipeline) error {
-	_, err := s.engine.ID(pipeline.ID).AllCols().Update(pipeline)
-	return err
+	return s.wq.serialize(func() error {
+		_, err := s.engine.ID(pipeline.ID).AllCols().Update(pipeline)
+		return err
+	})
 }
 
 func (s storage) DeletePipeline(pipeline *model.Pipeline) error {
-	return s.deletePipeline(s.engine.NewSession(), pipeline.ID)
+	return s.wq.serialize(func() error {
+		return s.deletePipeline(s.engine.NewSession(), pipeline.ID)
+	})
 }
 
 func (s storage) deletePipeline(sess *xorm.Session, pipelineID int64) error {

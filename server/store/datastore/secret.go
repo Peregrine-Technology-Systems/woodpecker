@@ -45,17 +45,23 @@ func (s storage) SecretListAll() ([]*model.Secret, error) {
 }
 
 func (s storage) SecretCreate(secret *model.Secret) error {
-	// only Insert set auto created ID back to object
-	return wrapInsert(s.engine.Insert(secret))
+	return s.wq.serialize(func() error {
+		// only Insert set auto created ID back to object
+		return wrapInsert(s.engine.Insert(secret))
+	})
 }
 
 func (s storage) SecretUpdate(secret *model.Secret) error {
-	_, err := s.engine.ID(secret.ID).AllCols().Update(secret)
-	return err
+	return s.wq.serialize(func() error {
+		_, err := s.engine.ID(secret.ID).AllCols().Update(secret)
+		return err
+	})
 }
 
 func (s storage) SecretDelete(secret *model.Secret) error {
-	return wrapDelete(s.engine.ID(secret.ID).Delete(new(model.Secret)))
+	return s.wq.serialize(func() error {
+		return wrapDelete(s.engine.ID(secret.ID).Delete(new(model.Secret)))
+	})
 }
 
 func (s storage) OrgSecretFind(orgID int64, name string) (*model.Secret, error) {

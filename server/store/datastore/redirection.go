@@ -27,9 +27,11 @@ func (s storage) getRedirection(e *xorm.Session, fullName string) (*model.Redire
 }
 
 func (s storage) CreateRedirection(redirect *model.Redirection) error {
-	sess := s.engine.NewSession()
-	defer sess.Close()
-	return s.createRedirection(sess, redirect)
+	return s.wq.serialize(func() error {
+		sess := s.engine.NewSession()
+		defer sess.Close()
+		return s.createRedirection(sess, redirect)
+	})
 }
 
 func (s storage) createRedirection(e *xorm.Session, redirect *model.Redirection) error {
