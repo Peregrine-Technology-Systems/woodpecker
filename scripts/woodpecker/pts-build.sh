@@ -1,295 +1,243 @@
 #!/usr/bin/env bash
+# pts-build.sh — build woodpecker-server + agent natively and deploy to d3ci42.
+#
+# Replaces Docker build + docker-save deploy with:
+#   1. pnpm build (web UI)
+#   2. go build   (server binary, CGO for SQLite)
+#   3. go build   (agent binary, no CGO)
+#   4. rsync → d3ci42 + symlink + systemctl   (server deploy)
+#   5. GitHub Release + binary assets          (Phase 3)
+#   6. ci-image-builder wake                   (Phase 3c)
+#
+# Prerequisites on agent VM (from Packer image + apt install below):
+#   - /usr/local/go/bin/go  (Go toolchain)
+#   - node + pnpm           (web UI build; installed if absent)
+#   - gcc + build-essential (CGO for go-sqlite3)
+#
+# Closes woodpecker#57.
 set -euo pipefail
 
-REGISTRY="us-central1-docker.pkg.dev/ci-runners-de/ci-images"
-IMAGE="${REGISTRY}/woodpecker-server"
+SERVER_HOST="159.203.159.69"
+RELEASES_DIR="/opt/woodpecker/server/releases"
+CURRENT_LINK="/opt/woodpecker/server/current"
+KEEP_RELEASES=3
+
 SHA_SHORT=$(echo "${CI_COMMIT_SHA:-$(git rev-parse HEAD)}" | cut -c1-8)
 VERSION="v3.13.0-pts.${CI_PIPELINE_NUMBER:-0}"
-SERVER_HOST="159.203.159.69"
+COMMIT_SHA="${CI_COMMIT_SHA:-$(git rev-parse HEAD)}"
 
-echo "==> Building Docker image: ${IMAGE}:${VERSION}"
+echo "==> pts-build: ${VERSION} (${SHA_SHORT})"
 
-# Authenticate to Artifact Registry using agent SA
-gcloud auth configure-docker us-central1-docker.pkg.dev --quiet 2>/dev/null || true
-
-# SSH setup for deploy to d3ci42 (#877)
+# ── SSH setup ──
 SSH_KEY=".deploy-ssh/id_ed25519"
 mkdir -p .deploy-ssh
 echo "$DEPLOY_SSH_KEY" > "$SSH_KEY"
-echo "" >> "$SSH_KEY"
+printf '\n' >> "$SSH_KEY"
 chmod 600 "$SSH_KEY"
-SSH_OPTS="-i $SSH_KEY -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR"
+SSH="ssh -i $SSH_KEY -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR"
+ssh_cmd() { $SSH "root@${SERVER_HOST}" "$@"; }
+scp_cmd() { scp -i "$SSH_KEY" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "$@"; }
 
-docker build \
-  --build-arg "VERSION=${VERSION}" \
-  -t "${IMAGE}:${VERSION}" \
-  -t "${IMAGE}:latest" \
-  .
+# ── Build toolchain setup ──
+export PATH="/usr/local/go/bin:$PATH"
+go version
 
-echo "==> Pushing to Artifact Registry..."
-docker push "${IMAGE}:${VERSION}"
-docker push "${IMAGE}:latest"
+# Node.js + pnpm (install if not present)
+if ! command -v node &>/dev/null; then
+    echo "==> Installing Node.js..."
+    curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash - >/dev/null 2>&1
+    sudo apt-get install -y nodejs >/dev/null 2>&1
+fi
+if ! command -v pnpm &>/dev/null; then
+    sudo npm install -g pnpm >/dev/null 2>&1
+fi
+echo "node $(node --version)  pnpm $(pnpm --version)"
 
-echo "==> Deploying to d3ci42 (${SERVER_HOST})..."
+# gcc for CGO (go-sqlite3)
+if ! command -v gcc &>/dev/null; then
+    sudo apt-get install -y gcc build-essential >/dev/null 2>&1
+fi
 
-# Deploy via docker save + SSH (agent has SA key, no AR auth on server)
-docker save "${IMAGE}:${VERSION}" | ssh $SSH_OPTS "root@${SERVER_HOST}" "docker load"
+# ── Web UI build ──
+echo ""
+echo "==> Building web UI..."
+cd web
+pnpm install --frozen-lockfile >/dev/null 2>&1
+pnpm build >/dev/null 2>&1
+echo "    Web UI built: $(ls dist/ | wc -l) files"
+cd ..
 
-# Capture the previous tag for rollback before we rewrite the pin (#33).
-PREVIOUS_VERSION=$(ssh $SSH_OPTS "root@${SERVER_HOST}" \
-  "grep -oE 'woodpecker-server:v3.13.0-pts\.[0-9]+' /opt/woodpecker/docker-compose.yml | head -1 | sed 's|.*woodpecker-server:||'" || echo "")
-echo "==> Previous pin: ${PREVIOUS_VERSION:-<none>}"
+# ── Compile binaries ──
+mkdir -p bin
 
-# Use flock to prevent concurrent sed race with scaler deploy (#330)
-ssh $SSH_OPTS "root@${SERVER_HOST}" "
-  flock /opt/woodpecker/docker-compose.yml.lock \
-    sed -i 's|woodpecker-server:v3.13.0-pts\.[0-9]*|woodpecker-server:${VERSION}|' /opt/woodpecker/docker-compose.yml
+echo ""
+echo "==> Compiling woodpecker-server (CGO=1)..."
+CGO_ENABLED=1 go build \
+    -ldflags "-s -w -X go.woodpecker-ci.org/woodpecker/v3/version.Version=${VERSION}" \
+    -o bin/woodpecker-server ./cmd/server
+echo "    Server: $(du -h bin/woodpecker-server | cut -f1)"
+
+echo ""
+echo "==> Compiling woodpecker-agent (CGO=0)..."
+CGO_ENABLED=0 go build \
+    -ldflags "-s -w -X go.woodpecker-ci.org/woodpecker/v3/version.Version=${VERSION}" \
+    -o bin/woodpecker-agent ./cmd/agent
+echo "    Agent: $(du -h bin/woodpecker-agent | cut -f1)"
+
+# ── Deploy server to d3ci42 ──
+echo ""
+echo "==> Deploying ${VERSION} to ${SERVER_HOST}..."
+
+# Capture previous release for rollback
+PREVIOUS=$(ssh_cmd "readlink -f ${CURRENT_LINK} 2>/dev/null | xargs basename 2>/dev/null || echo ''" || echo "")
+echo "    Previous: ${PREVIOUS:-<none>}"
+
+# Rsync binary
+ssh_cmd "mkdir -p ${RELEASES_DIR}/${VERSION}"
+rsync -az --checksum \
+    -e "ssh -i $SSH_KEY -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR" \
+    bin/woodpecker-server "root@${SERVER_HOST}:${RELEASES_DIR}/${VERSION}/woodpecker-server"
+ssh_cmd "chmod 755 ${RELEASES_DIR}/${VERSION}/woodpecker-server"
+
+# Checksum verify
+LOCAL_SHA=$(sha256sum bin/woodpecker-server | awk '{print $1}')
+REMOTE_SHA=$(ssh_cmd "sha256sum ${RELEASES_DIR}/${VERSION}/woodpecker-server | awk '{print \$1}'")
+if [ "$LOCAL_SHA" != "$REMOTE_SHA" ]; then
+    echo "ERROR: checksum mismatch after rsync"
+    exit 1
+fi
+echo "    Checksum verified: ${LOCAL_SHA:0:16}..."
+
+# Atomic symlink + restart
+ssh_cmd "
+    ln -sfn ${RELEASES_DIR}/${VERSION} ${CURRENT_LINK}
+    systemctl daemon-reload 2>/dev/null || true
+    systemctl reload-or-restart woodpecker-server
 "
 
-echo "==> Image staged: ${VERSION} on d3ci42"
-
-# Recreate the container and verify health (#33). Run under the same flock as
-# the sed step so concurrent pts-builds (or pts-build vs scaler deploy) can't
-# race on stop/rm/up. On health-check failure, roll the compose pin back to
-# the previous tag and bring the old container back up. Same pattern the
-# scaler's deploy.sh has used since v0.2.42 (#523, #550).
+# ── Health check (60s budget) ──
 echo ""
-echo "==> Recreating woodpecker-server with ${VERSION} (holding compose lock)"
-REMOTE_DEPLOY=$(cat <<REMOTE
-set -u
-cd /opt/woodpecker
-
-# Phase 1: bring up new image
-if ! docker compose up -d --no-deps woodpecker-server; then
-  echo "❌ docker compose up failed — rolling back"
-  if [ -z "${PREVIOUS_VERSION}" ]; then
-    echo "🔥 No previous tag captured — cannot auto-rollback. Server is DOWN."
-    exit 1
-  fi
-  echo "--- Reverting compose pin to ${PREVIOUS_VERSION}"
-  flock /opt/woodpecker/docker-compose.yml.lock sed -i "s|woodpecker-server:v3.13.0-pts\.[0-9]*|woodpecker-server:${PREVIOUS_VERSION}|" /opt/woodpecker/docker-compose.yml
-  if docker compose up -d --no-deps woodpecker-server; then
-    echo "⚠️  Rolled back to ${PREVIOUS_VERSION} — deploy of ${VERSION} FAILED but production is running"
-    exit 2
-  fi
-  echo "🔥 Rollback ALSO failed — server is DOWN. Manual intervention required."
-  exit 3
-fi
-
-# Phase 2: health-check — 60s budget, 15s intervals.
-# /healthz returns 204 when the server is up; /api/queue/info returns 200 + JSON
-# when the queue subsystem has finished restoring tasks from the persistent
-# store. We verify both before declaring success.
-echo "--- Health check: 60s budget, 15s intervals"
+echo "==> Health check..."
 HEALTHY=0
 for i in 0 1 2 3 4; do
-  T=\$((i * 15))
-  HEALTHZ=\$(curl -sS -o /dev/null -w "%{http_code}" --max-time 5 https://d3ci42.peregrinetechsys.net/healthz 2>/dev/null || echo "000")
-  QUEUE=\$(curl -sS -o /dev/null -w "%{http_code}" --max-time 5 https://d3ci42.peregrinetechsys.net/api/queue/info -H "Authorization: Bearer \${WOODPECKER_API_TOKEN:-}" 2>/dev/null || echo "000")
-  echo "  t=\${T}s: /healthz=\$HEALTHZ /api/queue/info=\$QUEUE"
-  if [ "\$HEALTHZ" = "204" ] && [ "\$QUEUE" = "200" ]; then
-    HEALTHY=1
-    break
-  fi
-  if [ "\$i" -lt 4 ]; then
-    sleep 15
-  fi
+    T=$((i * 15))
+    RESPONSE=$(ssh_cmd "curl -sf --max-time 5 http://localhost:8000/healthz 2>/dev/null || echo ''" || echo "")
+    if [ -z "$RESPONSE" ]; then
+        echo "  t=${T}s: <unreachable>"
+    else
+        VERSION_SERVED=$(echo "$RESPONSE" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("version","?"))' 2>/dev/null || echo "?")
+        echo "  t=${T}s: version=${VERSION_SERVED}"
+        if echo "$RESPONSE" | grep -q '"status":"ok"'; then
+            HEALTHY=1
+            break
+        fi
+    fi
+    [ "$i" -lt 4 ] && sleep 15
 done
 
-if [ "\$HEALTHY" != "1" ]; then
-  echo "❌ Health check failed after 60s — rolling back"
-  if [ -z "${PREVIOUS_VERSION}" ]; then
-    echo "🔥 No previous tag — cannot rollback. Server may be unhealthy."
+if [ "$HEALTHY" -ne 1 ]; then
+    echo "❌ Health check failed — rolling back to ${PREVIOUS:-<none>}"
+    if [ -n "$PREVIOUS" ] && ssh_cmd "test -d ${RELEASES_DIR}/${PREVIOUS}"; then
+        ssh_cmd "
+            ln -sfn ${RELEASES_DIR}/${PREVIOUS} ${CURRENT_LINK}
+            systemctl reload-or-restart woodpecker-server
+        "
+        echo "⚠️  Rolled back to ${PREVIOUS}"
+    fi
     exit 1
-  fi
-  flock /opt/woodpecker/docker-compose.yml.lock sed -i "s|woodpecker-server:v3.13.0-pts\.[0-9]*|woodpecker-server:${PREVIOUS_VERSION}|" /opt/woodpecker/docker-compose.yml
-  docker compose up -d --no-deps woodpecker-server
-  echo "⚠️  Rolled back to ${PREVIOUS_VERSION} after failed health check"
-  exit 2
 fi
 
-echo "✅ ${VERSION} is healthy and live"
-REMOTE
-)
+# Prune old releases (keep KEEP_RELEASES)
+ssh_cmd "
+    find ${RELEASES_DIR} -maxdepth 1 -mindepth 1 -type d | sort -r | tail -n +$((KEEP_RELEASES + 1)) | while read -r dir; do
+        current=\$(readlink -f ${CURRENT_LINK} 2>/dev/null || echo '')
+        [ \"\$dir\" != \"\$current\" ] && rm -rf \"\$dir\" && echo \"Pruned: \$dir\"
+    done
+" 2>/dev/null || true
 
-ssh $SSH_OPTS "root@${SERVER_HOST}" "flock /opt/woodpecker/docker-compose.yml.lock bash -s" <<<"$REMOTE_DEPLOY"
+echo "✅ ${VERSION} deployed to ${SERVER_HOST}"
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Phase 3 (#40): publish agent binary as GitHub Release asset + wake the
-# ci-image-builder VM so the matching CI agent VM image gets baked. Each
-# block is best-effort and logs without aborting on failure — server image
-# has already deployed by this point and is the load-bearing artifact.
+# Phase 3: GitHub Release + binary assets + builder VM wake
 # ─────────────────────────────────────────────────────────────────────────────
-
 REPO_FULL="Peregrine-Technology-Systems/woodpecker"
-COMMIT_SHA=$(echo "${CI_COMMIT_SHA:-$(git rev-parse HEAD)}")
 GH_API="https://api.github.com"
 GH_AUTH="Authorization: Bearer ${GH_TOKEN:-}"
 
 if [ -z "${GH_TOKEN:-}" ]; then
-  echo ""
-  echo "==> Skipping GH Release + builder wake: GH_TOKEN not set"
-  echo "    Server image ${IMAGE}:${VERSION} is already deployed; only the"
-  echo "    Phase 3 producer-side flow is skipped."
-  exit 0
-fi
-
-echo ""
-echo "==> Phase 3a: extract agent + server binaries"
-AGENT_BIN="/tmp/woodpecker-agent-${VERSION}"
-SERVER_BIN="/tmp/woodpecker-server-${VERSION}"
-EXTRACT_TAG="pts-agent-extract:${VERSION}"
-AGENT_CONTAINER="pts-extract-agent-${CI_PIPELINE_NUMBER:-$$}"
-SERVER_CONTAINER="pts-extract-server-${CI_PIPELINE_NUMBER:-$$}"
-
-# Agent binary — from build stage (same as before)
-if docker build --target build --build-arg "VERSION=${VERSION}" -t "${EXTRACT_TAG}" . >/dev/null 2>&1 \
-   && docker create --name "${AGENT_CONTAINER}" "${EXTRACT_TAG}" >/dev/null 2>&1 \
-   && docker cp "${AGENT_CONTAINER}:/build/woodpecker-agent" "${AGENT_BIN}" >/dev/null 2>&1; then
-  docker rm "${AGENT_CONTAINER}" >/dev/null 2>&1 || true
-  echo "    Agent binary: ${AGENT_BIN} ($(du -h "${AGENT_BIN}" | cut -f1))"
-else
-  docker rm "${AGENT_CONTAINER}" >/dev/null 2>&1 || true
-  echo "    ⚠️  Agent binary extraction failed; skipping GH Release + builder wake"
-  exit 0
-fi
-
-# Server binary — from the already-built final image (#53). The image is
-# already on d3ci42 and in Artifact Registry; docker create is instantaneous.
-if docker create --name "${SERVER_CONTAINER}" "${IMAGE}:${VERSION}" >/dev/null 2>&1 \
-   && docker cp "${SERVER_CONTAINER}:/bin/woodpecker-server" "${SERVER_BIN}" >/dev/null 2>&1; then
-  docker rm "${SERVER_CONTAINER}" >/dev/null 2>&1 || true
-  echo "    Server binary: ${SERVER_BIN} ($(du -h "${SERVER_BIN}" | cut -f1))"
-else
-  docker rm "${SERVER_CONTAINER}" >/dev/null 2>&1 || true
-  echo "    ⚠️  Server binary extraction failed — continuing without it (agent + builder wake unaffected)"
-  SERVER_BIN=""
-fi
-
-echo ""
-echo "==> Phase 3b: tag fork at build commit + create GH Release"
-# Idempotent tag creation
-if curl -sS -H "${GH_AUTH}" "${GH_API}/repos/${REPO_FULL}/git/refs/tags/${VERSION}" | grep -q '"ref"'; then
-  echo "    Tag ${VERSION} already exists; reusing"
-else
-  TAG_RESP=$(curl -sS -X POST -H "${GH_AUTH}" -H "Content-Type: application/json" \
-    "${GH_API}/repos/${REPO_FULL}/git/refs" \
-    -d "{\"ref\":\"refs/tags/${VERSION}\",\"sha\":\"${COMMIT_SHA}\"}")
-  if echo "${TAG_RESP}" | grep -q '"ref"'; then
-    echo "    Tag ${VERSION} → ${COMMIT_SHA:0:8}"
-  else
-    echo "    ⚠️  Failed to create tag ${VERSION}: $(echo "${TAG_RESP}" | head -c 200)"
+    echo ""
+    echo "==> Skipping GH Release + builder wake: GH_TOKEN not set"
     exit 0
-  fi
 fi
 
-# Idempotent Release creation
-RELEASE_BODY="Automated release from pts-build pipeline ${CI_PIPELINE_NUMBER:-?}.\n\nServer image: \`${IMAGE}:${VERSION}\` deployed to d3ci42.\nBinaries: \`woodpecker-agent-linux-amd64\` (CI agent) and \`woodpecker-server-linux-amd64\` (#53 — for native d3ci42 upgrade path) attached as release assets."
-RELEASE_ID=$(curl -sS -H "${GH_AUTH}" "${GH_API}/repos/${REPO_FULL}/releases/tags/${VERSION}" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("id","") if isinstance(d,dict) else "")' 2>/dev/null || echo "")
+echo ""
+echo "==> Phase 3a: tag fork at build commit"
+if curl -sS -H "${GH_AUTH}" "${GH_API}/repos/${REPO_FULL}/git/refs/tags/${VERSION}" | grep -q '"ref"'; then
+    echo "    Tag ${VERSION} already exists; reusing"
+else
+    TAG_RESP=$(curl -sS -X POST -H "${GH_AUTH}" -H "Content-Type: application/json" \
+        "${GH_API}/repos/${REPO_FULL}/git/refs" \
+        -d "{\"ref\":\"refs/tags/${VERSION}\",\"sha\":\"${COMMIT_SHA}\"}")
+    echo "${TAG_RESP}" | grep -q '"ref"' && echo "    Tag ${VERSION} → ${SHA_SHORT}" || \
+        { echo "    ⚠️  Tag failed: $(echo "${TAG_RESP}" | head -c 100)"; exit 0; }
+fi
+
+echo ""
+echo "==> Phase 3b: create GitHub Release"
+RELEASE_BODY="Automated release from pts-build pipeline ${CI_PIPELINE_NUMBER:-?}.\n\nBinaries: \`woodpecker-server-linux-amd64\` and \`woodpecker-agent-linux-amd64\` attached as release assets.\nDeployed to d3ci42 via native rsync (woodpecker#57)."
+RELEASE_ID=$(curl -sS -H "${GH_AUTH}" "${GH_API}/repos/${REPO_FULL}/releases/tags/${VERSION}" | \
+    python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("id","") if isinstance(d,dict) else "")' 2>/dev/null || echo "")
 
 if [ -n "${RELEASE_ID}" ]; then
-  echo "    Release ${VERSION} already exists (id=${RELEASE_ID}); reusing"
+    echo "    Release ${VERSION} already exists (id=${RELEASE_ID})"
 else
-  RELEASE_RESP=$(curl -sS -X POST -H "${GH_AUTH}" -H "Content-Type: application/json" \
-    "${GH_API}/repos/${REPO_FULL}/releases" \
-    -d "{\"tag_name\":\"${VERSION}\",\"name\":\"${VERSION}\",\"body\":\"${RELEASE_BODY}\",\"draft\":false,\"prerelease\":false}")
-  RELEASE_ID=$(echo "${RELEASE_RESP}" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("id","") if isinstance(d,dict) else "")' 2>/dev/null || echo "")
-  if [ -n "${RELEASE_ID}" ]; then
-    echo "    Created Release ${VERSION} (id=${RELEASE_ID})"
-  else
-    echo "    ⚠️  Failed to create Release: $(echo "${RELEASE_RESP}" | head -c 200)"
-    exit 0
-  fi
+    RELEASE_RESP=$(curl -sS -X POST -H "${GH_AUTH}" -H "Content-Type: application/json" \
+        "${GH_API}/repos/${REPO_FULL}/releases" \
+        -d "{\"tag_name\":\"${VERSION}\",\"name\":\"${VERSION}\",\"body\":\"${RELEASE_BODY}\",\"draft\":false,\"prerelease\":false}")
+    RELEASE_ID=$(echo "${RELEASE_RESP}" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("id","") if isinstance(d,dict) else "")' 2>/dev/null || echo "")
+    [ -n "${RELEASE_ID}" ] && echo "    Created Release ${VERSION} (id=${RELEASE_ID})" || \
+        { echo "    ⚠️  Release failed: $(echo "${RELEASE_RESP}" | head -c 100)"; exit 0; }
 fi
 
-# Replace asset on Release (idempotent re-runs)
-ASSET_NAME="woodpecker-agent-linux-amd64"
-EXISTING_ASSET_ID=$(curl -sS -H "${GH_AUTH}" "${GH_API}/repos/${REPO_FULL}/releases/${RELEASE_ID}/assets" \
-  | python3 -c "
-import json, sys
-d = json.load(sys.stdin)
-for a in (d if isinstance(d, list) else []):
-    if a.get('name') == '${ASSET_NAME}':
-        print(a.get('id', ''))
-        break
-" 2>/dev/null || echo "")
+# Upload helper — idempotent (delete existing asset first)
+upload_asset() {
+    local name="$1" path="$2"
+    EXISTING=$(curl -sS -H "${GH_AUTH}" "${GH_API}/repos/${REPO_FULL}/releases/${RELEASE_ID}/assets" | \
+        python3 -c "import json,sys; d=json.load(sys.stdin); [print(a['id']) for a in (d if isinstance(d,list) else []) if a.get('name')=='${name}']" 2>/dev/null || echo "")
+    [ -n "$EXISTING" ] && curl -sS -X DELETE -H "${GH_AUTH}" "${GH_API}/repos/${REPO_FULL}/releases/assets/${EXISTING}" >/dev/null
+    RESP=$(curl -sS -X POST -H "${GH_AUTH}" -H "Content-Type: application/octet-stream" \
+        --data-binary "@${path}" \
+        "https://uploads.github.com/repos/${REPO_FULL}/releases/${RELEASE_ID}/assets?name=${name}")
+    echo "$RESP" | grep -q '"browser_download_url"' && \
+        echo "    Uploaded ${name} ($(du -h "${path}" | cut -f1))" || \
+        echo "    ⚠️  Upload failed for ${name}: $(echo "$RESP" | head -c 100)"
+}
 
-if [ -n "${EXISTING_ASSET_ID}" ]; then
-  curl -sS -X DELETE -H "${GH_AUTH}" "${GH_API}/repos/${REPO_FULL}/releases/assets/${EXISTING_ASSET_ID}" >/dev/null
-  echo "    Replaced existing ${ASSET_NAME} asset"
-fi
-
-UPLOAD_RESP=$(curl -sS -X POST -H "${GH_AUTH}" -H "Content-Type: application/octet-stream" \
-  --data-binary "@${AGENT_BIN}" \
-  "https://uploads.github.com/repos/${REPO_FULL}/releases/${RELEASE_ID}/assets?name=${ASSET_NAME}")
-if echo "${UPLOAD_RESP}" | grep -q '"browser_download_url"'; then
-  echo "    Uploaded ${ASSET_NAME} ($(du -h "${AGENT_BIN}" | cut -f1)) to Release ${VERSION}"
-else
-  echo "    ⚠️  Asset upload failed: $(echo "${UPLOAD_RESP}" | head -c 200)"
-fi
-
-# Server binary upload (#53) — best-effort, same idempotency pattern
-if [ -n "${SERVER_BIN:-}" ]; then
-  SERVER_ASSET_NAME="woodpecker-server-linux-amd64"
-  EXISTING_SERVER_ASSET_ID=$(curl -sS -H "${GH_AUTH}" "${GH_API}/repos/${REPO_FULL}/releases/${RELEASE_ID}/assets" \
-    | python3 -c "
-import json, sys
-d = json.load(sys.stdin)
-for a in (d if isinstance(d, list) else []):
-    if a.get('name') == '${SERVER_ASSET_NAME}':
-        print(a.get('id', ''))
-        break
-" 2>/dev/null || echo "")
-  if [ -n "${EXISTING_SERVER_ASSET_ID}" ]; then
-    curl -sS -X DELETE -H "${GH_AUTH}" "${GH_API}/repos/${REPO_FULL}/releases/assets/${EXISTING_SERVER_ASSET_ID}" >/dev/null
-    echo "    Replaced existing ${SERVER_ASSET_NAME} asset"
-  fi
-  SERVER_UPLOAD_RESP=$(curl -sS -X POST -H "${GH_AUTH}" -H "Content-Type: application/octet-stream" \
-    --data-binary "@${SERVER_BIN}" \
-    "https://uploads.github.com/repos/${REPO_FULL}/releases/${RELEASE_ID}/assets?name=${SERVER_ASSET_NAME}")
-  if echo "${SERVER_UPLOAD_RESP}" | grep -q '"browser_download_url"'; then
-    echo "    Uploaded ${SERVER_ASSET_NAME} ($(du -h "${SERVER_BIN}" | cut -f1)) to Release ${VERSION}"
-  else
-    echo "    ⚠️  Server asset upload failed: $(echo "${SERVER_UPLOAD_RESP}" | head -c 200)"
-  fi
-fi
+upload_asset "woodpecker-server-linux-amd64" "bin/woodpecker-server"
+upload_asset "woodpecker-agent-linux-amd64"  "bin/woodpecker-agent"
 
 echo ""
-echo "==> Phase 3c: best-effort wake of ci-image-builder (#1255)"
-# Job-file pattern matches ci-infrastructure/terraform/scripts/builder-vm/wake.sh
+echo "==> Phase 3c: wake ci-image-builder"
 BUILDER_PROJECT="ci-runners-de"
 BUILDER_ZONE="us-central1-a"
 BUILDER_VM="ci-image-builder"
 BUILDER_BUCKET="${BUILDER_PROJECT}-image-builder-state"
-REQUEST_ID=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n' | awk '{
-    printf "%s-%s-%s-%s-%s",
-        substr($0,1,8), substr($0,9,4), substr($0,13,4),
-        substr($0,17,4), substr($0,21,12)
-}')
+REQUEST_ID=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n' | awk '{printf "%s-%s-%s-%s-%s", substr($0,1,8), substr($0,9,4), substr($0,13,4), substr($0,17,4), substr($0,21,12)}')
 NOW_ISO=$(date -u +%FT%TZ)
 
 JOB_FILE=$(mktemp)
 cat > "${JOB_FILE}" <<JOB
-{
-  "request_id": "${REQUEST_ID}",
-  "wp_version": "${VERSION}",
-  "scaler_version": "",
-  "triggered_by": "woodpecker-fork-pts-build-${CI_PIPELINE_NUMBER:-?}",
-  "created_at": "${NOW_ISO}"
-}
+{"request_id":"${REQUEST_ID}","wp_version":"${VERSION}","scaler_version":"","triggered_by":"woodpecker-pts-build-${CI_PIPELINE_NUMBER:-?}","created_at":"${NOW_ISO}"}
 JOB
 
 if gsutil -q cp "${JOB_FILE}" "gs://${BUILDER_BUCKET}/jobs/${REQUEST_ID}.json" 2>/dev/null; then
-  echo "    Wrote job: gs://${BUILDER_BUCKET}/jobs/${REQUEST_ID}.json"
-  if gcloud --quiet compute instances start "${BUILDER_VM}" --zone="${BUILDER_ZONE}" --project="${BUILDER_PROJECT}" 2>/dev/null; then
-    echo "    Started ${BUILDER_VM} (request_id=${REQUEST_ID})"
-  else
-    echo "    ⚠️  Could not start builder VM — job written; will be picked up on next wake. Non-blocking."
-  fi
+    echo "    Wrote job: ${REQUEST_ID}"
+    gcloud --quiet compute instances start "${BUILDER_VM}" --zone="${BUILDER_ZONE}" --project="${BUILDER_PROJECT}" 2>/dev/null && \
+        echo "    Started ${BUILDER_VM}" || echo "    ⚠️  Could not start builder VM — job written, will be picked up next wake"
 else
-  echo "    ⚠️  Could not write job file (likely IAM not yet granted to ci-agent SA on ${BUILDER_BUCKET}). Non-blocking — server image already deployed."
+    echo "    ⚠️  Could not write job file — non-blocking"
 fi
 rm -f "${JOB_FILE}"
 
 echo ""
-echo "✅ Phase 3 producer-side complete: tag ${VERSION}, GH Release with agent binary, wake request ${REQUEST_ID:-skipped}"
+echo "✅ pts-build ${VERSION} complete: deployed + GH Release + agent binary + builder wake"
