@@ -33,26 +33,30 @@ func (s storage) LogFind(step *model.Step) ([]*model.LogEntry, error) {
 }
 
 func (s storage) LogAppend(_ *model.Step, logEntries []*model.LogEntry) error {
-	var errs error
+	return s.wq.serialize(func() error {
+		var errs error
 
-	// TODO: adapted from slices.Chunk(); switch to it in Go 1.23+
-	for i := 0; i < len(logEntries); i += pgBatchSize {
-		end := min(pgBatchSize, len(logEntries[i:]))
-		chunk := logEntries[i : i+end]
+		// TODO: adapted from slices.Chunk(); switch to it in Go 1.23+
+		for i := 0; i < len(logEntries); i += pgBatchSize {
+			end := min(pgBatchSize, len(logEntries[i:]))
+			chunk := logEntries[i : i+end]
 
-		if err := wrapInsert(s.engine.Insert(chunk)); err != nil {
-			log.Error().Err(err).Msg("could not store log entries to db")
-			errs = errors.Join(errs, err)
+			if err := wrapInsert(s.engine.Insert(chunk)); err != nil {
+				log.Error().Err(err).Msg("could not store log entries to db")
+				errs = errors.Join(errs, err)
+			}
 		}
-	}
 
-	return errs
+		return errs
+	})
 }
 
 func (s storage) LogDelete(step *model.Step) error {
-	sess := s.engine.NewSession()
-	defer sess.Close()
-	return logDelete(sess, step.ID)
+	return s.wq.serialize(func() error {
+		sess := s.engine.NewSession()
+		defer sess.Close()
+		return logDelete(sess, step.ID)
+	})
 }
 
 func logDelete(sess *xorm.Session, stepID int64) error {

@@ -28,11 +28,13 @@ func (s storage) CronCreate(cron *model.Cron) error {
 	if err := cron.Validate(); err != nil {
 		return err
 	}
-	err := wrapInsert(s.engine.Insert(cron))
-	if errors.Is(err, types.ErrInsertDuplicateDetected) {
-		return fmt.Errorf("create cron failed, duplicate detected: %w", err)
-	}
-	return err
+	return s.wq.serialize(func() error {
+		err := wrapInsert(s.engine.Insert(cron))
+		if errors.Is(err, types.ErrInsertDuplicateDetected) {
+			return fmt.Errorf("create cron failed, duplicate detected: %w", err)
+		}
+		return err
+	})
 }
 
 func (s storage) CronFind(repo *model.Repo, id int64) (*model.Cron, error) {
@@ -46,12 +48,16 @@ func (s storage) CronList(repo *model.Repo, p *model.ListOptions) ([]*model.Cron
 }
 
 func (s storage) CronUpdate(_ *model.Repo, cron *model.Cron) error {
-	_, err := s.engine.ID(cron.ID).AllCols().Update(cron)
-	return err
+	return s.wq.serialize(func() error {
+		_, err := s.engine.ID(cron.ID).AllCols().Update(cron)
+		return err
+	})
 }
 
 func (s storage) CronDelete(repo *model.Repo, id int64) error {
-	return wrapDelete(s.engine.ID(id).Where("repo_id = ?", repo.ID).Delete(new(model.Cron)))
+	return s.wq.serialize(func() error {
+		return wrapDelete(s.engine.ID(id).Where("repo_id = ?", repo.ID).Delete(new(model.Cron)))
+	})
 }
 
 // CronListNextExecute returns limited number of jobs with NextExec being less or equal to the provided unix timestamp.
@@ -62,13 +68,15 @@ func (s storage) CronListNextExecute(nextExec, limit int64) ([]*model.Cron, erro
 
 // CronGetLock try to get a lock by updating NextExec.
 func (s storage) CronGetLock(cron *model.Cron, newNextExec int64) (bool, error) {
-	cols, err := s.engine.ID(cron.ID).Where(builder.Eq{"next_exec": cron.NextExec}).
-		Cols("next_exec").Update(&model.Cron{NextExec: newNextExec})
-	gotLock := cols != 0
-
-	if err == nil && gotLock {
-		cron.NextExec = newNextExec
-	}
-
+	var gotLock bool
+	err := s.wq.serialize(func() error {
+		cols, err := s.engine.ID(cron.ID).Where(builder.Eq{"next_exec": cron.NextExec}).
+			Cols("next_exec").Update(&model.Cron{NextExec: newNextExec})
+		gotLock = cols != 0
+		if err == nil && gotLock {
+			cron.NextExec = newNextExec
+		}
+		return err
+	})
 	return gotLock, err
 }

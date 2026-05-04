@@ -27,6 +27,9 @@ import (
 
 type storage struct {
 	engine *xorm.Engine
+	// wq serializes writes for SQLite to prevent SQLITE_BUSY under concurrent
+	// load (#55). nil for non-SQLite drivers (serialize() calls fn directly).
+	wq *writeQueue
 }
 
 const perPage = 50
@@ -53,9 +56,11 @@ func NewEngine(opts *store.Opts) (store.Store, error) {
 	engine.SetMaxIdleConns(opts.XORM.MaxIdleConns)
 	engine.SetConnMaxLifetime(opts.XORM.ConnMaxLifetime)
 
-	return &storage{
-		engine: engine,
-	}, nil
+	s := &storage{engine: engine}
+	if opts.Driver == "sqlite3" {
+		s.wq = newWriteQueue(writeQueueDepth)
+	}
+	return s, nil
 }
 
 func (s storage) Ping() error {
@@ -68,5 +73,8 @@ func (s storage) Migrate(ctx context.Context, allowLong bool) error {
 }
 
 func (s storage) Close() error {
+	if s.wq != nil {
+		s.wq.close()
+	}
 	return s.engine.Close()
 }
