@@ -144,7 +144,7 @@ echo "    Checksum verified: ${LOCAL_SHA:0:16}..."
 ssh_cmd "
     ln -sfn ${RELEASES_DIR}/${VERSION} ${CURRENT_LINK}
     systemctl daemon-reload 2>/dev/null || true
-    systemctl reload-or-restart woodpecker-server
+    systemctl restart woodpecker-server
 "
 
 # ── Health check (60s budget) ──
@@ -172,7 +172,7 @@ if [ "$HEALTHY" -ne 1 ]; then
     if [ -n "$PREVIOUS" ] && ssh_cmd "test -d ${RELEASES_DIR}/${PREVIOUS}"; then
         ssh_cmd "
             ln -sfn ${RELEASES_DIR}/${PREVIOUS} ${CURRENT_LINK}
-            systemctl reload-or-restart woodpecker-server
+            systemctl restart woodpecker-server
         "
         echo "⚠️  Rolled back to ${PREVIOUS}"
     fi
