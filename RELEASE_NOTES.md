@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- fix: use `systemctl restart` not `reload-or-restart` for woodpecker-server in pts-build.sh. `reload-or-restart` sends SIGHUP; woodpecker-server exits on SIGHUP rather than reloading, taking the server down on every pts-build deploy and generating up/down Slack alerts. Fixed in both the deploy path and rollback path.
+
 - feat: GCS build cache for pts-build (#851). Restores Go build cache + module cache from `gs://ci-runners-de-build-cache/` at build start, saves back after compile. Warm cache reduces compile time ~8 min → ~1 min. Best-effort: non-fatal on cache miss or save failure.
 
 - feat: replace Docker build + deploy with native Go compile + rsync (#57). `pts-build.sh` now: (1) installs Node.js + pnpm + gcc if not already on the agent; (2) `pnpm build` for the web UI; (3) `CGO_ENABLED=1 go build` for the server binary (SQLite requires CGO); (4) `CGO_ENABLED=0 go build` for the agent binary; (5) rsyncs server binary to d3ci42 at `/opt/woodpecker/server/releases/${VERSION}/`, atomic symlink swap, `systemctl reload-or-restart woodpecker-server`; (6) 60s health check with rollback to previous release on failure; (7) publishes both binaries as GitHub Release assets; (8) wakes ci-image-builder. Eliminates Docker from the entire build + deploy pipeline — `Dockerfile` archived but not deleted (kept for reference). Motivated by peregrine-infrastructure#1403 masking Docker on d3ci42 and the repeated pts-build agent disconnects during long Docker builds.
