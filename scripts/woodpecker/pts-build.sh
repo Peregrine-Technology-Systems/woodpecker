@@ -135,20 +135,35 @@ if [ -z "${GH_TOKEN:-}" ]; then
 fi
 
 echo ""
-echo "==> Phase 3a: extract agent binary from build stage"
+echo "==> Phase 3a: extract agent + server binaries"
 AGENT_BIN="/tmp/woodpecker-agent-${VERSION}"
+SERVER_BIN="/tmp/woodpecker-server-${VERSION}"
 EXTRACT_TAG="pts-agent-extract:${VERSION}"
-EXTRACT_CONTAINER="pts-extract-${CI_PIPELINE_NUMBER:-$$}"
+AGENT_CONTAINER="pts-extract-agent-${CI_PIPELINE_NUMBER:-$$}"
+SERVER_CONTAINER="pts-extract-server-${CI_PIPELINE_NUMBER:-$$}"
 
+# Agent binary — from build stage (same as before)
 if docker build --target build --build-arg "VERSION=${VERSION}" -t "${EXTRACT_TAG}" . >/dev/null 2>&1 \
-   && docker create --name "${EXTRACT_CONTAINER}" "${EXTRACT_TAG}" >/dev/null 2>&1 \
-   && docker cp "${EXTRACT_CONTAINER}:/build/woodpecker-agent" "${AGENT_BIN}" >/dev/null 2>&1; then
-  docker rm "${EXTRACT_CONTAINER}" >/dev/null 2>&1 || true
+   && docker create --name "${AGENT_CONTAINER}" "${EXTRACT_TAG}" >/dev/null 2>&1 \
+   && docker cp "${AGENT_CONTAINER}:/build/woodpecker-agent" "${AGENT_BIN}" >/dev/null 2>&1; then
+  docker rm "${AGENT_CONTAINER}" >/dev/null 2>&1 || true
   echo "    Agent binary: ${AGENT_BIN} ($(du -h "${AGENT_BIN}" | cut -f1))"
 else
-  docker rm "${EXTRACT_CONTAINER}" >/dev/null 2>&1 || true
+  docker rm "${AGENT_CONTAINER}" >/dev/null 2>&1 || true
   echo "    ⚠️  Agent binary extraction failed; skipping GH Release + builder wake"
   exit 0
+fi
+
+# Server binary — from the already-built final image (#53). The image is
+# already on d3ci42 and in Artifact Registry; docker create is instantaneous.
+if docker create --name "${SERVER_CONTAINER}" "${IMAGE}:${VERSION}" >/dev/null 2>&1 \
+   && docker cp "${SERVER_CONTAINER}:/bin/woodpecker-server" "${SERVER_BIN}" >/dev/null 2>&1; then
+  docker rm "${SERVER_CONTAINER}" >/dev/null 2>&1 || true
+  echo "    Server binary: ${SERVER_BIN} ($(du -h "${SERVER_BIN}" | cut -f1))"
+else
+  docker rm "${SERVER_CONTAINER}" >/dev/null 2>&1 || true
+  echo "    ⚠️  Server binary extraction failed — continuing without it (agent + builder wake unaffected)"
+  SERVER_BIN=""
 fi
 
 echo ""
@@ -169,7 +184,7 @@ else
 fi
 
 # Idempotent Release creation
-RELEASE_BODY="Automated release from pts-build pipeline ${CI_PIPELINE_NUMBER:-?}.\n\nServer image: \`${IMAGE}:${VERSION}\` deployed to d3ci42.\nAgent binary: attached as \`woodpecker-agent-linux-amd64\`."
+RELEASE_BODY="Automated release from pts-build pipeline ${CI_PIPELINE_NUMBER:-?}.\n\nServer image: \`${IMAGE}:${VERSION}\` deployed to d3ci42.\nBinaries: \`woodpecker-agent-linux-amd64\` (CI agent) and \`woodpecker-server-linux-amd64\` (#53 — for native d3ci42 upgrade path) attached as release assets."
 RELEASE_ID=$(curl -sS -H "${GH_AUTH}" "${GH_API}/repos/${REPO_FULL}/releases/tags/${VERSION}" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("id","") if isinstance(d,dict) else "")' 2>/dev/null || echo "")
 
 if [ -n "${RELEASE_ID}" ]; then
@@ -211,6 +226,32 @@ if echo "${UPLOAD_RESP}" | grep -q '"browser_download_url"'; then
   echo "    Uploaded ${ASSET_NAME} ($(du -h "${AGENT_BIN}" | cut -f1)) to Release ${VERSION}"
 else
   echo "    ⚠️  Asset upload failed: $(echo "${UPLOAD_RESP}" | head -c 200)"
+fi
+
+# Server binary upload (#53) — best-effort, same idempotency pattern
+if [ -n "${SERVER_BIN:-}" ]; then
+  SERVER_ASSET_NAME="woodpecker-server-linux-amd64"
+  EXISTING_SERVER_ASSET_ID=$(curl -sS -H "${GH_AUTH}" "${GH_API}/repos/${REPO_FULL}/releases/${RELEASE_ID}/assets" \
+    | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+for a in (d if isinstance(d, list) else []):
+    if a.get('name') == '${SERVER_ASSET_NAME}':
+        print(a.get('id', ''))
+        break
+" 2>/dev/null || echo "")
+  if [ -n "${EXISTING_SERVER_ASSET_ID}" ]; then
+    curl -sS -X DELETE -H "${GH_AUTH}" "${GH_API}/repos/${REPO_FULL}/releases/assets/${EXISTING_SERVER_ASSET_ID}" >/dev/null
+    echo "    Replaced existing ${SERVER_ASSET_NAME} asset"
+  fi
+  SERVER_UPLOAD_RESP=$(curl -sS -X POST -H "${GH_AUTH}" -H "Content-Type: application/octet-stream" \
+    --data-binary "@${SERVER_BIN}" \
+    "https://uploads.github.com/repos/${REPO_FULL}/releases/${RELEASE_ID}/assets?name=${SERVER_ASSET_NAME}")
+  if echo "${SERVER_UPLOAD_RESP}" | grep -q '"browser_download_url"'; then
+    echo "    Uploaded ${SERVER_ASSET_NAME} ($(du -h "${SERVER_BIN}" | cut -f1)) to Release ${VERSION}"
+  else
+    echo "    ⚠️  Server asset upload failed: $(echo "${SERVER_UPLOAD_RESP}" | head -c 200)"
+  fi
 fi
 
 echo ""
