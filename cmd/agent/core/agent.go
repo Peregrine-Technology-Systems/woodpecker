@@ -346,8 +346,10 @@ func run(ctx context.Context, c *cli.Command, backends []types.Backend) error {
 						if s, ok := status.FromError(err); ok {
 							msg := s.Message()
 							if strings.Contains(msg, "token is expired") ||
-								strings.Contains(msg, "AgentID not found") ||
-								strings.Contains(msg, "sql: no rows") {
+								strings.Contains(msg, "AgentID not found") {
+								// Note: "sql: no rows" is intentionally excluded — next() returns
+								// this normally when no tasks are pending. It is a stale-conf
+								// signal only at RegisterAgent() time (handled in #101/#102). (#103)
 								log.Fatal().Err(err).Msg("agent auth failed with stale credentials — exiting for systemd restart (#77)")
 							}
 						}

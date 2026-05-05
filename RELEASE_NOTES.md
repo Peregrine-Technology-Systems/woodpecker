@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- fix: remove sql:no-rows from runner-loop stale-conf check — next() legitimately returns this when no tasks are pending; false positive was calling log.Fatal() mid-task, killing in-flight wake steps (#103)
 - fix: agent stale-conf self-heal now covers RegisterAgent() auth failure — deletes agent.conf before exiting so systemd restart re-registers fresh instead of crash-looping on the same stale AgentID (#101)
 - fix: pts-wake.sh uses WebSocket transport for pentest-dev-vm agent — port 9000 (gRPC direct) is localhost-only on d3ci42; external VMs must connect via WebSocket through Caddy TLS (#99)
 - fix: restore `backend: local` to pts-build.yaml — removed incorrectly during backend:local sweep; pts-build is the only legitimate use and must run on d3ci42-local (#96)
