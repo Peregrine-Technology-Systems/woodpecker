@@ -50,12 +50,35 @@ done
 # Agent secret injected as WOODPECKER_AGENT_SECRET env var via Woodpecker secret
 AGENT_SECRET="${WOODPECKER_AGENT_SECRET:?WOODPECKER_AGENT_SECRET must be set}"
 
-# Find the woodpecker-agent binary on pentest-dev
+# Ensure woodpecker-agent binary exists on pentest-dev.
+# If absent, download the latest published asset from the GitHub Release.
+# This handles fresh VMs and snapshot restores cleanly.
 AGENT_BIN=$($PTS_SSH "root@${PENTEST_IP}" \
     "ls /opt/woodpecker/woodpecker-agent-* 2>/dev/null | sort -V | tail -1 || echo ''")
 if [ -z "${AGENT_BIN}" ]; then
-    echo "ERROR: no woodpecker-agent binary found on ${PENTEST_VM}"
-    exit 1
+    echo "==> No agent binary on ${PENTEST_VM} — downloading from latest GitHub Release..."
+    LATEST_TAG=$(curl -sf -H "Authorization: Bearer ${GH_TOKEN:-}" \
+        "https://api.github.com/repos/Peregrine-Technology-Systems/woodpecker/releases/latest" | \
+        python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["tag_name"])' 2>/dev/null || echo "")
+    if [ -z "$LATEST_TAG" ]; then
+        echo "ERROR: could not determine latest release tag"
+        exit 1
+    fi
+    AGENT_URL=$(curl -sf -H "Authorization: Bearer ${GH_TOKEN:-}" \
+        "https://api.github.com/repos/Peregrine-Technology-Systems/woodpecker/releases/latest" | \
+        python3 -c 'import json,sys; d=json.load(sys.stdin); print(next((a["browser_download_url"] for a in d["assets"] if a["name"]=="woodpecker-agent-linux-amd64"), ""))' 2>/dev/null || echo "")
+    if [ -z "$AGENT_URL" ]; then
+        echo "ERROR: woodpecker-agent-linux-amd64 asset not found in release ${LATEST_TAG}"
+        exit 1
+    fi
+    AGENT_BIN="/opt/woodpecker/woodpecker-agent-${LATEST_TAG}"
+    $PTS_SSH "root@${PENTEST_IP}" "
+        mkdir -p /opt/woodpecker
+        curl -sfL -H 'Authorization: Bearer ${GH_TOKEN:-}' '${AGENT_URL}' \
+            -o '${AGENT_BIN}' && chmod +x '${AGENT_BIN}'
+        echo 'Downloaded: ${AGENT_BIN}'
+    "
+    echo "    downloaded: ${AGENT_BIN}"
 fi
 echo "    agent binary: ${AGENT_BIN}"
 
