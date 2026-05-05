@@ -36,7 +36,7 @@ Key agent config (`agent.env`):
 WOODPECKER_SERVER=localhost:9000        # gRPC direct — bypasses Caddy
 WOODPECKER_BACKEND=local
 WOODPECKER_MAX_WORKFLOWS=2
-WOODPECKER_AGENT_LABELS=backend=local  # only picks up backend:local pipelines
+WOODPECKER_AGENT_LABELS=backend=local,platform=linux  # platform=linux matches pts-build.yaml label selector
 WOODPECKER_HOSTNAME=d3ci42-local
 ```
 
@@ -55,7 +55,7 @@ Triggered on every push to `main`. Three decoupled Woodpecker workflows — comp
 **Why three workflows / decoupled deploy:** pts-build.sh previously ran `systemctl restart woodpecker-server` inside the pipeline step. This restarted the server that the pentest-dev-vm agent was connected to, killing the gRPC connection and marking the pipeline killed before health check could run (self-kill loop). The deploy now happens entirely outside any Woodpecker pipeline.
 
 ```
-Workflow 1 — pts-build.yaml (d3ci42-local, backend:local, lightweight):
+Workflow 1 — pts-build.yaml (d3ci42-local, label: platform=linux, lightweight):
   pts-wake.sh:
     1. gcloud instances start pentest-dev-vm
     2. Set TTL label (ttl-expire-epoch) as safety net
@@ -175,7 +175,7 @@ gh release download v3.13.0-pts.NN \
   --output /opt/woodpecker/server/releases/v3.13.0-pts.NN/woodpecker-server
 chmod +x /opt/woodpecker/server/releases/v3.13.0-pts.NN/woodpecker-server
 ln -sfn /opt/woodpecker/server/releases/v3.13.0-pts.NN /opt/woodpecker/server/current
-systemctl reload-or-restart woodpecker-server
+systemctl restart woodpecker-server
 ```
 
 ---
