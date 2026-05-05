@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- fix: disable git lfs in pts-build clone step — GCP agents lack git-lfs, causing clone exit 1 (pipeline 106). `backend: local` previously skipped the clone step; normal agents run it unconditionally. Long-term fix: add git-lfs to Packer image (peregrine-infrastructure).
+
 - feat: pts-build compiles on pentest-dev-vm instead of d3ci42 (#67). Removes `backend: local` from pts-build.yaml so the pipeline runs on a normal CI agent. The compile step SSHes to pentest-dev-vm (GCP, peregrine-pentest-dev project), clones woodpecker, restores GCS build cache, runs pnpm + CGO go build, saves cache, then rsyncs binaries back. pentest-dev-vm is started at build start and stopped in an EXIT trap (success or failure). d3ci42 no longer needs Node/pnpm/GCC. GCS warm cache (~3.3 GiB) still cuts compile to ~1 min.
 
 - fix: skip corrupt-JSON rows in pipeline listings instead of returning 500 (#38). A single row with a non-JSON value in `errors`, `cancel_info`, or any other JSON-tagged column caused `GetPipelineList`, `GetRepoLatestPipelines`, and `GetActivePipelineList` to fail the entire page with HTTP 500. Now uses a `Rows` cursor so each row is decoded individually — a bad row logs a `WARN` and is skipped; valid rows are returned normally. Incident 2026-04-27: one operator SQL write produced 15h of 500s across 13 repos.

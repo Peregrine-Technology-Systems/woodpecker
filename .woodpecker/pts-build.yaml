@@ -2,6 +2,11 @@ when:
   - event: push
     branch: main
 
+clone:
+  git:
+    settings:
+      lfs: false
+
 steps:
   - name: build-and-push
     image: bash
