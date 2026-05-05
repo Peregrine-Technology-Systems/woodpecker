@@ -323,6 +323,20 @@ func run(ctx context.Context, c *cli.Command, backends []types.Backend) error {
 					if agentCtx.Err() != nil {
 						return nil
 					}
+					// Auth failures indicate a stale agent.conf (expired token or
+					// AgentID not in DB after server restart). Retrying forever is
+					// pointless — exit so systemd restarts with no conf and the
+					// agent re-registers fresh. (#77)
+					if c := status.Code(err); c == codes.Unauthenticated || c == codes.Unknown {
+						if s, ok := status.FromError(err); ok {
+							msg := s.Message()
+							if strings.Contains(msg, "token is expired") ||
+								strings.Contains(msg, "AgentID not found") ||
+								strings.Contains(msg, "sql: no rows") {
+								log.Fatal().Err(err).Msg("agent auth failed with stale credentials — exiting for systemd restart (#77)")
+							}
+						}
+					}
 					// Wait a bit before retrying to avoid hammering the server
 					select {
 					case <-agentCtx.Done():
