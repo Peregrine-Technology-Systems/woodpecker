@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- fix: pts-build.sh leaves compiled woodpecker-agent at /opt/woodpecker/woodpecker-agent-${VERSION} on pentest-dev-vm after each compile. Next wake finds it immediately — no GitHub Release download needed. Ensures agent/server version parity across builds.
+
 - fix: pts-wake.sh auto-installs woodpecker-agent binary on pentest-dev-vm if absent — downloads latest woodpecker-agent-linux-amd64 asset from the GitHub Release. Handles fresh VMs and snapshot restores. Previously exited with hard error if binary not found.
 
 - fix: pts-wake.sh reads WOODPECKER_AGENT_SECRET from Woodpecker secret instead of /etc/woodpecker/secrets.env — file read failed in local backend context (exit 2), pentest-dev agent never registered, pts-build-compile queued indefinitely. Secret now injected via from_secret.

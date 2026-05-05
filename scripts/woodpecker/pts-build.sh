@@ -47,6 +47,13 @@ CGO_ENABLED=0 go build \
     -o bin/woodpecker-agent ./cmd/agent
 echo "    $(du -h bin/woodpecker-agent | cut -f1)"
 
+# Leave agent binary in place for the next pts-wake run — avoids the GitHub
+# Release download on every cold-start. The wake step finds this exact version
+# and uses it as the pts-build CI agent, ensuring agent/server version parity.
+cp bin/woodpecker-agent "/opt/woodpecker/woodpecker-agent-${VERSION}"
+chmod +x "/opt/woodpecker/woodpecker-agent-${VERSION}"
+echo "    agent binary cached: /opt/woodpecker/woodpecker-agent-${VERSION}"
+
 echo ""; echo "==> Saving GCS build cache..."
 gsutil -m -q rsync -r "${GOCACHE}/" "${BUILD_CACHE_BUCKET}/go-build/" 2>/dev/null && \
     echo "    go-build saved" || echo "    ⚠️  go-build save failed (non-fatal)"
