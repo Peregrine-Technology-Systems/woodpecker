@@ -2,19 +2,14 @@ when:
   - event: push
     branch: main
 
-labels:
-  platform: linux
-  backend: local
-  tier: ondemand
-
 steps:
   - name: build-and-push
     image: bash
     environment:
       DEPLOY_SSH_KEY:
         from_secret: deploy_ssh_key
-      # #40: tag the fork + create GH Release with the agent binary.
-      # Best-effort — pts-build.sh exits cleanly if GH_TOKEN is missing.
+      PTS_BUILD_SSH_KEY:
+        from_secret: pts_build_ssh_key
       GH_TOKEN:
         from_secret: gh_token
     commands:

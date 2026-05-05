@@ -1,20 +1,20 @@
 #!/usr/bin/env bash
-# pts-build.sh — build woodpecker-server + agent natively and deploy to d3ci42.
+# pts-build.sh — compile woodpecker on pentest-dev-vm, deploy binaries to d3ci42.
 #
-# Replaces Docker build + docker-save deploy with:
-#   1. pnpm build (web UI)
-#   2. go build   (server binary, CGO for SQLite)
-#   3. go build   (agent binary, no CGO)
-#   4. rsync → d3ci42 + symlink + systemctl   (server deploy)
-#   5. GitHub Release + binary assets          (Phase 3)
-#   6. ci-image-builder wake                   (Phase 3c)
+# Flow (#67):
+#   1. Start pentest-dev-vm (GCP)
+#   2. SSH → pentest-dev: git clone, restore GCS cache, pnpm + go build
+#   3. rsync bin/ back to CI agent working dir
+#   4. Stop pentest-dev-vm (trap — runs on success or failure)
+#   5. rsync server binary → d3ci42 + symlink + systemctl restart
+#   6. Health check (60s budget, rollback on failure)
+#   7. GitHub Release + binary assets
+#   8. ci-image-builder wake
 #
-# Prerequisites on agent VM (from Packer image + apt install below):
-#   - /usr/local/go/bin/go  (Go toolchain)
-#   - node + pnpm           (web UI build; installed if absent)
-#   - gcc + build-essential (CGO for go-sqlite3)
-#
-# Closes woodpecker#57.
+# Secrets:
+#   DEPLOY_SSH_KEY     — SSH key for CI agent → d3ci42
+#   PTS_BUILD_SSH_KEY  — SSH key for CI agent → pentest-dev-vm (#67)
+#   GH_TOKEN           — GitHub PAT for tagging + release
 set -euo pipefail
 
 SERVER_HOST="159.203.159.69"
@@ -22,43 +22,17 @@ RELEASES_DIR="/opt/woodpecker/server/releases"
 CURRENT_LINK="/opt/woodpecker/server/current"
 KEEP_RELEASES=3
 
+PENTEST_PROJECT="peregrine-pentest-dev"
+PENTEST_ZONE="us-central1-a"
+PENTEST_VM="pentest-dev-vm"
+
 SHA_SHORT=$(echo "${CI_COMMIT_SHA:-$(git rev-parse HEAD)}" | cut -c1-8)
 VERSION="v3.13.0-pts.${CI_PIPELINE_NUMBER:-0}"
 COMMIT_SHA="${CI_COMMIT_SHA:-$(git rev-parse HEAD)}"
 
 echo "==> pts-build: ${VERSION} (${SHA_SHORT})"
 
-# ── GCS build cache (#851) ──
-# Restore Go build cache + module cache from GCS before compile.
-# On warm cache, go build skips recompiling unchanged packages — reduces
-# compile time from ~8 min to ~1 min. Best-effort: failure is non-fatal
-# (cold build still works). Save back after successful compile.
-BUILD_CACHE_BUCKET="gs://ci-runners-de-build-cache"
-GOCACHE="${HOME}/.cache/go-build"
-GOMODCACHE="${HOME}/go/pkg/mod"
-
-restore_cache() {
-    echo "==> Restoring build cache from GCS..."
-    gsutil -m -q rsync -r "${BUILD_CACHE_BUCKET}/go-build/" "${GOCACHE}/" 2>/dev/null && \
-        echo "    go-build cache restored ($(du -sh "${GOCACHE}" 2>/dev/null | cut -f1))" || \
-        echo "    go-build: no cache yet (cold build)"
-    gsutil -m -q rsync -r "${BUILD_CACHE_BUCKET}/go-mod/" "${GOMODCACHE}/" 2>/dev/null && \
-        echo "    go-mod cache restored ($(du -sh "${GOMODCACHE}" 2>/dev/null | cut -f1))" || \
-        echo "    go-mod: no cache yet"
-}
-
-save_cache() {
-    echo "==> Saving build cache to GCS..."
-    gsutil -m -q rsync -r "${GOCACHE}/" "${BUILD_CACHE_BUCKET}/go-build/" 2>/dev/null && \
-        echo "    go-build saved" || echo "    ⚠️  go-build save failed (non-fatal)"
-    gsutil -m -q rsync -r "${GOMODCACHE}/" "${BUILD_CACHE_BUCKET}/go-mod/" 2>/dev/null && \
-        echo "    go-mod saved" || echo "    ⚠️  go-mod save failed (non-fatal)"
-}
-
-mkdir -p "${GOCACHE}" "${GOMODCACHE}"
-restore_cache
-
-# ── SSH setup ──
+# ── d3ci42 SSH setup ──
 SSH_KEY=".deploy-ssh/id_ed25519"
 mkdir -p .deploy-ssh
 echo "$DEPLOY_SSH_KEY" > "$SSH_KEY"
@@ -66,55 +40,99 @@ printf '\n' >> "$SSH_KEY"
 chmod 600 "$SSH_KEY"
 SSH="ssh -i $SSH_KEY -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR"
 ssh_cmd() { $SSH "root@${SERVER_HOST}" "$@"; }
-scp_cmd() { scp -i "$SSH_KEY" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "$@"; }
 
-# ── Build toolchain setup ──
-export PATH="/usr/local/go/bin:$PATH"
-go version
+# ── pentest-dev SSH setup ──
+PTS_KEY=".deploy-ssh/pts-build-key"
+echo "$PTS_BUILD_SSH_KEY" > "$PTS_KEY"
+printf '\n' >> "$PTS_KEY"
+chmod 600 "$PTS_KEY"
+PTS_SSH="ssh -i $PTS_KEY -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR"
 
-# Node.js + pnpm (install if not present)
-if ! command -v node &>/dev/null; then
-    echo "==> Installing Node.js..."
-    curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash - >/dev/null 2>&1
-    sudo apt-get install -y nodejs >/dev/null 2>&1
-fi
-if ! command -v pnpm &>/dev/null; then
-    sudo npm install -g pnpm >/dev/null 2>&1
-fi
-echo "node $(node --version)  pnpm $(pnpm --version)"
-
-# gcc for CGO (go-sqlite3)
-if ! command -v gcc &>/dev/null; then
-    sudo apt-get install -y gcc build-essential >/dev/null 2>&1
-fi
-
-# ── Web UI build ──
+# ── Start pentest-dev-vm ──
 echo ""
-echo "==> Building web UI..."
-cd web
-pnpm install --frozen-lockfile >/dev/null 2>&1
-pnpm build >/dev/null 2>&1
-echo "    Web UI built: $(ls dist/ | wc -l) files"
+echo "==> Starting ${PENTEST_VM}..."
+gcloud compute instances start "${PENTEST_VM}" \
+    --zone="${PENTEST_ZONE}" --project="${PENTEST_PROJECT}" --quiet
+PENTEST_IP=$(gcloud compute instances describe "${PENTEST_VM}" \
+    --zone="${PENTEST_ZONE}" --project="${PENTEST_PROJECT}" \
+    --format="value(networkInterfaces[0].accessConfigs[0].natIP)")
+echo "    IP: ${PENTEST_IP}"
+
+# Always stop pentest-dev on exit (success or failure)
+trap "echo '==> Stopping ${PENTEST_VM}...' && \
+      gcloud compute instances stop '${PENTEST_VM}' \
+          --zone='${PENTEST_ZONE}' --project='${PENTEST_PROJECT}' --quiet 2>/dev/null || true" EXIT
+
+# Wait for SSH (up to 2 min)
+echo "==> Waiting for SSH on pentest-dev..."
+for i in $(seq 1 12); do
+    $PTS_SSH "root@${PENTEST_IP}" true 2>/dev/null && echo "    SSH ready (attempt ${i})" && break
+    [ "$i" -eq 12 ] && echo "ERROR: pentest-dev SSH timeout" && exit 1
+    sleep 10
+done
+
+# ── Compile on pentest-dev-vm ──
+WORK_DIR="/tmp/pts-build-${CI_PIPELINE_NUMBER:-0}"
+echo ""
+echo "==> Compiling on ${PENTEST_VM} (GCS cache warm)..."
+$PTS_SSH "root@${PENTEST_IP}" \
+    VERSION="${VERSION}" COMMIT_SHA="${COMMIT_SHA}" WORK_DIR="${WORK_DIR}" bash << 'REMOTE'
+set -euo pipefail
+
+export PATH="/usr/local/go/bin:$PATH"
+BUILD_CACHE_BUCKET="gs://ci-runners-de-build-cache"
+GOCACHE="${HOME}/.cache/go-build"
+GOMODCACHE="${HOME}/go/pkg/mod"
+
+# Restore GCS build cache (#851)
+echo "  restoring GCS cache..."
+mkdir -p "${GOCACHE}" "${GOMODCACHE}"
+gsutil -m -q rsync -r "${BUILD_CACHE_BUCKET}/go-build/" "${GOCACHE}/" 2>/dev/null && \
+    echo "  go-build: $(du -sh "${GOCACHE}" 2>/dev/null | cut -f1)" || echo "  go-build: cold"
+gsutil -m -q rsync -r "${BUILD_CACHE_BUCKET}/go-mod/" "${GOMODCACHE}/" 2>/dev/null && \
+    echo "  go-mod: $(du -sh "${GOMODCACHE}" 2>/dev/null | cut -f1)" || echo "  go-mod: cold"
+
+# Clone at exact commit
+rm -rf "${WORK_DIR}"
+git clone --quiet https://github.com/Peregrine-Technology-Systems/woodpecker.git "${WORK_DIR}"
+cd "${WORK_DIR}"
+git checkout --quiet "${COMMIT_SHA}"
+
+echo "  building web UI..."
+cd web && pnpm install --frozen-lockfile >/dev/null 2>&1 && pnpm build >/dev/null 2>&1
+echo "  web UI: $(ls dist/ | wc -l) files"
 cd ..
 
-# ── Compile binaries ──
 mkdir -p bin
-
-echo ""
-echo "==> Compiling woodpecker-server (CGO=1)..."
+echo "  compiling woodpecker-server (CGO=1)..."
 CGO_ENABLED=1 go build \
     -ldflags "-s -w -X go.woodpecker-ci.org/woodpecker/v3/version.Version=${VERSION}" \
     -o bin/woodpecker-server ./cmd/server
-echo "    Server: $(du -h bin/woodpecker-server | cut -f1)"
+echo "  server: $(du -h bin/woodpecker-server | cut -f1)"
 
-echo ""
-echo "==> Compiling woodpecker-agent (CGO=0)..."
+echo "  compiling woodpecker-agent (CGO=0)..."
 CGO_ENABLED=0 go build \
     -ldflags "-s -w -X go.woodpecker-ci.org/woodpecker/v3/version.Version=${VERSION}" \
     -o bin/woodpecker-agent ./cmd/agent
-echo "    Agent: $(du -h bin/woodpecker-agent | cut -f1)"
+echo "  agent: $(du -h bin/woodpecker-agent | cut -f1)"
 
-save_cache
+# Save GCS build cache
+echo "  saving GCS cache..."
+gsutil -m -q rsync -r "${GOCACHE}/" "${BUILD_CACHE_BUCKET}/go-build/" 2>/dev/null && \
+    echo "  go-build saved" || echo "  ⚠️  go-build save failed (non-fatal)"
+gsutil -m -q rsync -r "${GOMODCACHE}/" "${BUILD_CACHE_BUCKET}/go-mod/" 2>/dev/null && \
+    echo "  go-mod saved" || echo "  ⚠️  go-mod save failed (non-fatal)"
+REMOTE
+
+# ── rsync binaries back to CI agent ──
+echo ""
+echo "==> Fetching binaries from pentest-dev..."
+mkdir -p bin
+rsync -az \
+    -e "ssh -i $PTS_KEY -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR" \
+    "root@${PENTEST_IP}:${WORK_DIR}/bin/" bin/
+echo "    server: $(du -h bin/woodpecker-server | cut -f1)  agent: $(du -h bin/woodpecker-agent | cut -f1)"
+# pentest-dev VM stopped by EXIT trap here
 
 # ── Deploy server to d3ci42 ──
 echo ""
