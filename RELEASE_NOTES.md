@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- fix: re-queue claimed-but-not-started tasks on agent disconnect instead of killing them (#72). `ReleaseAgentTasks` now checks `workflow.Started` before acting: tasks with `Started == 0` are re-queued via `PushAtOnce` (agent claimed but never began executing — safe for another agent to pick up); tasks with `Started > 0` are killed as before. Incident 2026-05-05: scaler version-bump pipeline 1723 was killed in 4s with `started=0` because it was in the queue when agent 14450 disconnected. The bug was introduced when we built `ReleaseAgentTasks` in fork#3 — the fast-release path correctly replaced the 15-min TaskTimeout but didn't distinguish claimed vs running. Falls back to kill if re-queue fails or workflow can't be loaded.
+
 - fix: add SSH keepalive to pentest-dev connections in pts-build.sh — CGO compile is silent for several minutes, causing the SSH server to close the session as apparently idle. `ServerAliveInterval=30 ServerAliveCountMax=10` keeps the client pinging every 30s for up to 5 min of missed responses. Incident: pipeline 112 failed after 20 min with "Connection closed by remote host". Applied to both the main `PTS_SSH` var and the rsync `-e` flag.
 
 - feat: pts-build compiles on pentest-dev-vm instead of d3ci42 (#67). Removes `backend: local` from pts-build.yaml so the pipeline runs on a normal CI agent. The compile step SSHes to pentest-dev-vm (GCP, peregrine-pentest-dev project), clones woodpecker, restores GCS build cache, runs pnpm + CGO go build, saves cache, then rsyncs binaries back. pentest-dev-vm is started at build start and stopped in an EXIT trap (success or failure). d3ci42 no longer needs Node/pnpm/GCC. GCS warm cache (~3.3 GiB) still cuts compile to ~1 min.
