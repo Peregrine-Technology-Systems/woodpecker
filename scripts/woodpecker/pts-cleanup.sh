@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
-# pts-cleanup.sh — stop pentest-dev-vm and remove TTL label.
-# Runs on d3ci42-local (backend: local). Always runs — success or failure.
+# pts-cleanup.sh — stop pentest-dev-vm and remove TTL labels.
+# Runs on d3ci42-local after pts-build-compile completes (success or failure).
+# Deploy of woodpecker-server is handled separately by woodpecker-deploy.sh
+# via systemd timer — NOT here. Decoupled to avoid the self-kill problem (#74).
 set -euo pipefail
 
 PENTEST_PROJECT="peregrine-pentest-dev"
