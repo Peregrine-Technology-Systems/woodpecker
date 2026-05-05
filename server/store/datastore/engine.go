@@ -59,6 +59,12 @@ func NewEngine(opts *store.Opts) (store.Store, error) {
 	s := &storage{engine: engine}
 	if opts.Driver == "sqlite3" {
 		s.wq = newWriteQueue(writeQueueDepth)
+		// Single connection required: the write queue serializes Go-level writes
+		// through one goroutine, but xorm's pool can open multiple SQLite file
+		// handles. SQLite's write lock is per-connection — multiple handles race
+		// on it even with the queue, producing SQLITE_BUSY under burst load (#88).
+		engine.SetMaxOpenConns(1)
+		engine.SetMaxIdleConns(1)
 	}
 	return s, nil
 }
