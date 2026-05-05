@@ -2,30 +2,63 @@ when:
   - event: push
     branch: main
 
-labels:
-  platform: linux
-  backend: local
+# Workflow 1: start pentest-dev-vm + register pts-build agent (#74)
+# Runs on d3ci42-local (lightweight — gcloud start + wait for agent registration).
+# Sets a TTL label on the VM as a safety net for the cleanup workflow.
+- name: wake-pentest-dev
+  labels:
+    platform: linux
+    backend: local
+  steps:
+    - name: wake
+      image: bash
+      environment:
+        PTS_BUILD_SSH_KEY:
+          from_secret: pts_build_ssh_key
+        WOODPECKER_API_TOKEN:
+          from_secret: woodpecker_api_token
+      commands:
+        - scripts/woodpecker/pts-wake.sh
 
-steps:
-  - name: build-and-push
-    image: bash
-    environment:
-      DEPLOY_SSH_KEY:
-        from_secret: deploy_ssh_key
-      PTS_BUILD_SSH_KEY:
-        from_secret: pts_build_ssh_key
-      GH_TOKEN:
-        from_secret: gh_token
-    commands:
-      - scripts/woodpecker/pts-build.sh
+# Workflow 2: build on pentest-dev-vm natively — no SSH indirection (#74)
+# The queue holds this until the pts-build agent registers (see wake above).
+# git-lfs is in the Packer image so the standard clone step works.
+- name: build-and-push
+  labels:
+    agent: pts-build
+  depends_on: [wake-pentest-dev]
+  steps:
+    - name: build
+      image: bash
+      environment:
+        DEPLOY_SSH_KEY:
+          from_secret: deploy_ssh_key
+        GH_TOKEN:
+          from_secret: gh_token
+      commands:
+        - scripts/woodpecker/pts-build.sh
 
-  - name: notify-status
-    image: bash
-    environment:
-      SLACK_WEBHOOK_URL:
-        from_secret: slack_webhook_url
-    commands:
-      - scripts/woodpecker/pts-notify.sh
-    when:
-      - status: [success, failure]
-    depends_on: [build-and-push]
+# Workflow 3: stop pentest-dev-vm + notify (always runs — success or failure)
+- name: cleanup
+  labels:
+    platform: linux
+    backend: local
+  depends_on: [build-and-push]
+  when:
+    - status: [success, failure]
+  steps:
+    - name: stop-vm
+      image: bash
+      commands:
+        - scripts/woodpecker/pts-cleanup.sh
+
+    - name: notify
+      image: bash
+      environment:
+        SLACK_WEBHOOK_URL:
+          from_secret: slack_webhook_url
+      commands:
+        - scripts/woodpecker/pts-notify.sh
+      when:
+        - status: [success, failure]
+      depends_on: [stop-vm]
