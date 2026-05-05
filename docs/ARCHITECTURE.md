@@ -46,6 +46,8 @@ WOODPECKER_HOSTNAME=d3ci42-local
 
 **Operator note**: after a woodpecker binary update, `ExecStart=` in `woodpecker-agent.service` must be updated to point to the new agent binary. Not yet automated — tracked in #1465.
 
+**Stale agent.conf self-heal (#77)**: after a woodpecker-server restart that changes the JWT signing key or resets the agents DB, the agent's saved ID (`/etc/woodpecker/agent.conf`) becomes invalid. The agent detects `Unauthenticated` / `AgentID not found` / `sql: no rows` errors and calls `log.Fatal()` — the process exits with status 1, `Restart=on-failure` triggers, systemd restarts with no conf, and the agent re-registers fresh. Previous behaviour: the runner retry loop kept the process alive indefinitely with workers=0, requiring manual `rm /etc/woodpecker/agent.conf && systemctl restart woodpecker-agent`.
+
 ### Build + Deploy Pipeline (three workflows, #74/#80)
 
 Triggered on every push to `main`. Three decoupled Woodpecker workflows — compile on pentest-dev-vm, VM cleanup on d3ci42-local, deploy via standalone systemd timer:
