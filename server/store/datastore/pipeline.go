@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/cenkalti/backoff/v5"
+	"github.com/rs/zerolog/log"
 	"xorm.io/builder"
 	"xorm.io/xorm"
 
@@ -66,8 +67,6 @@ func (s storage) GetPipelineLastBefore(repo *model.Repo, branch string, num int6
 }
 
 func (s storage) GetPipelineList(repo *model.Repo, p *model.ListOptions, f *model.PipelineFilter) ([]*model.Pipeline, error) {
-	pipelines := make([]*model.Pipeline, 0, 16)
-
 	cond := builder.NewCond().And(builder.Eq{"repo_id": repo.ID})
 
 	if f != nil {
@@ -98,15 +97,11 @@ func (s storage) GetPipelineList(repo *model.Repo, p *model.ListOptions, f *mode
 		}
 	}
 
-	return pipelines, s.paginate(p).Where(cond).
-		Desc("number").
-		Find(&pipelines)
+	return scanPipelines(s.paginate(p).Where(cond).Desc("number"))
 }
 
 // GetRepoLatestPipelines get the latest pipeline for each repo.
 func (s storage) GetRepoLatestPipelines(repoIDs []int64) ([]*model.Pipeline, error) {
-	pipelines := make([]*model.Pipeline, 0, len(repoIDs))
-
 	pipelineIDs := make([]int64, 0, len(repoIDs))
 	if err := s.engine.Select("MAX(id) AS id").
 		Table("pipelines").
@@ -116,17 +111,39 @@ func (s storage) GetRepoLatestPipelines(repoIDs []int64) ([]*model.Pipeline, err
 		return nil, err
 	}
 
-	return pipelines, s.engine.Where(builder.In("id", pipelineIDs)).Find(&pipelines)
+	return scanPipelines(s.engine.Where(builder.In("id", pipelineIDs)))
 }
 
 // GetActivePipelineList get all pipelines that are pending, running or blocked.
 func (s storage) GetActivePipelineList(repo *model.Repo) ([]*model.Pipeline, error) {
-	pipelines := make([]*model.Pipeline, 0)
-	query := s.engine.
+	return scanPipelines(s.engine.
 		Where("repo_id = ?", repo.ID).
 		In("status", model.StatusPending, model.StatusRunning, model.StatusBlocked).
-		Desc("number")
-	return pipelines, query.Find(&pipelines)
+		Desc("number"))
+}
+
+// scanPipelines iterates rows from the given xorm session using a cursor so
+// that a single row with a corrupt JSON column (e.g. errors, cancel_info) is
+// skipped and logged rather than failing the entire listing with HTTP 500.
+// Incident 2026-04-27: one bad row in `errors` caused 15 hours of 500s across
+// 13 repos (peregrine-ci-infrastructure#1221, fork#38).
+func scanPipelines(sess *xorm.Session) ([]*model.Pipeline, error) {
+	rows, err := sess.Rows(new(model.Pipeline))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var pipelines []*model.Pipeline
+	for rows.Next() {
+		p := new(model.Pipeline)
+		if err := rows.Scan(p); err != nil {
+			log.Warn().Err(err).Msg("pipeline listing: skipping row with corrupt JSON column")
+			continue
+		}
+		pipelines = append(pipelines, p)
+	}
+	return pipelines, rows.Err()
 }
 
 func (s storage) GetPipelineCount() (int64, error) {

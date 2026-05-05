@@ -281,3 +281,41 @@ func TestDeletePipeline(t *testing.T) {
 	assert.NoError(t, err)
 	assert.EqualValues(t, 1, count)
 }
+
+// TestGetPipelineList_CorruptJSONColumn verifies that a single row with a
+// corrupt JSON column (e.g. plain text in `errors`) does not poison the entire
+// listing with a 500. The bad row is skipped; valid rows are returned.
+// Regression for fork#38 / incident 2026-04-27 (peregrine-ci-infrastructure#1221).
+func TestGetPipelineList_CorruptJSONColumn(t *testing.T) {
+	repo := &model.Repo{
+		UserID:   1,
+		FullName: "owner/repo",
+		Owner:    "owner",
+		Name:     "repo",
+	}
+
+	store, closer := newTestStore(t, new(model.Repo), new(model.Pipeline))
+	defer closer()
+
+	require.NoError(t, store.CreateRepo(repo))
+
+	good := &model.Pipeline{RepoID: repo.ID, Status: model.StatusSuccess, Event: model.EventPush, Branch: "main"}
+	require.NoError(t, store.CreatePipeline(good))
+
+	bad := &model.Pipeline{RepoID: repo.ID, Status: model.StatusError, Event: model.EventPush, Branch: "main"}
+	require.NoError(t, store.CreatePipeline(bad))
+
+	// Corrupt the `errors` column of the bad row with plain text — the exact
+	// scenario from the 2026-04-27 incident where operator SQL wrote
+	// "forced terminal: <msg>" into a JSON column.
+	_, err := store.engine.Exec(
+		"UPDATE pipelines SET errors = ? WHERE id = ?",
+		"forced terminal: not valid json", bad.ID,
+	)
+	require.NoError(t, err)
+
+	pipelines, err := store.GetPipelineList(repo, &model.ListOptions{Page: 1, PerPage: 50}, nil)
+	assert.NoError(t, err, "listing must not fail due to single corrupt row")
+	assert.Len(t, pipelines, 1, "corrupt row skipped; good row returned")
+	assert.Equal(t, good.ID, pipelines[0].ID)
+}

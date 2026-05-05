@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- fix: skip corrupt-JSON rows in pipeline listings instead of returning 500 (#38). A single row with a non-JSON value in `errors`, `cancel_info`, or any other JSON-tagged column caused `GetPipelineList`, `GetRepoLatestPipelines`, and `GetActivePipelineList` to fail the entire page with HTTP 500. Now uses a `Rows` cursor so each row is decoded individually — a bad row logs a `WARN` and is skipped; valid rows are returned normally. Incident 2026-04-27: one operator SQL write produced 15h of 500s across 13 repos.
+
 - fix: use `systemctl restart` not `reload-or-restart` for woodpecker-server in pts-build.sh. `reload-or-restart` sends SIGHUP; woodpecker-server exits on SIGHUP rather than reloading, taking the server down on every pts-build deploy and generating up/down Slack alerts. Fixed in both the deploy path and rollback path.
 
 - feat: GCS build cache for pts-build (#851). Restores Go build cache + module cache from `gs://ci-runners-de-build-cache/` at build start, saves back after compile. Warm cache reduces compile time ~8 min → ~1 min. Best-effort: non-fatal on cache miss or save failure.
