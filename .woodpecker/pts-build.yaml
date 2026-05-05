@@ -2,10 +2,9 @@ when:
   - event: push
     branch: main
 
-clone:
-  git:
-    settings:
-      lfs: false
+labels:
+  platform: linux
+  backend: local
 
 steps:
   - name: build-and-push
