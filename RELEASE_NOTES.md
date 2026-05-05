@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- fix: set MaxOpenConns=1 for SQLite so write queue actually eliminates SQLITE_BUSY — default of 100 connections meant multiple xorm file handles still raced on SQLite's per-connection write lock under burst webhook load (#88)
 - fix: woodpecker-agent exits on persistent auth errors so systemd restarts clean (#77). Runner loop previously retried forever on Unauthenticated/Unknown gRPC errors (token expired, AgentID not found, sql: no rows) — process stayed alive but did no work, workers=0, queue backed up. Now calls log.Fatal() on these, triggering Restart=on-failure. On restart with no agent.conf, agent re-registers fresh.
 
 - fix: pts-wake.sh guards against concurrent runs — if pentest-dev-vm is already RUNNING (owned by another pipeline), the wake step exits 0 cleanly instead of racing. Multiple main pushes in quick succession (e.g. several PRs merging) each trigger a wake; only the first proceeds, subsequent ones abort with a clear message. Previous behavior: two wakes started the VM simultaneously, both tried to register agents with hostname pentest-dev-vm, SSH races caused exit 255 on one, stuck pts-build-compile tasks in the queue.
