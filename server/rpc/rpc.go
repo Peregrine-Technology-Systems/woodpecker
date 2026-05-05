@@ -157,12 +157,21 @@ func (s *RPC) Extend(c context.Context, workflowID string) error {
 // Called on EVERY WebSocket disconnect (clean or unexpected) — releases tasks
 // immediately instead of waiting for TaskTimeout (15 minutes).
 // Updates the queue, workflow, steps, parent pipeline, and forge status (GitHub).
+//
+// Tasks are split by whether execution had started (#72):
+//   - workflow.Started == 0: agent claimed the task but never began executing it.
+//     Safe to re-queue — another agent can pick it up with no work lost.
+//   - workflow.Started > 0: agent was mid-execution. Kill as before.
 func (s *RPC) ReleaseAgentTasks(c context.Context, agentID int64) {
 	info := s.queue.Info(c)
+
+	// Index running tasks by ID for O(1) lookup when re-queuing.
+	taskByID := make(map[string]*model.Task, len(info.Running))
 	var orphaned []string
 	for _, task := range info.Running {
 		if task.AgentID == agentID {
 			orphaned = append(orphaned, task.ID)
+			taskByID[task.ID] = task
 		}
 	}
 
@@ -181,24 +190,63 @@ func (s *RPC) ReleaseAgentTasks(c context.Context, agentID int64) {
 	log.Warn().Int64("agent_id", agentID).Int("tasks", len(orphaned)).
 		Msg("releasing tasks from disconnecting agent")
 
-	// Release from queue
-	if err := s.queue.ErrorAtOnce(c, orphaned, queue.ErrCancel); err != nil {
+	// Partition into claimed-but-not-started (re-queue) vs started (kill). (#72)
+	// Cache loaded workflows so the kill loop below doesn't load them a second time.
+	var toKill []string
+	var toRequeue []*model.Task
+	workflowCache := make(map[string]*model.Workflow, len(orphaned))
+	for _, workflowIDStr := range orphaned {
+		workflowID, err := strconv.ParseInt(workflowIDStr, 10, 64)
+		if err != nil {
+			toKill = append(toKill, workflowIDStr)
+			continue
+		}
+		wf, err := s.store.WorkflowLoad(workflowID)
+		if err != nil || wf.Started > 0 {
+			toKill = append(toKill, workflowIDStr)
+			if wf != nil {
+				workflowCache[workflowIDStr] = wf
+			}
+		} else {
+			toRequeue = append(toRequeue, taskByID[workflowIDStr])
+			log.Info().Int64("agent_id", agentID).Int64("workflow_id", workflowID).
+				Msg("release: re-queuing claimed-but-not-started task (#72)")
+		}
+	}
+
+	// Re-queue claimed-but-not-started tasks so another agent can pick them up.
+	if len(toRequeue) > 0 {
+		if err := s.queue.PushAtOnce(c, toRequeue); err != nil {
+			log.Error().Err(err).Msg("release: failed to re-queue claimed tasks — falling back to kill")
+			for _, t := range toRequeue {
+				toKill = append(toKill, t.ID)
+			}
+		}
+	}
+
+	// Kill tasks that had actually started executing.
+	if err := s.queue.ErrorAtOnce(c, toKill, queue.ErrCancel); err != nil {
 		log.Error().Err(err).Msg("failed to release agent tasks from queue")
 	}
 
 	// Update pipeline database — mirror the completion logic from rpc.Done()
-	// so the pipeline reaches a terminal state and GitHub gets notified (#4)
-	for _, workflowIDStr := range orphaned {
+	// so the pipeline reaches a terminal state and GitHub gets notified (#4).
+	// Only kill DB records for tasks that were actually running.
+	for _, workflowIDStr := range toKill {
 		workflowID, err := strconv.ParseInt(workflowIDStr, 10, 64)
 		if err != nil {
 			continue
 		}
 
-		workflow, err := s.store.WorkflowLoad(workflowID)
-		if err != nil {
-			log.Error().Err(err).Int64("workflow_id", workflowID).
-				Msg("release: failed to load workflow")
-			continue
+		// Use cached workflow from partition step if available.
+		workflow, ok := workflowCache[workflowIDStr]
+		if !ok {
+			workflow, err = s.store.WorkflowLoad(workflowID)
+			if err != nil {
+				log.Error().Err(err).Int64("workflow_id", workflowID).
+					Msg("release: failed to load workflow")
+				continue
+			}
 		}
 
 		// Load children (steps) so WorkflowStatus can evaluate them

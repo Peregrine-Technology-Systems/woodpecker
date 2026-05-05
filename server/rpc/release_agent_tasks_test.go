@@ -3,7 +3,9 @@ package grpc
 import (
 	"context"
 	"testing"
+	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 
 	"go.woodpecker-ci.org/woodpecker/v3/server/model"
@@ -16,9 +18,14 @@ type stubQueue struct {
 	info          queue.InfoT
 	errorAtOnce   error
 	errorAtOnceFn func(ids []string)
+	pushed        []*model.Task // tasks passed to PushAtOnce
+	errored       []string      // task IDs passed to ErrorAtOnce
 }
 
-func (q *stubQueue) PushAtOnce(context.Context, []*model.Task) error { return nil }
+func (q *stubQueue) PushAtOnce(_ context.Context, tasks []*model.Task) error {
+	q.pushed = append(q.pushed, tasks...)
+	return nil
+}
 func (q *stubQueue) Poll(context.Context, int64, queue.FilterFn) (*model.Task, error) {
 	return nil, nil
 }
@@ -26,6 +33,7 @@ func (q *stubQueue) Extend(context.Context, int64, string) error           { ret
 func (q *stubQueue) Done(context.Context, string, model.StatusValue) error { return nil }
 func (q *stubQueue) Error(context.Context, string, error) error            { return nil }
 func (q *stubQueue) ErrorAtOnce(_ context.Context, ids []string, _ error) error {
+	q.errored = append(q.errored, ids...)
 	if q.errorAtOnceFn != nil {
 		q.errorAtOnceFn(ids)
 	}
@@ -66,6 +74,7 @@ func TestReleaseAgentTasks_KillsWorkflowAndPipeline(t *testing.T) {
 		ID:         100,
 		PipelineID: 200,
 		State:      model.StatusRunning,
+		Started:    time.Now().Unix(), // Started > 0 → kill path, not re-queue (#72)
 	}
 
 	pipelineModel := &model.Pipeline{
@@ -123,4 +132,38 @@ func TestReleaseAgentTasks_OnlyReleasesMatchingAgent(t *testing.T) {
 
 	// No store calls should have been made
 	s.AssertNotCalled(t, "WorkflowLoad", mock.Anything)
+}
+
+// TestReleaseAgentTasks_RequeueClaimed verifies that a task claimed by a
+// disconnecting agent but not yet started (workflow.Started == 0) is
+// re-queued instead of killed. Regression test for fork#72.
+func TestReleaseAgentTasks_RequeueClaimed(t *testing.T) {
+	task := &model.Task{ID: "100", AgentID: 42}
+	q := &stubQueue{
+		info: queue.InfoT{
+			Running: []*model.Task{task},
+		},
+	}
+
+	// workflow.Started == 0: agent claimed but never began executing
+	workflow := &model.Workflow{
+		ID:         100,
+		PipelineID: 200,
+		State:      model.StatusPending,
+		Started:    0,
+	}
+
+	s := store_mocks.NewMockStore(t)
+	s.On("WorkflowLoad", int64(100)).Return(workflow, nil)
+
+	rpc := RPC{queue: q, store: s}
+	rpc.ReleaseAgentTasks(context.Background(), 42)
+
+	// Task must be re-queued, not killed
+	assert.Equal(t, []*model.Task{task}, q.pushed, "claimed task must be re-queued")
+	assert.Empty(t, q.errored, "claimed task must not be killed")
+
+	// No DB kill updates — the workflow never ran
+	s.AssertNotCalled(t, "StepListFromWorkflowFind", mock.Anything)
+	s.AssertNotCalled(t, "WorkflowUpdate", mock.Anything)
 }
