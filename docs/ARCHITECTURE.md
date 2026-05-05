@@ -21,6 +21,31 @@ Systemd unit: `/etc/systemd/system/woodpecker-server.service`
 Environment: `/etc/woodpecker/secrets.env` (loaded by EnvironmentFile=)  
 Health endpoint: `http://localhost:8000/healthz` (returns 204 when healthy)
 
+### Local Agent (`woodpecker-agent.service`)
+
+`pts-build.yaml` uses `backend: local` — steps run directly on d3ci42 as subprocesses rather than on a GCP agent VM. This requires a local `woodpecker-agent` process registered to the server.
+
+```
+/etc/systemd/system/woodpecker-agent.service
+/etc/woodpecker/agent.env        (non-secret config — mode 600)
+/opt/woodpecker/woodpecker-agent-<VERSION>  (binary, same release as server)
+```
+
+Key agent config (`agent.env`):
+```
+WOODPECKER_SERVER=localhost:9000        # gRPC direct — bypasses Caddy
+WOODPECKER_BACKEND=local
+WOODPECKER_MAX_WORKFLOWS=2
+WOODPECKER_AGENT_LABELS=backend=local  # only picks up backend:local pipelines
+WOODPECKER_HOSTNAME=d3ci42-local
+```
+
+`WOODPECKER_AGENT_SECRET` is injected from `/etc/woodpecker/secrets.env` via a separate `EnvironmentFile=` line. The service declares `Requires=woodpecker-server.service` so it starts after and restarts with the server.
+
+**Incident 2026-05-05**: the infra#1403 migration created `woodpecker-server.service` but not `woodpecker-agent.service`. `backend: local` pipelines (pts-build) queued at `status: created` forever — the queue showed 0 workers with matching labels even with 4 VMs and 8 GCP agents registered (those agents have no `backend=local` label). Manually created the service; tracked for codification in peregrine-infrastructure#1465.
+
+**Operator note**: after a woodpecker binary update, `ExecStart=` in `woodpecker-agent.service` must be updated to point to the new agent binary. Not yet automated — tracked in #1465.
+
 ### Build + Deploy Pipeline (`pts-build.yaml` / `pts-build.sh`)
 
 Triggered on every push to `main`. Native build — no Docker.
@@ -32,7 +57,7 @@ Triggered on every push to `main`. Native build — no Docker.
 4. rsync bin/woodpecker-server → d3ci42:/opt/woodpecker/server/releases/${VERSION}/
 5. sha256 checksum verify
 6. ln -sfn releases/${VERSION} /opt/woodpecker/server/current
-7. systemctl reload-or-restart woodpecker-server
+7. systemctl restart woodpecker-server
 8. 60s health check; rollback to previous release on failure
 9. Keep 3 releases (older pruned automatically)
 10. Phase 3: GitHub Release with both binary assets + ci-image-builder wake
