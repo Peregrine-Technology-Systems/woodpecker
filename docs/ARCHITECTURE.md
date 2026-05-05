@@ -46,27 +46,67 @@ WOODPECKER_HOSTNAME=d3ci42-local
 
 **Operator note**: after a woodpecker binary update, `ExecStart=` in `woodpecker-agent.service` must be updated to point to the new agent binary. Not yet automated — tracked in #1465.
 
-### Build + Deploy Pipeline (`pts-build.yaml` / `pts-build.sh`)
+### Build + Deploy Pipeline (three workflows, #74/#80)
 
-Triggered on every push to `main`. Native build — no Docker.
+Triggered on every push to `main`. Three decoupled Woodpecker workflows — compile on pentest-dev-vm, VM cleanup on d3ci42-local, deploy via standalone systemd timer:
+
+**Why three workflows / decoupled deploy:** pts-build.sh previously ran `systemctl restart woodpecker-server` inside the pipeline step. This restarted the server that the pentest-dev-vm agent was connected to, killing the gRPC connection and marking the pipeline killed before health check could run (self-kill loop). The deploy now happens entirely outside any Woodpecker pipeline.
 
 ```
-1. pnpm install --frozen-lockfile && pnpm build   (web UI assets → web/dist/)
-2. CGO_ENABLED=1 go build -o bin/woodpecker-server ./cmd/server
-3. CGO_ENABLED=0 go build -o bin/woodpecker-agent  ./cmd/agent
-4. rsync bin/woodpecker-server → d3ci42:/opt/woodpecker/server/releases/${VERSION}/
-5. sha256 checksum verify
-6. ln -sfn releases/${VERSION} /opt/woodpecker/server/current
-7. systemctl restart woodpecker-server
-8. 60s health check; rollback to previous release on failure
-9. Keep 3 releases (older pruned automatically)
-10. Phase 3: GitHub Release with both binary assets + ci-image-builder wake
+Workflow 1 — pts-build.yaml (d3ci42-local, backend:local, lightweight):
+  pts-wake.sh:
+    1. gcloud instances start pentest-dev-vm
+    2. Set TTL label (ttl-expire-epoch) as safety net
+    3. SSH → pentest-dev: start woodpecker-agent with label agent=pts-build
+    4. Poll /api/agents until pentest-dev-vm registers (up to 100s)
+
+Workflow 2 — pts-build-compile.yaml (pentest-dev-vm agent, label: agent=pts-build):
+  pts-build.sh:
+    5. GCS build cache restore
+    6. pnpm build (web UI)
+    7. CGO_ENABLED=1 go build woodpecker-server
+    8. CGO_ENABLED=0 go build woodpecker-agent
+    9. GCS build cache save
+   10. Upload binary + SHA256 to gs://ci-runners-de-build-cache/woodpecker-deploy/${VERSION}/
+   11. Write pending-deploy marker to gs://.../woodpecker-deploy/pending
+   12. GitHub Release + binary assets
+   13. ci-image-builder wake
+
+Workflow 3 — pts-build-cleanup.yaml (d3ci42-local, always runs):
+  pts-cleanup.sh:
+   14. gcloud instances stop pentest-dev-vm
+   15. Remove TTL labels
+  pts-notify.sh:
+   16. Slack notify (success/failure of compile workflow)
+
+Separately on d3ci42 — woodpecker-deploy.service (systemd timer, every 30s):
+  woodpecker-deploy.sh:
+   17. Poll GCS for pending-deploy marker; exit 0 if absent
+   18. Download binary, verify SHA256
+   19. Stage release: mkdir, cp, chmod
+   20. ln -sfn releases/${VERSION} current  (atomic symlink)
+   21. systemctl restart woodpecker-server
+   22. 90s health check: poll /healthz until version matches or timeout
+   23. On failure: rollback symlink + systemctl restart + Slack alert
+   24. On success: prune old releases (keep 3), remove pending marker, Slack success
 ```
 
-**GCS build cache** (`gs://ci-runners-de-build-cache`, #851):  
-Restored from GCS at step 2 start, saved back after step 3. Go's content-addressable cache skips recompiling unchanged packages — warm cache reduces compile from ~8 min to ~1 min. 30-day lifecycle policy keeps the bucket bounded. `pentest-scanner` and `ci-agent` SAs have `objectAdmin` access.
+**GCS build cache** (`gs://ci-runners-de-build-cache`):  
+Restored at step 5, saved after step 9. Warm cache reduces compile from ~8 min to ~1–2 min.
 
-**Rollback**: symlink to previous release dir + `systemctl restart`. Instant — no download, no image pull.
+**GCS deploy path** (`gs://ci-runners-de-build-cache/woodpecker-deploy/`):  
+Binary and SHA256 at `${VERSION}/woodpecker-server{,.sha256}`. Pending marker at `pending` (content: `${VERSION}\n${COMMIT_SHA}\n${PIPELINE_NUM}`). The marker is deleted after a successful deploy or a failed deploy (to prevent infinite retry loops).
+
+**TTL safety net:** pts-wake.sh writes `ttl-expire-epoch` label on pentest-dev-vm at start. If pts-build-cleanup fails to stop the VM, the TTL reaper on d3ci42 catches it.
+
+**woodpecker-deploy.sh operational notes:**  
+- Runs as `woodpecker-deploy.service` (oneshot) fired by `woodpecker-deploy.timer` (every 30s)  
+- Exclusive flock at `/tmp/woodpecker-deploy.lock` prevents concurrent runs  
+- Sources `/etc/woodpecker/secrets.env` for `SLACK_WEBHOOK_URL`  
+- Rollback target: `readlink -f /opt/woodpecker/server/current` before symlink swap  
+- Codification tracked in peregrine-infrastructure#1511
+
+**Reference incident (2026-05-05):** pts-build self-killed by restarting woodpecker-server mid-pipeline. Binary uploaded to GCS but symlink never swapped because health check step never ran.
 
 ### `Dockerfile.archived`
 
