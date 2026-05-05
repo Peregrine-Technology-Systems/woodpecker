@@ -15,5 +15,7 @@ steps:
         from_secret: woodpecker_api_token
       WOODPECKER_AGENT_SECRET:
         from_secret: woodpecker_agent_secret
+      GH_TOKEN:
+        from_secret: gh_token
     commands:
       - scripts/woodpecker/pts-wake.sh

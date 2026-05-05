@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- fix: pts-wake.sh auto-installs woodpecker-agent binary on pentest-dev-vm if absent — downloads latest woodpecker-agent-linux-amd64 asset from the GitHub Release. Handles fresh VMs and snapshot restores. Previously exited with hard error if binary not found.
+
 - fix: pts-wake.sh reads WOODPECKER_AGENT_SECRET from Woodpecker secret instead of /etc/woodpecker/secrets.env — file read failed in local backend context (exit 2), pentest-dev agent never registered, pts-build-compile queued indefinitely. Secret now injected via from_secret.
 
 - fix: remove backend:local from pts-ci.yaml and pts-build.yaml (#77). backend:local routes to the d3ci42-local agent — wrong for every pipeline. pts-ci runs on normal GCP agents; pts-build wake step uses platform:linux,backend:local only for the d3ci42-local gcloud orchestration step (retained in pts-build.yaml).
