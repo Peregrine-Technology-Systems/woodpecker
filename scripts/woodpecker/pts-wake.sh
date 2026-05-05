@@ -11,7 +11,7 @@ PENTEST_ZONE="us-central1-a"
 PENTEST_VM="pentest-dev-vm"
 TTL_MINUTES=60  # generous budget: wake + compile + deploy
 
-WP_SERVER="d3ci42.peregrinetechsys.net:443"  # Caddy proxies gRPC → port 9000
+WP_SERVER="d3ci42.peregrinetechsys.net"  # WebSocket via Caddy TLS (port 443)
 VERSION="v3.13.0-pts.${CI_PIPELINE_NUMBER:-0}"
 
 # ── Concurrent-run guard ──
@@ -107,6 +107,8 @@ $PTS_SSH "root@${PENTEST_IP}" "
     nohup env \
         WOODPECKER_SERVER='${WP_SERVER}' \
         WOODPECKER_AGENT_SECRET='${AGENT_SECRET}' \
+        WOODPECKER_AGENT_TRANSPORT=ws \
+        WOODPECKER_GRPC_SECURE=true \
         WOODPECKER_BACKEND=local \
         WOODPECKER_AGENT_LABELS='agent=pts-build' \
         WOODPECKER_HOSTNAME='pentest-dev-vm' \
