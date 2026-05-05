@@ -47,8 +47,8 @@ for i in $(seq 1 12); do
     sleep 10
 done
 
-# Read agent secret from local secrets file (we're on d3ci42)
-AGENT_SECRET=$(grep WOODPECKER_AGENT_SECRET /etc/woodpecker/secrets.env | cut -d= -f2-)
+# Agent secret injected as WOODPECKER_AGENT_SECRET env var via Woodpecker secret
+AGENT_SECRET="${WOODPECKER_AGENT_SECRET:?WOODPECKER_AGENT_SECRET must be set}"
 
 # Find the woodpecker-agent binary on pentest-dev
 AGENT_BIN=$($PTS_SSH "root@${PENTEST_IP}" \

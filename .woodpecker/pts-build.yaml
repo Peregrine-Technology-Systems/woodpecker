@@ -13,5 +13,7 @@ steps:
         from_secret: pts_build_ssh_key
       WOODPECKER_API_TOKEN:
         from_secret: woodpecker_api_token
+      WOODPECKER_AGENT_SECRET:
+        from_secret: woodpecker_agent_secret
     commands:
       - scripts/woodpecker/pts-wake.sh
