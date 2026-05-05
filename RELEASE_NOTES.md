@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- fix: pts-wake.sh reads WOODPECKER_AGENT_SECRET from Woodpecker secret instead of /etc/woodpecker/secrets.env — file read failed in local backend context (exit 2), pentest-dev agent never registered, pts-build-compile queued indefinitely. Secret now injected via from_secret.
+
 - fix: remove backend:local from pts-ci.yaml and pts-build.yaml (#77). backend:local routes to the d3ci42-local agent — wrong for every pipeline. pts-ci runs on normal GCP agents; pts-build wake step uses platform:linux,backend:local only for the d3ci42-local gcloud orchestration step (retained in pts-build.yaml).
 
 - fix: split pts-build into 3 separate workflow files — Woodpecker v3 requires one file per workflow; multi-workflow list syntax in a single YAML is not supported. `pts-build.yaml` (wake), `pts-build-compile.yaml` (pentest-dev native build), `pts-build-cleanup.yaml` (stop VM + notify).
