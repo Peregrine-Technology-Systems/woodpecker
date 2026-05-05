@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- fix: pts-wake.sh guards against concurrent runs — if pentest-dev-vm is already RUNNING (owned by another pipeline), the wake step exits 0 cleanly instead of racing. Multiple main pushes in quick succession (e.g. several PRs merging) each trigger a wake; only the first proceeds, subsequent ones abort with a clear message. Previous behavior: two wakes started the VM simultaneously, both tried to register agents with hostname pentest-dev-vm, SSH races caused exit 255 on one, stuck pts-build-compile tasks in the queue.
+
 - fix: pts-build.sh leaves compiled woodpecker-agent at /opt/woodpecker/woodpecker-agent-${VERSION} on pentest-dev-vm after each compile. Next wake finds it immediately — no GitHub Release download needed. Ensures agent/server version parity across builds.
 
 - fix: pts-wake.sh auto-installs woodpecker-agent binary on pentest-dev-vm if absent — downloads latest woodpecker-agent-linux-amd64 asset from the GitHub Release. Handles fresh VMs and snapshot restores. Previously exited with hard error if binary not found.
