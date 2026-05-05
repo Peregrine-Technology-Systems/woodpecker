@@ -46,7 +46,7 @@ PTS_KEY=".deploy-ssh/pts-build-key"
 echo "$PTS_BUILD_SSH_KEY" > "$PTS_KEY"
 printf '\n' >> "$PTS_KEY"
 chmod 600 "$PTS_KEY"
-PTS_SSH="ssh -i $PTS_KEY -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR"
+PTS_SSH="ssh -i $PTS_KEY -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ServerAliveInterval=30 -o ServerAliveCountMax=10"
 
 # ── Start pentest-dev-vm ──
 echo ""
@@ -129,7 +129,7 @@ echo ""
 echo "==> Fetching binaries from pentest-dev..."
 mkdir -p bin
 rsync -az \
-    -e "ssh -i $PTS_KEY -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR" \
+    -e "ssh -i $PTS_KEY -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ServerAliveInterval=30 -o ServerAliveCountMax=10" \
     "root@${PENTEST_IP}:${WORK_DIR}/bin/" bin/
 echo "    server: $(du -h bin/woodpecker-server | cut -f1)  agent: $(du -h bin/woodpecker-agent | cut -f1)"
 # pentest-dev VM stopped by EXIT trap here
