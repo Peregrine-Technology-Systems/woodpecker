@@ -240,6 +240,21 @@ func run(ctx context.Context, c *cli.Command, backends []types.Backend) error {
 		CustomLabels: customLabels,
 	})
 	if err != nil {
+		// Stale conf: AgentID in agent.conf no longer exists in the server DB
+		// (server restart clears agents). Delete the conf so the next systemd
+		// restart re-registers fresh instead of crash-looping on the same ID. (#101)
+		if s, ok := status.FromError(err); ok {
+			msg := s.Message()
+			if strings.Contains(msg, "AgentID not found") ||
+				strings.Contains(msg, "sql: no rows") ||
+				strings.Contains(msg, "token is expired") {
+				if agentConfigPath != "" {
+					if removeErr := os.Remove(agentConfigPath); removeErr == nil {
+						log.Warn().Str("path", agentConfigPath).Msg("removed stale agent.conf — next start will re-register (#101)")
+					}
+				}
+			}
+		}
 		return err
 	}
 
