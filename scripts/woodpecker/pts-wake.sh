@@ -100,34 +100,48 @@ if [ -z "${AGENT_BIN}" ]; then
 fi
 echo "    agent binary: ${AGENT_BIN}"
 
-# Start woodpecker-agent on pentest-dev with pts-build label
+# Start woodpecker-agent on pentest-dev with pts-build label.
+# Use setsid + bash -c so the process gets its own session and survives
+# SSH disconnect. nohup alone is unreliable when the SSH session closes
+# before the child has finished initialising (#105).
 echo "==> Starting Woodpecker agent on ${PENTEST_VM}..."
 $PTS_SSH "root@${PENTEST_IP}" "
     pkill -f woodpecker-agent 2>/dev/null || true
-    nohup env \
-        WOODPECKER_SERVER='${WP_SERVER}' \
-        WOODPECKER_AGENT_SECRET='${AGENT_SECRET}' \
-        WOODPECKER_AGENT_TRANSPORT=ws \
-        WOODPECKER_GRPC_SECURE=true \
-        WOODPECKER_BACKEND=local \
-        WOODPECKER_AGENT_LABELS='agent=pts-build' \
-        WOODPECKER_HOSTNAME='pentest-dev-vm' \
-        WOODPECKER_MAX_WORKFLOWS=1 \
-        '${AGENT_BIN}' agent \
-        > /tmp/wp-agent.log 2>&1 &
-    echo \"Agent started (PID \$!)\"
+    sleep 1
+    setsid bash -c '
+        export WOODPECKER_SERVER=\"${WP_SERVER}\"
+        export WOODPECKER_AGENT_SECRET=\"${AGENT_SECRET}\"
+        export WOODPECKER_AGENT_TRANSPORT=ws
+        export WOODPECKER_GRPC_SECURE=true
+        export WOODPECKER_BACKEND=local
+        export WOODPECKER_AGENT_LABELS=\"agent=pts-build\"
+        export WOODPECKER_HOSTNAME=\"pentest-dev-vm\"
+        export WOODPECKER_MAX_WORKFLOWS=1
+        exec \"${AGENT_BIN}\" agent
+    ' > /tmp/wp-agent.log 2>&1 </dev/null &
+    AGENT_PID=\$!
+    sleep 2
+    if kill -0 \$AGENT_PID 2>/dev/null; then
+        echo \"Agent running (PID \$AGENT_PID)\"
+        head -5 /tmp/wp-agent.log 2>/dev/null || true
+    else
+        echo \"ERROR: agent exited immediately\"
+        cat /tmp/wp-agent.log 2>/dev/null || true
+        exit 1
+    fi
 "
 
-# Poll Woodpecker API until pentest-dev-vm agent registers (up to 100s)
+# Poll Woodpecker API until pentest-dev-vm agent registers (up to 150s)
 echo "==> Waiting for pentest-dev-vm to register with Woodpecker..."
-for i in $(seq 1 20); do
+for i in $(seq 1 30); do
     FOUND=$(curl -sf "https://d3ci42.peregrinetechsys.net/api/agents" \
         -H "Authorization: Bearer ${WOODPECKER_API_TOKEN}" 2>/dev/null | \
-        jq -r '[.[].name] | map(select(. == "pentest-dev-vm")) | length' 2>/dev/null || echo 0)
+        jq -r '[.[].name] | map(select(test("pentest-dev-vm"))) | length' 2>/dev/null || echo 0)
     if [ "${FOUND:-0}" -gt 0 ]; then
         echo "    registered (attempt ${i})"
         exit 0
     fi
+    echo "    waiting... (attempt ${i}/30)"
     sleep 5
 done
 echo "ERROR: pentest-dev-vm agent did not register within 100s"
