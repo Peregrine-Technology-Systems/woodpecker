@@ -24,6 +24,7 @@ const shutdownTimeout = time.Second * 5
 
 var (
 	shutdownCtx     context.Context
+	shutdownCancel  context.CancelFunc
 	shutdownCtxLock sync.Mutex
 )
 
@@ -34,7 +35,7 @@ func GetShutdownCtx() context.Context {
 	shutdownCtxLock.Lock()
 	defer shutdownCtxLock.Unlock()
 	if shutdownCtx == nil {
-		shutdownCtx, _ = context.WithTimeout(context.Background(), shutdownTimeout) //nolint:govet
+		shutdownCtx, shutdownCancel = context.WithTimeout(context.Background(), shutdownTimeout)
 	}
 	return shutdownCtx
 }
