@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- fix: remove backend:local from pts-ci.yaml and pts-build.yaml (#77). backend:local routes to the d3ci42-local agent — wrong for every pipeline. pts-ci runs on normal GCP agents; pts-build wake step uses platform:linux,backend:local only for the d3ci42-local gcloud orchestration step (retained in pts-build.yaml).
+
 - fix: split pts-build into 3 separate workflow files — Woodpecker v3 requires one file per workflow; multi-workflow list syntax in a single YAML is not supported. `pts-build.yaml` (wake), `pts-build-compile.yaml` (pentest-dev native build), `pts-build-cleanup.yaml` (stop VM + notify).
 
 - feat: two-workflow pts-build — pentest-dev-vm runs as native Woodpecker agent (#74). Replaces SSH-orchestration-from-d3ci42 with a proper two-workflow pipeline: (1) `wake-pentest-dev` (backend:local on d3ci42) starts pentest-dev-vm, sets a TTL label safety net, starts woodpecker-agent with `agent=pts-build` label, polls until registered; (2) `build-and-push` (agent=pts-build on pentest-dev-vm) runs natively — clone step, GCS cache restore, pnpm build, go build, rsync to d3ci42, health check, GH Release; (3) `cleanup` (backend:local on d3ci42) stops VM and removes TTL label (always runs). Removes all SSH orchestration from pts-build.sh. pts-build.sh reduced from ~280 to ~140 lines.
