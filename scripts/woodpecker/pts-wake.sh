@@ -14,6 +14,24 @@ TTL_MINUTES=60  # generous budget: wake + compile + deploy
 WP_SERVER="d3ci42.peregrinetechsys.net:443"  # Caddy proxies gRPC → port 9000
 VERSION="v3.13.0-pts.${CI_PIPELINE_NUMBER:-0}"
 
+# ── Concurrent-run guard ──
+# If pentest-dev-vm is already RUNNING, another pts-build pipeline is using it.
+# Abort cleanly — the in-flight pipeline will compile and stop the VM.
+# Multiple main pushes in quick succession (e.g. several PRs merging) each
+# trigger their own wake; only the first one should proceed.
+CURRENT_STATUS=$(gcloud compute instances describe "${PENTEST_VM}" \
+    --zone="${PENTEST_ZONE}" --project="${PENTEST_PROJECT}" \
+    --format="value(status)" 2>/dev/null || echo "UNKNOWN")
+if [ "${CURRENT_STATUS}" = "RUNNING" ]; then
+    OWNER_PIPELINE=$(gcloud compute instances describe "${PENTEST_VM}" \
+        --zone="${PENTEST_ZONE}" --project="${PENTEST_PROJECT}" \
+        --format="value(labels.pts-build-pipeline)" 2>/dev/null || echo "unknown")
+    echo "==> ${PENTEST_VM} already RUNNING (owned by pipeline #${OWNER_PIPELINE}) — aborting."
+    echo "    This pipeline (#${CI_PIPELINE_NUMBER:-0}) will be skipped."
+    echo "    The in-flight pipeline will compile and deploy the latest code."
+    exit 0
+fi
+
 echo "==> Starting ${PENTEST_VM} for pts-build ${VERSION}..."
 gcloud compute instances start "${PENTEST_VM}" \
     --zone="${PENTEST_ZONE}" --project="${PENTEST_PROJECT}" --quiet
