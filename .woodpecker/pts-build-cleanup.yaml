@@ -1,0 +1,27 @@
+when:
+  - event: push
+    branch: main
+    status: [success, failure]
+
+labels:
+  platform: linux
+  backend: local
+
+depends_on: [pts-build-compile]
+
+steps:
+  - name: stop-vm
+    image: bash
+    commands:
+      - scripts/woodpecker/pts-cleanup.sh
+
+  - name: notify
+    image: bash
+    environment:
+      SLACK_WEBHOOK_URL:
+        from_secret: slack_webhook_url
+    commands:
+      - scripts/woodpecker/pts-notify.sh
+    when:
+      - status: [success, failure]
+    depends_on: [stop-vm]
