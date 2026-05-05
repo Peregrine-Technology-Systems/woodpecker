@@ -3,6 +3,7 @@ when:
     branch: main
 
 labels:
+  backend: local
   platform: linux
 
 steps:

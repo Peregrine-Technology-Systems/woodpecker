@@ -198,10 +198,30 @@ Heavy concurrent write load caused the server to freeze. The write queue (#55) e
 
 ---
 
+## JWT Secret and API Token Lifecycle
+
+Woodpecker signs all user tokens and agent sessions with a JWT secret (`WOODPECKER_JWT_SECRET`). If this is not set, a random key is generated on each startup — all tokens and agent sessions are immediately invalidated on every restart.
+
+**Current state (2026-05-05):** `WOODPECKER_JWT_SECRET` is NOT set in `secrets.env`. Each restart invalidates all sessions. Agents self-heal via the stale-conf fix (#77) and reconnect within ~5 minutes. External API token (`woodpecker-api-token` in GCP SM) is also invalidated.
+
+**Target state (tracked in #92):** woodpecker-deploy.sh rotates the JWT secret on every deploy:
+1. Generates `WOODPECKER_JWT_SECRET` → writes to `secrets.env` + GCP SM
+2. Restarts server with new secret
+3. After health check: self-signs a new API token with the new key
+4. Updates `woodpecker-api-token` in GCP SM
+
+This makes rotation automatic (once per deploy) and eliminates manual intervention after restarts.
+
+**Operator note:** Until #92 lands, any restart will require agents to reconnect (automatic via #77, ~5 min) and may require monitoring tools to wait for the next scrape cycle to clear alerts.
+
+---
+
 ## Reference Incidents
 
 | Date | Symptom | Root cause | Fix |
 |---|---|---|---|
+| 2026-05-05 ~19:08 UTC | All agents disconnected, Grafana red, teams reported WP down | `WOODPECKER_JWT_SECRET` not set — random key generated on each startup invalidates all sessions | Agents self-healed via #77. Permanent fix: automated JWT rotation in woodpecker-deploy.sh (#92) |
+| 2026-05-05 | `database table is locked` under burst webhook load | Write queue (#88) serializes goroutines but xorm pool had 100 SQLite connections — file-level lock still raced | `MaxOpenConns=1` for SQLite (#88) |
 | 2026-05-04 ~20:17 UTC | Server freeze, Slack up/down cascade | `database table is locked` under concurrent writes | Write queue (#55) |
 | 2026-05-04 | pts-build deploy failed (`docker daemon not running`) | Docker masked on d3ci42 post #1403 | Native rsync deploy (#57) |
 | 2026-05-04 | pts-build agent disconnect mid Docker build | Long Docker image build > agent keepalive | Native go build (#57) — shorter, retryable steps |

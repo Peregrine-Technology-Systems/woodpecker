@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- fix: restore `backend: local` to pts-build.yaml — removed incorrectly during backend:local sweep; pts-build is the only legitimate use and must run on d3ci42-local (#96)
+- fix: woodpecker-deploy.sh health check was parsing JSON body that does not exist — healthz returns HTTP 204 with empty body, version is in X-Woodpecker-Version response header; cp over running binary fixed with .new + mv pattern; deployed-version pin file written atomically on success (#90)
+
 - fix: set MaxOpenConns=1 for SQLite so write queue actually eliminates SQLITE_BUSY — default of 100 connections meant multiple xorm file handles still raced on SQLite's per-connection write lock under burst webhook load (#88)
 - fix: woodpecker-agent exits on persistent auth errors so systemd restarts clean (#77). Runner loop previously retried forever on Unauthenticated/Unknown gRPC errors (token expired, AgentID not found, sql: no rows) — process stayed alive but did no work, workers=0, queue backed up. Now calls log.Fatal() on these, triggering Restart=on-failure. On restart with no agent.conf, agent re-registers fresh.
 
