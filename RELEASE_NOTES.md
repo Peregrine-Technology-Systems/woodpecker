@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- fix: pts-wake.sh uses WebSocket transport for pentest-dev-vm agent — port 9000 (gRPC direct) is localhost-only on d3ci42; external VMs must connect via WebSocket through Caddy TLS (#99)
 - fix: restore `backend: local` to pts-build.yaml — removed incorrectly during backend:local sweep; pts-build is the only legitimate use and must run on d3ci42-local (#96)
 - fix: woodpecker-deploy.sh health check was parsing JSON body that does not exist — healthz returns HTTP 204 with empty body, version is in X-Woodpecker-Version response header; cp over running binary fixed with .new + mv pattern; deployed-version pin file written atomically on success (#90)
 
