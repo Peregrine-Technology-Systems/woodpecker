@@ -15,21 +15,35 @@ WP_SERVER="d3ci42.peregrinetechsys.net"  # WebSocket via Caddy TLS (port 443)
 VERSION="v3.13.0-pts.${CI_PIPELINE_NUMBER:-0}"
 
 # ── Concurrent-run guard ──
-# If pentest-dev-vm is already RUNNING, another pts-build pipeline is using it.
-# Abort cleanly — the in-flight pipeline will compile and stop the VM.
-# Multiple main pushes in quick succession (e.g. several PRs merging) each
-# trigger their own wake; only the first one should proceed.
+# If pentest-dev-vm is already RUNNING and owned by an ACTIVE pipeline, abort.
+# Multiple main pushes in quick succession each trigger their own wake; only
+# the first one should proceed. A stale label from a failed/killed pipeline is
+# NOT sufficient reason to abort — we must verify the owner is still running.
 CURRENT_STATUS=$(gcloud compute instances describe "${PENTEST_VM}" \
     --zone="${PENTEST_ZONE}" --project="${PENTEST_PROJECT}" \
     --format="value(status)" 2>/dev/null || echo "UNKNOWN")
 if [ "${CURRENT_STATUS}" = "RUNNING" ]; then
     OWNER_PIPELINE=$(gcloud compute instances describe "${PENTEST_VM}" \
         --zone="${PENTEST_ZONE}" --project="${PENTEST_PROJECT}" \
-        --format="value(labels.pts-build-pipeline)" 2>/dev/null || echo "unknown")
-    echo "==> ${PENTEST_VM} already RUNNING (owned by pipeline #${OWNER_PIPELINE}) — aborting."
-    echo "    This pipeline (#${CI_PIPELINE_NUMBER:-0}) will be skipped."
-    echo "    The in-flight pipeline will compile and deploy the latest code."
-    exit 0
+        --format="value(labels.pts-build-pipeline)" 2>/dev/null || echo "")
+    if [ -n "${OWNER_PIPELINE}" ] && [ "${OWNER_PIPELINE}" != "0" ]; then
+        # Verify the labeled pipeline is still active before deferring to it.
+        # A failed/killed pipeline leaves a stale label; don't abort for those.
+        OWNER_STATUS=$(curl -s --max-time 5 \
+            -H "Authorization: Bearer ${WOODPECKER_API_TOKEN}" \
+            "http://localhost:8000/api/repos/13/pipelines/${OWNER_PIPELINE}" \
+            2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin).get('status','unknown'))" \
+            2>/dev/null || echo "unknown")
+        echo "==> ${PENTEST_VM} RUNNING — owner=#${OWNER_PIPELINE} status=${OWNER_STATUS}"
+        if [ "${OWNER_STATUS}" = "running" ] || [ "${OWNER_STATUS}" = "pending" ]; then
+            echo "    Active pipeline #${OWNER_PIPELINE} is compiling — skipping (#120)."
+            exit 0
+        else
+            echo "    Stale label from #${OWNER_PIPELINE} (${OWNER_STATUS}) — taking ownership."
+        fi
+    else
+        echo "==> ${PENTEST_VM} RUNNING with no owner label — taking ownership."
+    fi
 fi
 
 echo "==> Starting ${PENTEST_VM} for pts-build ${VERSION}..."
