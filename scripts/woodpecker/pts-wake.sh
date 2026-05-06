@@ -119,8 +119,8 @@ AGENT_OUTPUT=$($PTS_SSH_VERBOSE "root@${PENTEST_IP}" 2>"${SSH_ERR_LOG}" "
             export WOODPECKER_MAX_WORKFLOWS=1
             export WOODPECKER_GRPC_KEEPALIVE_TIME=10s
             export WOODPECKER_GRPC_KEEPALIVE_TIMEOUT=20s
-            exec \"\$AGENT_BIN\" agent
-        ' > /tmp/wp-agent.log 2>&1 </dev/null &
+            exec \"\$1\" agent
+        ' -- \"\$AGENT_BIN\" > /tmp/wp-agent.log 2>&1 </dev/null &
         AGENT_PID=\$!
         sleep 2
         if kill -0 \$AGENT_PID 2>/dev/null; then
@@ -170,8 +170,8 @@ if echo "${AGENT_OUTPUT}" | grep -q "^NEED_DOWNLOAD"; then
             export WOODPECKER_MAX_WORKFLOWS=1
             export WOODPECKER_GRPC_KEEPALIVE_TIME=10s
             export WOODPECKER_GRPC_KEEPALIVE_TIMEOUT=20s
-            exec \"\$AGENT_BIN\" agent
-        ' > /tmp/wp-agent.log 2>&1 </dev/null &
+            exec \"\$1\" agent
+        ' -- \"\$AGENT_BIN\" > /tmp/wp-agent.log 2>&1 </dev/null &
         sleep 2
         echo 'Downloaded and started: \$AGENT_BIN'
     "
