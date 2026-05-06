@@ -69,7 +69,13 @@ mkdir -p .deploy-ssh
 echo "$PTS_BUILD_SSH_KEY" > "$SSH_KEY"
 printf '\n' >> "$SSH_KEY"
 chmod 600 "$SSH_KEY"
-PTS_SSH="ssh -i $SSH_KEY -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ServerAliveInterval=30 -o ServerAliveCountMax=10"
+PTS_SSH="ssh -i $SSH_KEY -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=15 -o ServerAliveInterval=30 -o ServerAliveCountMax=10"
+
+# Brief boot pause — give sshd time to start before the first connection attempt.
+# Without this, the kernel accepts port 22 before sshd is ready; SSH hangs
+# waiting for a banner rather than getting connection refused, so ConnectTimeout
+# is the safety net but the pause makes it a non-issue in normal cases.
+sleep 10
 
 # Wait for SSH (up to 2 min)
 echo "==> Waiting for SSH..."
