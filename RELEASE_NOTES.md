@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- fix: pts-wake.sh passes AGENT_BIN as positional arg to inner bash-c — single-quoted setsid bash -c string does not inherit outer shell variables; $AGENT_BIN was silently empty so exec ran with no binary and the agent never started (#123)
+
 - debug: pts-wake.sh captures SSH stderr to file before set -e can exit, prints it after — set -euo pipefail was killing the script before verbose output could print (#123 — remove after diagnosis)
 
 - debug: pts-wake.sh combined SSH session uses LogLevel=VERBOSE to capture exact exit-255 failure reason (#123 — remove after diagnosis)
