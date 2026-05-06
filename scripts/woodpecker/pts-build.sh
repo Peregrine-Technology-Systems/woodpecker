@@ -17,8 +17,17 @@ echo "==> pts-build: ${VERSION} (${SHA_SHORT})"
 
 # ── GCS build cache ──
 export PATH="/usr/local/go/bin:$PATH"
-GOCACHE="${HOME}/.cache/go-build"
-GOMODCACHE="${HOME}/go/pkg/mod"
+# Use the persistent 200GB data disk for build caches — the 30GB root
+# partition fills up when the agent's HOME is a temp workspace directory.
+DATA_DISK="/mnt/pentest-data"
+if [ -d "${DATA_DISK}" ] && [ "$(df -P "${DATA_DISK}" | awk 'NR==2{print $4}')" -gt 5000000 ]; then
+    GOCACHE="${DATA_DISK}/go-build-cache"
+    GOMODCACHE="${DATA_DISK}/go-mod-cache"
+    export GOTELEMETRY=off
+else
+    GOCACHE="${HOME}/.cache/go-build"
+    GOMODCACHE="${HOME}/go/pkg/mod"
+fi
 mkdir -p "${GOCACHE}" "${GOMODCACHE}"
 
 echo "==> Restoring GCS build cache..."

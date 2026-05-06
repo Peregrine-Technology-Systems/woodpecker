@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- fix: pts-build.sh redirects GOCACHE and GOMODCACHE to /mnt/pentest-data (200GB data disk) when available — the 30GB root partition fills up when the Woodpecker agent workspace sets HOME to a temp directory; gsutil rsync downloads 3.5GB of cache to root and is killed mid-transfer
+
 - fix: pts-wake.sh rewritten — agent now runs as systemd service on pentest-dev-vm (woodpecker-agent.service auto-starts on boot); wake step just starts the VM and polls the Woodpecker API for agent registration, no SSH required. Eliminates all SSH-based agent-start complexity and the exit-255 mystery class of bugs. TTL increased to 120min.
 
 - fix: pts-wake.sh replaces setsid bash-c with setsid env to start agent — bash -c inner shell couldn't exec the binary even with positional arg because the env vars are set by env directly on the process, no inner shell required
