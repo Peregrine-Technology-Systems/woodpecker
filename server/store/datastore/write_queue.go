@@ -14,6 +14,12 @@
 
 package datastore
 
+import (
+	"fmt"
+
+	"github.com/rs/zerolog/log"
+)
+
 // writeQueue serializes all SQLite write operations through a single goroutine,
 // eliminating SQLITE_BUSY "database table is locked" errors under concurrent
 // write load. Without serialization, concurrent HTTP handlers (pipeline status
@@ -32,7 +38,11 @@ package datastore
 // Non-SQLite drivers: wq is nil and serialize() calls the fn directly, adding
 // zero overhead and requiring no driver-specific branching in callers.
 
-const writeQueueDepth = 256
+// writeQueueDepth is the buffer size of the write queue channel.
+// 1024 handles webhook bursts (many repos pushing simultaneously) without
+// stalling HTTP handlers. Previously 256 — silent blocking under burst
+// load caused upstream timeouts that surfaced as "database table is locked".
+const writeQueueDepth = 1024
 
 type writeOp struct {
 	fn     func() error
@@ -65,7 +75,14 @@ func (wq *writeQueue) close() {
 	close(wq.ops)
 }
 
+// ErrWriteQueueFull is returned by serialize when the queue is at capacity.
+// Callers should surface this as HTTP 503 with Retry-After so clients
+// (GitHub webhooks, scaler) back off and retry rather than piling up.
+var ErrWriteQueueFull = fmt.Errorf("write queue full — server overloaded, retry shortly")
+
 // serialize runs fn on the drain goroutine, blocking until it completes.
+// Returns ErrWriteQueueFull immediately (without blocking) if the queue is
+// at capacity — callers should return HTTP 503 Retry-After.
 // If wq is nil (non-SQLite driver), fn is called directly on the caller's
 // goroutine — semantics are identical, overhead is zero.
 func (wq *writeQueue) serialize(fn func() error) error {
@@ -73,6 +90,16 @@ func (wq *writeQueue) serialize(fn func() error) error {
 		return fn()
 	}
 	result := make(chan error, 1)
-	wq.ops <- writeOp{fn: fn, result: result}
+	op := writeOp{fn: fn, result: result}
+	select {
+	case wq.ops <- op:
+		// queued successfully
+	default:
+		log.Warn().
+			Int("queue_depth", len(wq.ops)).
+			Int("queue_cap", cap(wq.ops)).
+			Msg("SQLite write queue full — returning 503 to caller")
+		return ErrWriteQueueFull
+	}
 	return <-result
 }

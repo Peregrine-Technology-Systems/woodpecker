@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- fix: write queue depth 256 → 1024 + non-blocking serialize with HTTP 503 Retry-After on full — previously a saturated queue blocked caller goroutines silently; upstream HTTP timeouts surfaced as "database table is locked" and dropped webhooks. Now returns 503 Retry-After: 5 immediately; GitHub webhook delivery respects 503 and retries automatically
+
 - fix: revert jwtTokenDuration 24h → 1h; proper fix is heartbeat-based refresh via extend() (#116) — piggybacking a new token on the 30s keepalive avoids reconnection and keeps the attack window bounded by heartbeat interval rather than token lifetime
 
 - fix: permission middleware writes perms table outside the write queue — source of remaining SQLITE_BUSY on GET requests; affects pipeline restart API (#126)
