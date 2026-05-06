@@ -34,7 +34,14 @@ type AgentTokenClaims struct {
 	AgentID int64 `json:"agent_id"`
 }
 
-const jwtTokenDuration = 1 * time.Hour
+// jwtTokenDuration is the validity window for agent registration tokens.
+// 24h covers the longest expected CI job (cache restore + compile + deploy)
+// with substantial headroom. Agents re-register on each restart; expiry
+// only matters for long-running sessions (#116).
+//
+// The agent also runs a proactive refresh goroutine (cmd/agent/core/agent.go)
+// that forces a clean reconnect at 75% of this window when idle.
+const jwtTokenDuration = 24 * time.Hour
 
 // NewJWTManager returns a new JWT manager.
 func NewJWTManager(secretKey string) *JWTManager {
