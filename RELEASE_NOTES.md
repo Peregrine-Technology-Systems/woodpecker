@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- fix: pts-wake.sh combines agent binary check and agent start into one SSH session — consecutive connections from d3ci42 to pentest-dev-vm were triggering UFW limit 22/tcp (6 conn/30s); a 3s pause after the readiness poll + single combined session eliminates the extra connection that exceeded the rate limit (#119)
+
 - fix: pts-wake.sh concurrent guard now verifies the owning pipeline is still active before aborting — a failed or killed pipeline leaves a stale pts-build-pipeline label on the VM; the old guard aborted on ANY running VM regardless of label, causing every subsequent pipeline to skip with a false "already in use" and leaving the compile step pending forever. Now checks owner pipeline status via the Woodpecker API and takes ownership when the labeled pipeline is no longer running (#120)
 
 - fix: SQLite reader pool no longer uses _txlock=immediate — applying BEGIN IMMEDIATE to reader connections caused all 10 pool connections to compete for the same RESERVED lock under concurrent webhook load, producing "database table is locked: pipelines" on POST /api/hook even after the dedicated-writer fix (#107). Reader DSN now uses deferred locking (SQLite default); _txlock=immediate is kept only on the single writer connection where it prevents upgrade-deadlocks (#114)
