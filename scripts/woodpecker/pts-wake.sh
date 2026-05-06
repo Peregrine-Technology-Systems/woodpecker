@@ -78,16 +78,59 @@ for i in $(seq 1 12); do
     [ "$i" -eq 12 ] && echo "ERROR: SSH timeout" && exit 1
     sleep 10
 done
+# Brief pause after readiness poll — lets UFW's connection-rate window clear
+# before the main SSH session (rapid consecutive connections from d3ci42
+# trigger limit 22/tcp at 6 conn/30s; binary-check + agent-start in one
+# session eliminates the extra connection entirely, but a pause is belt-and-
+# suspenders for any connections the readiness loop already issued (#119)).
+sleep 3
 
 # Agent secret injected as WOODPECKER_AGENT_SECRET env var via Woodpecker secret
 AGENT_SECRET="${WOODPECKER_AGENT_SECRET:?WOODPECKER_AGENT_SECRET must be set}"
 
-# Ensure woodpecker-agent binary exists on pentest-dev.
-# If absent, download the latest published asset from the GitHub Release.
-# This handles fresh VMs and snapshot restores cleanly.
-AGENT_BIN=$($PTS_SSH "root@${PENTEST_IP}" \
-    "ls /opt/woodpecker/woodpecker-agent-* 2>/dev/null | sort -V | tail -1 || echo ''")
-if [ -z "${AGENT_BIN}" ]; then
+# Combine binary check + agent start in ONE SSH session to avoid triggering
+# UFW's rate limiter (limit 22/tcp = 6 conn/30s per source IP). Previously
+# these were two separate connections immediately following the readiness poll,
+# causing the third connection to be rejected mid-wake (#119).
+echo "==> Checking agent binary and starting Woodpecker agent on ${PENTEST_VM}..."
+AGENT_OUTPUT=$($PTS_SSH "root@${PENTEST_IP}" "
+    # ── Binary check ──
+    AGENT_BIN=\$(ls /opt/woodpecker/woodpecker-agent-* 2>/dev/null | sort -V | tail -1 || echo '')
+    if [ -z \"\$AGENT_BIN\" ]; then
+        echo 'NEED_DOWNLOAD'
+    else
+        echo \"HAVE:\$AGENT_BIN\"
+        # ── Agent start (same session) ──
+        pkill -f woodpecker-agent 2>/dev/null || true
+        sleep 1
+        setsid bash -c '
+            export WOODPECKER_SERVER=\"${WP_SERVER}\"
+            export WOODPECKER_AGENT_SECRET=\"${AGENT_SECRET}\"
+            export WOODPECKER_AGENT_TRANSPORT=ws
+            export WOODPECKER_GRPC_SECURE=true
+            export WOODPECKER_BACKEND=local
+            export WOODPECKER_AGENT_LABELS=\"agent=pts-build\"
+            export WOODPECKER_HOSTNAME=\"pentest-dev-vm\"
+            export WOODPECKER_MAX_WORKFLOWS=1
+            export WOODPECKER_GRPC_KEEPALIVE_TIME=10s
+            export WOODPECKER_GRPC_KEEPALIVE_TIMEOUT=20s
+            exec \"\$AGENT_BIN\" agent
+        ' > /tmp/wp-agent.log 2>&1 </dev/null &
+        AGENT_PID=\$!
+        sleep 2
+        if kill -0 \$AGENT_PID 2>/dev/null; then
+            echo \"STARTED:\$AGENT_PID\"
+            head -3 /tmp/wp-agent.log 2>/dev/null || true
+        else
+            echo 'DIED'
+            cat /tmp/wp-agent.log 2>/dev/null || true
+        fi
+    fi
+")
+echo "    ${AGENT_OUTPUT}"
+
+AGENT_BIN=$(echo "${AGENT_OUTPUT}" | grep "^HAVE:" | cut -d: -f2-)
+if echo "${AGENT_OUTPUT}" | grep -q "^NEED_DOWNLOAD"; then
     echo "==> No agent binary on ${PENTEST_VM} — downloading from latest GitHub Release..."
     LATEST_TAG=$(curl -sf -H "Authorization: Bearer ${GH_TOKEN:-}" \
         "https://api.github.com/repos/Peregrine-Technology-Systems/woodpecker/releases/latest" | \
@@ -99,53 +142,36 @@ if [ -z "${AGENT_BIN}" ]; then
     AGENT_URL=$(curl -sf -H "Authorization: Bearer ${GH_TOKEN:-}" \
         "https://api.github.com/repos/Peregrine-Technology-Systems/woodpecker/releases/latest" | \
         python3 -c 'import json,sys; d=json.load(sys.stdin); print(next((a["browser_download_url"] for a in d["assets"] if a["name"]=="woodpecker-agent-linux-amd64"), ""))' 2>/dev/null || echo "")
-    if [ -z "$AGENT_URL" ]; then
-        echo "ERROR: woodpecker-agent-linux-amd64 asset not found in release ${LATEST_TAG}"
-        exit 1
-    fi
     AGENT_BIN="/opt/woodpecker/woodpecker-agent-${LATEST_TAG}"
     $PTS_SSH "root@${PENTEST_IP}" "
         mkdir -p /opt/woodpecker
         curl -sfL -H 'Authorization: Bearer ${GH_TOKEN:-}' '${AGENT_URL}' \
             -o '${AGENT_BIN}' && chmod +x '${AGENT_BIN}'
-        echo 'Downloaded: ${AGENT_BIN}'
+        pkill -f woodpecker-agent 2>/dev/null || true
+        sleep 1
+        setsid bash -c '
+            export WOODPECKER_SERVER=\"${WP_SERVER}\"
+            export WOODPECKER_AGENT_SECRET=\"${AGENT_SECRET}\"
+            export WOODPECKER_AGENT_TRANSPORT=ws
+            export WOODPECKER_GRPC_SECURE=true
+            export WOODPECKER_BACKEND=local
+            export WOODPECKER_AGENT_LABELS=\"agent=pts-build\"
+            export WOODPECKER_HOSTNAME=\"pentest-dev-vm\"
+            export WOODPECKER_MAX_WORKFLOWS=1
+            export WOODPECKER_GRPC_KEEPALIVE_TIME=10s
+            export WOODPECKER_GRPC_KEEPALIVE_TIMEOUT=20s
+            exec \"\$AGENT_BIN\" agent
+        ' > /tmp/wp-agent.log 2>&1 </dev/null &
+        sleep 2
+        echo 'Downloaded and started: \$AGENT_BIN'
     "
-    echo "    downloaded: ${AGENT_BIN}"
+    echo "    downloaded and started: ${AGENT_BIN}"
 fi
-echo "    agent binary: ${AGENT_BIN}"
 
-# Start woodpecker-agent on pentest-dev with pts-build label.
-# Use setsid + bash -c so the process gets its own session and survives
-# SSH disconnect. nohup alone is unreliable when the SSH session closes
-# before the child has finished initialising (#105).
-echo "==> Starting Woodpecker agent on ${PENTEST_VM}..."
-$PTS_SSH "root@${PENTEST_IP}" "
-    pkill -f woodpecker-agent 2>/dev/null || true
-    sleep 1
-    setsid bash -c '
-        export WOODPECKER_SERVER=\"${WP_SERVER}\"
-        export WOODPECKER_AGENT_SECRET=\"${AGENT_SECRET}\"
-        export WOODPECKER_AGENT_TRANSPORT=ws
-        export WOODPECKER_GRPC_SECURE=true
-        export WOODPECKER_BACKEND=local
-        export WOODPECKER_AGENT_LABELS=\"agent=pts-build\"
-        export WOODPECKER_HOSTNAME=\"pentest-dev-vm\"
-        export WOODPECKER_MAX_WORKFLOWS=1
-        export WOODPECKER_GRPC_KEEPALIVE_TIME=10s
-        export WOODPECKER_GRPC_KEEPALIVE_TIMEOUT=20s
-        exec \"${AGENT_BIN}\" agent
-    ' > /tmp/wp-agent.log 2>&1 </dev/null &
-    AGENT_PID=\$!
-    sleep 2
-    if kill -0 \$AGENT_PID 2>/dev/null; then
-        echo \"Agent running (PID \$AGENT_PID)\"
-        head -5 /tmp/wp-agent.log 2>/dev/null || true
-    else
-        echo \"ERROR: agent exited immediately\"
-        cat /tmp/wp-agent.log 2>/dev/null || true
-        exit 1
-    fi
-"
+if echo "${AGENT_OUTPUT}" | grep -q "^DIED"; then
+    echo "ERROR: agent exited immediately on ${PENTEST_VM}"
+    exit 1
+fi
 
 # Poll Woodpecker API until pentest-dev-vm agent registers (up to 150s)
 echo "==> Waiting for pentest-dev-vm to register with Woodpecker..."
