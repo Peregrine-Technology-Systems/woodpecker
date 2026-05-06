@@ -299,6 +299,34 @@ func run(ctx context.Context, c *cli.Command, backends []types.Backend) error {
 
 	log.Debug().Msgf("agent registered with ID %d", agentConfig.AgentID)
 
+	// Proactive token refresh (#116): exit cleanly at 75% of the token lifetime
+	// when idle so systemd restarts with a fresh registration before the token
+	// expires. Prevents silent auth failures mid-pipeline on long-running agents.
+	// agentTokenDuration must match server/rpc.jwtTokenDuration (24h).
+	const agentTokenDuration = 24 * time.Hour
+	tokenRefreshAt := time.Now().Add(agentTokenDuration * 3 / 4)
+	serviceWaitingGroup.Go(func() error {
+		select {
+		case <-agentCtx.Done():
+			return nil
+		case <-time.After(time.Until(tokenRefreshAt)):
+		}
+		// Only force reconnect when no tasks are in flight.
+		for counter.Running > 0 {
+			select {
+			case <-agentCtx.Done():
+				return nil
+			case <-time.After(30 * time.Second):
+			}
+		}
+		log.Info().Msg("proactive token refresh: no tasks running, reconnecting for fresh registration (#116)")
+		if agentConfigPath != "" {
+			_ = os.Remove(agentConfigPath)
+		}
+		log.Fatal().Msg("exiting for token refresh — systemd will restart with fresh credentials")
+		return nil
+	})
+
 	serviceWaitingGroup.Go(func() error {
 		for {
 			err := client.ReportHealth(grpcCtx)
