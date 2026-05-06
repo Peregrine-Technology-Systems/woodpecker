@@ -36,13 +36,15 @@ cd ..
 # ── Compile ──
 mkdir -p bin
 echo ""; echo "==> Compiling woodpecker-server (CGO=1)..."
-CGO_ENABLED=1 go build \
+# nice -n 10: lowers build priority so the agent heartbeat goroutine wins CPU
+# time during saturation — prevents WS keepalive misses that drop the session (#115).
+CGO_ENABLED=1 nice -n 10 go build \
     -ldflags "-s -w -X go.woodpecker-ci.org/woodpecker/v3/version.Version=${VERSION}" \
     -o bin/woodpecker-server ./cmd/server
 echo "    $(du -h bin/woodpecker-server | cut -f1)"
 
 echo ""; echo "==> Compiling woodpecker-agent (CGO=0)..."
-CGO_ENABLED=0 go build \
+CGO_ENABLED=0 nice -n 10 go build \
     -ldflags "-s -w -X go.woodpecker-ci.org/woodpecker/v3/version.Version=${VERSION}" \
     -o bin/woodpecker-agent ./cmd/agent
 echo "    $(du -h bin/woodpecker-agent | cut -f1)"
