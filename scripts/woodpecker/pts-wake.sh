@@ -117,6 +117,8 @@ $PTS_SSH "root@${PENTEST_IP}" "
         export WOODPECKER_AGENT_LABELS=\"agent=pts-build\"
         export WOODPECKER_HOSTNAME=\"pentest-dev-vm\"
         export WOODPECKER_MAX_WORKFLOWS=1
+        export WOODPECKER_GRPC_KEEPALIVE_TIME=10s
+        export WOODPECKER_GRPC_KEEPALIVE_TIMEOUT=20s
         exec \"${AGENT_BIN}\" agent
     ' > /tmp/wp-agent.log 2>&1 </dev/null &
     AGENT_PID=\$!
