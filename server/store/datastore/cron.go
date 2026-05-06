@@ -29,7 +29,7 @@ func (s storage) CronCreate(cron *model.Cron) error {
 		return err
 	}
 	return s.wq.serialize(func() error {
-		err := wrapInsert(s.engine.Insert(cron))
+		err := wrapInsert(s.writeEngine().Insert(cron))
 		if errors.Is(err, types.ErrInsertDuplicateDetected) {
 			return fmt.Errorf("create cron failed, duplicate detected: %w", err)
 		}
@@ -49,14 +49,14 @@ func (s storage) CronList(repo *model.Repo, p *model.ListOptions) ([]*model.Cron
 
 func (s storage) CronUpdate(_ *model.Repo, cron *model.Cron) error {
 	return s.wq.serialize(func() error {
-		_, err := s.engine.ID(cron.ID).AllCols().Update(cron)
+		_, err := s.writeEngine().ID(cron.ID).AllCols().Update(cron)
 		return err
 	})
 }
 
 func (s storage) CronDelete(repo *model.Repo, id int64) error {
 	return s.wq.serialize(func() error {
-		return wrapDelete(s.engine.ID(id).Where("repo_id = ?", repo.ID).Delete(new(model.Cron)))
+		return wrapDelete(s.writeEngine().ID(id).Where("repo_id = ?", repo.ID).Delete(new(model.Cron)))
 	})
 }
 
@@ -70,7 +70,7 @@ func (s storage) CronListNextExecute(nextExec, limit int64) ([]*model.Cron, erro
 func (s storage) CronGetLock(cron *model.Cron, newNextExec int64) (bool, error) {
 	var gotLock bool
 	err := s.wq.serialize(func() error {
-		cols, err := s.engine.ID(cron.ID).Where(builder.Eq{"next_exec": cron.NextExec}).
+		cols, err := s.writeEngine().ID(cron.ID).Where(builder.Eq{"next_exec": cron.NextExec}).
 			Cols("next_exec").Update(&model.Cron{NextExec: newNextExec})
 		gotLock = cols != 0
 		if err == nil && gotLock {

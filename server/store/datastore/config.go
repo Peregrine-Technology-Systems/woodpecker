@@ -50,7 +50,7 @@ func (s storage) ConfigPersist(conf *model.Config) (*model.Config, error) {
 
 	var result *model.Config
 	err := s.wq.serialize(func() error {
-		sess := s.engine.NewSession()
+		sess := s.writeEngine().NewSession()
 		defer sess.Close()
 		if err := sess.Begin(); err != nil {
 			return err
@@ -94,6 +94,6 @@ func (s storage) configCreate(sess *xorm.Session, config *model.Config) error {
 func (s storage) PipelineConfigCreate(config *model.PipelineConfig) error {
 	return s.wq.serialize(func() error {
 		// only Insert set auto created ID back to object
-		return wrapInsert(s.engine.Insert(config))
+		return wrapInsert(s.writeEngine().Insert(config))
 	})
 }

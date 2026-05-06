@@ -26,13 +26,27 @@ import (
 )
 
 type storage struct {
-	engine *xorm.Engine
+	engine *xorm.Engine // reader pool (MaxOpenConns=10 for SQLite, opts value for others)
+	// writer is a dedicated single-connection engine used exclusively by the
+	// write queue drain goroutine for SQLite. Separating read and write
+	// connections lets WAL serve concurrent reads while guaranteeing a single
+	// writer at the SQLite level (#107). nil for non-SQLite drivers.
+	writer *xorm.Engine
 	// wq serializes writes for SQLite to prevent SQLITE_BUSY under concurrent
 	// load (#55). nil for non-SQLite drivers (serialize() calls fn directly).
 	wq *writeQueue
 }
 
 const perPage = 50
+
+// writeEngine returns the dedicated writer connection for SQLite, or the
+// shared engine for other drivers. Use this inside s.wq.serialize closures.
+func (s storage) writeEngine() *xorm.Engine {
+	if s.writer != nil {
+		return s.writer
+	}
+	return s.engine
+}
 
 func NewEngine(opts *store.Opts) (store.Store, error) {
 	dsn := opts.Config
@@ -58,13 +72,26 @@ func NewEngine(opts *store.Opts) (store.Store, error) {
 
 	s := &storage{engine: engine}
 	if opts.Driver == "sqlite3" {
+		// Reader pool: allow concurrent reads via WAL. Capped at 10 — d3ci42
+		// is a small machine and hitting 10 simultaneous readers is unlikely.
+		engine.SetMaxOpenConns(10)
+		engine.SetMaxIdleConns(5)
+
+		// Dedicated writer: a separate single-connection engine used only by the
+		// write queue drain goroutine. WAL allows readers and this one writer to
+		// coexist without blocking. MaxOpenConns=1 here guarantees no goroutine
+		// other than the drain goroutine ever opens a write connection (#107).
+		writer, err := xorm.NewEngine(opts.Driver, dsn)
+		if err != nil {
+			return nil, err
+		}
+		writer.SetLogger(logger)
+		writer.ShowSQL(opts.XORM.ShowSQL)
+		writer.SetMaxOpenConns(1)
+		writer.SetMaxIdleConns(1)
+		s.writer = writer
+
 		s.wq = newWriteQueue(writeQueueDepth)
-		// Single connection required: the write queue serializes Go-level writes
-		// through one goroutine, but xorm's pool can open multiple SQLite file
-		// handles. SQLite's write lock is per-connection — multiple handles race
-		// on it even with the queue, producing SQLITE_BUSY under burst load (#88).
-		engine.SetMaxOpenConns(1)
-		engine.SetMaxIdleConns(1)
 	}
 	return s, nil
 }

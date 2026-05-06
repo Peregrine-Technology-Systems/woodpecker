@@ -161,7 +161,7 @@ func (s storage) CreatePipeline(pipeline *model.Pipeline, stepList ...*model.Ste
 
 		// Execute with backoff retry
 		_, err := backoff.Retry(context.Background(), func() (struct{}, error) {
-			sess := s.engine.NewSession()
+			sess := s.writeEngine().NewSession()
 			defer sess.Close()
 			if err := sess.Begin(); err != nil {
 				return struct{}{}, err
@@ -230,14 +230,14 @@ func isUniqueConstraintError(err error) bool {
 
 func (s storage) UpdatePipeline(pipeline *model.Pipeline) error {
 	return s.wq.serialize(func() error {
-		_, err := s.engine.ID(pipeline.ID).AllCols().Update(pipeline)
+		_, err := s.writeEngine().ID(pipeline.ID).AllCols().Update(pipeline)
 		return err
 	})
 }
 
 func (s storage) DeletePipeline(pipeline *model.Pipeline) error {
 	return s.wq.serialize(func() error {
-		return s.deletePipeline(s.engine.NewSession(), pipeline.ID)
+		return s.deletePipeline(s.writeEngine().NewSession(), pipeline.ID)
 	})
 }
 

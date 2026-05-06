@@ -33,7 +33,7 @@ func (s storage) PermFind(user *model.User, repo *model.Repo) (*model.Perm, erro
 
 func (s storage) PermUpsert(perm *model.Perm) error {
 	return s.wq.serialize(func() error {
-		sess := s.engine.NewSession()
+		sess := s.writeEngine().NewSession()
 		defer sess.Close()
 		if err := sess.Begin(); err != nil {
 			return err
@@ -91,11 +91,11 @@ func userIDAndRepoIDCond(perm *model.Perm) builder.Cond {
 func (s storage) PermPrune(userID int64, keepRepoIDs []int64) error {
 	return s.wq.serialize(func() error {
 		if len(keepRepoIDs) == 0 {
-			_, err := s.engine.Where(builder.Eq{"user_id": userID}).Delete(new(model.Perm))
+			_, err := s.writeEngine().Where(builder.Eq{"user_id": userID}).Delete(new(model.Perm))
 			return err
 		}
 
-		_, err := s.engine.Where(builder.Eq{"user_id": userID}).
+		_, err := s.writeEngine().Where(builder.Eq{"user_id": userID}).
 			And(builder.NotIn("repo_id", keepRepoIDs)).
 			Delete(new(model.Perm))
 		return err

@@ -39,7 +39,7 @@ func (s storage) WorkflowGetTree(pipeline *model.Pipeline) ([]*model.Workflow, e
 
 func (s storage) WorkflowsCreate(workflows []*model.Workflow) error {
 	return s.wq.serialize(func() error {
-		sess := s.engine.NewSession()
+		sess := s.writeEngine().NewSession()
 		defer sess.Close()
 		if err := sess.Begin(); err != nil {
 			return err
@@ -69,7 +69,7 @@ func (s storage) workflowsCreate(sess *xorm.Session, workflows []*model.Workflow
 // WorkflowsReplace performs an atomic replacement of workflows and associated steps by deleting all existing workflows and steps and inserting the new ones.
 func (s storage) WorkflowsReplace(pipeline *model.Pipeline, workflows []*model.Workflow) error {
 	return s.wq.serialize(func() error {
-		sess := s.engine.NewSession()
+		sess := s.writeEngine().NewSession()
 		defer sess.Close()
 		if err := sess.Begin(); err != nil {
 			return err
@@ -133,7 +133,7 @@ func (s storage) WorkflowLoad(id int64) (*model.Workflow, error) {
 
 func (s storage) WorkflowUpdate(workflow *model.Workflow) error {
 	return s.wq.serialize(func() error {
-		_, err := s.engine.ID(workflow.ID).AllCols().Update(workflow)
+		_, err := s.writeEngine().ID(workflow.ID).AllCols().Update(workflow)
 		return err
 	})
 }

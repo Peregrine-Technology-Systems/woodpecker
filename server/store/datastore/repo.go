@@ -91,20 +91,20 @@ func (s storage) CreateRepo(repo *model.Repo) error {
 	}
 	return s.wq.serialize(func() error {
 		// only Insert set auto created ID back to object
-		return wrapInsert(s.engine.Insert(repo))
+		return wrapInsert(s.writeEngine().Insert(repo))
 	})
 }
 
 func (s storage) UpdateRepo(repo *model.Repo) error {
 	return s.wq.serialize(func() error {
-		_, err := s.engine.ID(repo.ID).AllCols().Update(repo)
+		_, err := s.writeEngine().ID(repo.ID).AllCols().Update(repo)
 		return err
 	})
 }
 
 func (s storage) DeleteRepo(repo *model.Repo) error {
 	return s.wq.serialize(func() error {
-		return s.deleteRepo(s.engine.NewSession(), repo)
+		return s.deleteRepo(s.writeEngine().NewSession(), repo)
 	})
 }
 

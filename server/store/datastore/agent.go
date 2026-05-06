@@ -43,20 +43,20 @@ func (s storage) AgentFindByToken(token string) (*model.Agent, error) {
 func (s storage) AgentCreate(agent *model.Agent) error {
 	return s.wq.serialize(func() error {
 		// only Insert set auto created ID back to object
-		return wrapInsert(s.engine.Insert(agent))
+		return wrapInsert(s.writeEngine().Insert(agent))
 	})
 }
 
 func (s storage) AgentUpdate(agent *model.Agent) error {
 	return s.wq.serialize(func() error {
-		_, err := s.engine.ID(agent.ID).AllCols().Update(agent)
+		_, err := s.writeEngine().ID(agent.ID).AllCols().Update(agent)
 		return err
 	})
 }
 
 func (s storage) AgentDelete(agent *model.Agent) error {
 	return s.wq.serialize(func() error {
-		return wrapDelete(s.engine.ID(agent.ID).Delete(new(model.Agent)))
+		return wrapDelete(s.writeEngine().ID(agent.ID).Delete(new(model.Agent)))
 	})
 }
 

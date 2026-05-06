@@ -41,7 +41,7 @@ func (s storage) LogAppend(_ *model.Step, logEntries []*model.LogEntry) error {
 			end := min(pgBatchSize, len(logEntries[i:]))
 			chunk := logEntries[i : i+end]
 
-			if err := wrapInsert(s.engine.Insert(chunk)); err != nil {
+			if err := wrapInsert(s.writeEngine().Insert(chunk)); err != nil {
 				log.Error().Err(err).Msg("could not store log entries to db")
 				errs = errors.Join(errs, err)
 			}
@@ -53,7 +53,7 @@ func (s storage) LogAppend(_ *model.Step, logEntries []*model.LogEntry) error {
 
 func (s storage) LogDelete(step *model.Step) error {
 	return s.wq.serialize(func() error {
-		sess := s.engine.NewSession()
+		sess := s.writeEngine().NewSession()
 		defer sess.Close()
 		return logDelete(sess, step.ID)
 	})
