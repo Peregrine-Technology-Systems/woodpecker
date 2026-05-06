@@ -92,8 +92,12 @@ AGENT_SECRET="${WOODPECKER_AGENT_SECRET:?WOODPECKER_AGENT_SECRET must be set}"
 # UFW's rate limiter (limit 22/tcp = 6 conn/30s per source IP). Previously
 # these were two separate connections immediately following the readiness poll,
 # causing the third connection to be rejected mid-wake (#119).
+# Diagnostic: use verbose SSH for the combined session to capture exact failure reason.
+# Remove once SSH exit 255 root cause is confirmed (#123).
+PTS_SSH_VERBOSE="${PTS_SSH/ -o LogLevel=ERROR/ -o LogLevel=VERBOSE}"
+
 echo "==> Checking agent binary and starting Woodpecker agent on ${PENTEST_VM}..."
-AGENT_OUTPUT=$($PTS_SSH "root@${PENTEST_IP}" "
+AGENT_OUTPUT=$($PTS_SSH_VERBOSE "root@${PENTEST_IP}" "
     # ── Binary check ──
     AGENT_BIN=\$(ls /opt/woodpecker/woodpecker-agent-* 2>/dev/null | sort -V | tail -1 || echo '')
     if [ -z \"\$AGENT_BIN\" ]; then
