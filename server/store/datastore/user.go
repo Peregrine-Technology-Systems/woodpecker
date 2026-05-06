@@ -50,7 +50,7 @@ func (s storage) GetUserCount() (int64, error) {
 
 func (s storage) CreateUser(user *model.User) error {
 	return s.wq.serialize(func() error {
-		sess := s.engine.NewSession()
+		sess := s.writeEngine().NewSession()
 		org := &model.Org{
 			Name:    user.Login,
 			ForgeID: user.ForgeID,
@@ -84,14 +84,14 @@ func (s storage) CreateUser(user *model.User) error {
 
 func (s storage) UpdateUser(user *model.User) error {
 	return s.wq.serialize(func() error {
-		_, err := s.engine.ID(user.ID).AllCols().Update(user)
+		_, err := s.writeEngine().ID(user.ID).AllCols().Update(user)
 		return err
 	})
 }
 
 func (s storage) DeleteUser(user *model.User) error {
 	return s.wq.serialize(func() error {
-		sess := s.engine.NewSession()
+		sess := s.writeEngine().NewSession()
 		defer sess.Close()
 		if err := sess.Begin(); err != nil {
 			return err

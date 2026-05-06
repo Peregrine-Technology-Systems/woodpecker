@@ -32,7 +32,7 @@ func (s storage) ServerConfigSet(key, value string) error {
 			Key: key,
 		}
 
-		sess := s.engine.NewSession()
+		sess := s.writeEngine().NewSession()
 		defer sess.Close()
 		if err := sess.Begin(); err != nil {
 			return err
@@ -64,6 +64,6 @@ func (s storage) ServerConfigDelete(key string) error {
 			Key: key,
 		}
 
-		return wrapDelete(s.engine.Delete(config))
+		return wrapDelete(s.writeEngine().Delete(config))
 	})
 }

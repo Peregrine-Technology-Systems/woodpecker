@@ -47,20 +47,20 @@ func (s storage) RegistryListAll() ([]*model.Registry, error) {
 func (s storage) RegistryCreate(registry *model.Registry) error {
 	return s.wq.serialize(func() error {
 		// only Insert set auto created ID back to object
-		return wrapInsert(s.engine.Insert(registry))
+		return wrapInsert(s.writeEngine().Insert(registry))
 	})
 }
 
 func (s storage) RegistryUpdate(registry *model.Registry) error {
 	return s.wq.serialize(func() error {
-		_, err := s.engine.ID(registry.ID).AllCols().Update(registry)
+		_, err := s.writeEngine().ID(registry.ID).AllCols().Update(registry)
 		return err
 	})
 }
 
 func (s storage) RegistryDelete(registry *model.Registry) error {
 	return s.wq.serialize(func() error {
-		return wrapDelete(s.engine.ID(registry.ID).Delete(new(model.Registry)))
+		return wrapDelete(s.writeEngine().ID(registry.ID).Delete(new(model.Registry)))
 	})
 }
 
