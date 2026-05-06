@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- debug: pts-wake.sh captures SSH stderr to file before set -e can exit, prints it after — set -euo pipefail was killing the script before verbose output could print (#123 — remove after diagnosis)
+
 - debug: pts-wake.sh combined SSH session uses LogLevel=VERBOSE to capture exact exit-255 failure reason (#123 — remove after diagnosis)
 
 - fix: woodpecker-deploy.sh enforces WOODPECKER_AGENT_LABELS=backend=local in /etc/woodpecker/agent.env on every deploy — removes platform=linux which caused the d3ci42-local agent to claim GCP-fleet tasks, running npm/go builds on the same 2GB droplet as the server (OOM risk, contention, scaler mis-routing)

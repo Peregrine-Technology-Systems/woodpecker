@@ -97,7 +97,8 @@ AGENT_SECRET="${WOODPECKER_AGENT_SECRET:?WOODPECKER_AGENT_SECRET must be set}"
 PTS_SSH_VERBOSE="${PTS_SSH/ -o LogLevel=ERROR/ -o LogLevel=VERBOSE}"
 
 echo "==> Checking agent binary and starting Woodpecker agent on ${PENTEST_VM}..."
-AGENT_OUTPUT=$($PTS_SSH_VERBOSE "root@${PENTEST_IP}" "
+SSH_ERR_LOG="$(pwd)/.deploy-ssh/ssh-verbose.log"
+AGENT_OUTPUT=$($PTS_SSH_VERBOSE "root@${PENTEST_IP}" 2>"${SSH_ERR_LOG}" "
     # ── Binary check ──
     AGENT_BIN=\$(ls /opt/woodpecker/woodpecker-agent-* 2>/dev/null | sort -V | tail -1 || echo '')
     if [ -z \"\$AGENT_BIN\" ]; then
@@ -130,7 +131,12 @@ AGENT_OUTPUT=$($PTS_SSH_VERBOSE "root@${PENTEST_IP}" "
             cat /tmp/wp-agent.log 2>/dev/null || true
         fi
     fi
-")
+") || true  # capture exit code without triggering set -e; verbose log printed below
+# Print SSH verbose log regardless of exit code — captures error on exit 255
+if [ -s "${SSH_ERR_LOG}" ]; then
+    echo "==> SSH verbose log (for #123 diagnosis):"
+    cat "${SSH_ERR_LOG}"
+fi
 echo "    ${AGENT_OUTPUT}"
 
 AGENT_BIN=$(echo "${AGENT_OUTPUT}" | grep "^HAVE:" | cut -d: -f2-)
