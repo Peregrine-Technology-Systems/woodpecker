@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- fix: pts-wake.sh concurrent guard now verifies the owning pipeline is still active before aborting — a failed or killed pipeline leaves a stale pts-build-pipeline label on the VM; the old guard aborted on ANY running VM regardless of label, causing every subsequent pipeline to skip with a false "already in use" and leaving the compile step pending forever. Now checks owner pipeline status via the Woodpecker API and takes ownership when the labeled pipeline is no longer running (#120)
+
 - fix: SQLite reader pool no longer uses _txlock=immediate — applying BEGIN IMMEDIATE to reader connections caused all 10 pool connections to compete for the same RESERVED lock under concurrent webhook load, producing "database table is locked: pipelines" on POST /api/hook even after the dedicated-writer fix (#107). Reader DSN now uses deferred locking (SQLite default); _txlock=immediate is kept only on the single writer connection where it prevents upgrade-deadlocks (#114)
 
 - fix: pts-build.sh runs go build under `nice -n 10` — lowers CPU priority of the compile so the agent's WebSocket heartbeat goroutine is scheduled even under full-core saturation; prevents keepalive misses that drop the session and kill the compile (#115)
