@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- fix: pts-cleanup.sh skips stop-vm when VM is owned by a newer pipeline — prevents concurrent cleanup from killing a newer wake step mid-boot (#109)
 - fix: dedicated SQLite writer connection — MaxOpenConns=1 on a separate xorm engine used exclusively by the write queue drain goroutine; reader pool stays at MaxOpenConns=10. Previous MaxOpenConns=1 on the shared engine caused reads to see phantom sql:no-rows because the single connection was mid-write, killing in-flight agent health reports and pipeline steps (#107)
 - fix: pts-wake.sh agent start uses setsid+bash instead of nohup — nohup unreliable when SSH session closes before agent initialises; adds post-start PID verification and extends poll to 150s (#105)
 - fix: remove sql:no-rows from runner-loop stale-conf check — next() legitimately returns this when no tasks are pending; false positive was calling log.Fatal() mid-task, killing in-flight wake steps (#103)
