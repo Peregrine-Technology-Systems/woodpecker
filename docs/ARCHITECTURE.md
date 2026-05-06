@@ -13,8 +13,8 @@ The woodpecker-server runs as a **native systemd service** on d3ci42 — no Dock
   releases/
     v3.13.0-pts.92/woodpecker-server   ← versioned binary
     v3.13.0-pts.93/woodpecker-server
-    v3.13.0-pts.write-queue/woodpecker-server
-  current → releases/v3.13.0-pts.write-queue  ← symlink, updated on each deploy
+    v3.13.0-pts.182/woodpecker-server
+  current → releases/v3.13.0-pts.182  ← symlink, updated on each deploy
 ```
 
 Systemd unit: `/etc/systemd/system/woodpecker-server.service`  
