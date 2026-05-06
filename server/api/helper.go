@@ -16,6 +16,7 @@ package api
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -26,11 +27,30 @@ import (
 	"go.woodpecker-ci.org/woodpecker/v3/server/model"
 	"go.woodpecker-ci.org/woodpecker/v3/server/pipeline"
 	"go.woodpecker-ci.org/woodpecker/v3/server/store"
+	"go.woodpecker-ci.org/woodpecker/v3/server/store/datastore"
 	"go.woodpecker-ci.org/woodpecker/v3/server/store/types"
 )
 
+// retryAfterSeconds is the Retry-After value returned with 503 when the write
+// queue is full. GitHub webhook delivery retries on 503 and respects this header.
+const retryAfterSeconds = "5"
+
+// abort503IfOverloaded checks whether err is ErrWriteQueueFull and, if so,
+// responds with HTTP 503 + Retry-After and returns true. Callers should return
+// immediately when this returns true. Otherwise returns false (caller handles).
+func abort503IfOverloaded(c *gin.Context, err error) bool {
+	if !errors.Is(err, datastore.ErrWriteQueueFull) {
+		return false
+	}
+	c.Header("Retry-After", retryAfterSeconds)
+	c.String(http.StatusServiceUnavailable, fmt.Sprintf("server temporarily overloaded — retry in %s seconds", retryAfterSeconds))
+	return true
+}
+
 func handlePipelineErr(c *gin.Context, err error) {
 	switch {
+	case abort503IfOverloaded(c, err):
+		// 503 already sent
 	case errors.Is(err, &pipeline.ErrNotFound{}):
 		c.String(http.StatusNotFound, "%s", err)
 	case errors.Is(err, &pipeline.ErrBadRequest{}):
@@ -45,6 +65,9 @@ func handlePipelineErr(c *gin.Context, err error) {
 }
 
 func handleDBError(c *gin.Context, err error) {
+	if abort503IfOverloaded(c, err) {
+		return
+	}
 	if errors.Is(err, types.ErrRecordNotExist) {
 		c.AbortWithStatus(http.StatusNotFound)
 		return
