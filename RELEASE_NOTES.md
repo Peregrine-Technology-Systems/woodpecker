@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- fix: woodpecker-deploy.sh enforces WOODPECKER_AGENT_LABELS=backend=local in /etc/woodpecker/agent.env on every deploy — removes platform=linux which caused the d3ci42-local agent to claim GCP-fleet tasks, running npm/go builds on the same 2GB droplet as the server (OOM risk, contention, scaler mis-routing)
+
 - fix: write queue depth 256 → 1024 + non-blocking serialize with HTTP 503 Retry-After on full — previously a saturated queue blocked caller goroutines silently; upstream HTTP timeouts surfaced as "database table is locked" and dropped webhooks. Now returns 503 Retry-After: 5 immediately; GitHub webhook delivery respects 503 and retries automatically
 
 - fix: revert jwtTokenDuration 24h → 1h; proper fix is heartbeat-based refresh via extend() (#116) — piggybacking a new token on the 30s keepalive avoids reconnection and keeps the attack window bounded by heartbeat interval rather than token lifetime

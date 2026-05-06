@@ -177,6 +177,22 @@ find "${RELEASES_DIR}" -maxdepth 1 -mindepth 1 -type d | sort -r | \
     [ "${dir}" != "${current}" ] && rm -rf "${dir}" && echo "    Pruned: ${dir}"
 done
 
+# ── Enforce agent.env labels ──
+# The d3ci42-local agent must advertise ONLY backend=local — never platform=linux.
+# platform=linux causes it to compete with GCP VMs for regular CI tasks, running
+# them on the same 2GB droplet as the server (OOM risk, contention). Idempotent.
+AGENT_ENV="/etc/woodpecker/agent.env"
+if [ -f "${AGENT_ENV}" ]; then
+    if grep -q "platform=linux" "${AGENT_ENV}" 2>/dev/null; then
+        echo "    Fixing agent.env: removing platform=linux from WOODPECKER_AGENT_LABELS"
+        grep -v "^WOODPECKER_AGENT_LABELS=" "${AGENT_ENV}" > "${AGENT_ENV}.new"
+        echo "WOODPECKER_AGENT_LABELS=backend=local" >> "${AGENT_ENV}.new"
+        mv "${AGENT_ENV}.new" "${AGENT_ENV}"
+        systemctl restart woodpecker-agent || true
+        echo "    agent.env fixed + agent restarted"
+    fi
+fi
+
 # Remove pending marker
 gsutil -q rm "${DEPLOY_BUCKET}/pending" 2>/dev/null || true
 
