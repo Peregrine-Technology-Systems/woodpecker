@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- fix: pts-wake.sh SSH adds ConnectTimeout=15 — without it, SSH hangs indefinitely if sshd accepts the TCP connection before finishing its banner exchange (kernel accepts port 22 before sshd is ready on boot); the readiness poll retry loop never fired because it was stuck mid-banner, not getting a connection refused
+
 - fix: agent JWT token duration extended from 1h to 24h; proactive refresh goroutine exits cleanly at 75% of lifetime (18h) when idle so systemd restarts with fresh credentials before expiry — eliminates silent auth failures mid-pipeline and token-expiry kill on long-running local-backend agents (#116)
 
 - fix: pts-wake.sh combines agent binary check and agent start into one SSH session — consecutive connections from d3ci42 to pentest-dev-vm were triggering UFW limit 22/tcp (6 conn/30s); a 3s pause after the readiness poll + single combined session eliminates the extra connection that exceeded the rate limit (#119)

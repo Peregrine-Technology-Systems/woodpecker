@@ -69,7 +69,7 @@ mkdir -p .deploy-ssh
 echo "$PTS_BUILD_SSH_KEY" > "$SSH_KEY"
 printf '\n' >> "$SSH_KEY"
 chmod 600 "$SSH_KEY"
-PTS_SSH="ssh -i $SSH_KEY -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ServerAliveInterval=30 -o ServerAliveCountMax=10"
+PTS_SSH="ssh -i $SSH_KEY -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=15 -o ServerAliveInterval=30 -o ServerAliveCountMax=10"
 
 # Wait for SSH (up to 2 min)
 echo "==> Waiting for SSH..."
