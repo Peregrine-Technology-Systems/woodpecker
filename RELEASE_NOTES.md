@@ -128,3 +128,4 @@
 
 
 - fix: decouple woodpecker-server deploy from Woodpecker pipeline — pts-build.sh now uploads binary to GCS and writes a pending-deploy marker; woodpecker-deploy.sh on d3ci42 (systemd timer, every 30s) handles download, SHA256 verify, symlink, restart, 90s health check with rollback, and Slack alerts. pts-cleanup.sh no longer touches d3ci42 at all. Fixes the self-kill problem where pts-build-compile caused its own pipeline to be killed by restarting the server it was connected to.
+
