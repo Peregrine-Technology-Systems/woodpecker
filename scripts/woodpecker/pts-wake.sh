@@ -108,19 +108,18 @@ AGENT_OUTPUT=$($PTS_SSH_VERBOSE "root@${PENTEST_IP}" 2>"${SSH_ERR_LOG}" "
         # ── Agent start (same session) ──
         pkill -f woodpecker-agent 2>/dev/null || true
         sleep 1
-        setsid bash -c '
-            export WOODPECKER_SERVER=\"${WP_SERVER}\"
-            export WOODPECKER_AGENT_SECRET=\"${AGENT_SECRET}\"
-            export WOODPECKER_AGENT_TRANSPORT=ws
-            export WOODPECKER_GRPC_SECURE=true
-            export WOODPECKER_BACKEND=local
-            export WOODPECKER_AGENT_LABELS=\"agent=pts-build\"
-            export WOODPECKER_HOSTNAME=\"pentest-dev-vm\"
-            export WOODPECKER_MAX_WORKFLOWS=1
-            export WOODPECKER_GRPC_KEEPALIVE_TIME=10s
-            export WOODPECKER_GRPC_KEEPALIVE_TIMEOUT=20s
-            exec \"\$1\" agent
-        ' -- \"\$AGENT_BIN\" > /tmp/wp-agent.log 2>&1 </dev/null &
+        setsid env \
+            WOODPECKER_SERVER=\"${WP_SERVER}\" \
+            WOODPECKER_AGENT_SECRET=\"${AGENT_SECRET}\" \
+            WOODPECKER_AGENT_TRANSPORT=ws \
+            WOODPECKER_GRPC_SECURE=true \
+            WOODPECKER_BACKEND=local \
+            WOODPECKER_AGENT_LABELS=\"agent=pts-build\" \
+            WOODPECKER_HOSTNAME=\"pentest-dev-vm\" \
+            WOODPECKER_MAX_WORKFLOWS=1 \
+            WOODPECKER_GRPC_KEEPALIVE_TIME=10s \
+            WOODPECKER_GRPC_KEEPALIVE_TIMEOUT=20s \
+            \"\$AGENT_BIN\" agent > /tmp/wp-agent.log 2>&1 </dev/null &
         AGENT_PID=\$!
         sleep 2
         if kill -0 \$AGENT_PID 2>/dev/null; then
@@ -159,19 +158,18 @@ if echo "${AGENT_OUTPUT}" | grep -q "^NEED_DOWNLOAD"; then
             -o '${AGENT_BIN}' && chmod +x '${AGENT_BIN}'
         pkill -f woodpecker-agent 2>/dev/null || true
         sleep 1
-        setsid bash -c '
-            export WOODPECKER_SERVER=\"${WP_SERVER}\"
-            export WOODPECKER_AGENT_SECRET=\"${AGENT_SECRET}\"
-            export WOODPECKER_AGENT_TRANSPORT=ws
-            export WOODPECKER_GRPC_SECURE=true
-            export WOODPECKER_BACKEND=local
-            export WOODPECKER_AGENT_LABELS=\"agent=pts-build\"
-            export WOODPECKER_HOSTNAME=\"pentest-dev-vm\"
-            export WOODPECKER_MAX_WORKFLOWS=1
-            export WOODPECKER_GRPC_KEEPALIVE_TIME=10s
-            export WOODPECKER_GRPC_KEEPALIVE_TIMEOUT=20s
-            exec \"\$1\" agent
-        ' -- \"\$AGENT_BIN\" > /tmp/wp-agent.log 2>&1 </dev/null &
+        setsid env \
+            WOODPECKER_SERVER=\"${WP_SERVER}\" \
+            WOODPECKER_AGENT_SECRET=\"${AGENT_SECRET}\" \
+            WOODPECKER_AGENT_TRANSPORT=ws \
+            WOODPECKER_GRPC_SECURE=true \
+            WOODPECKER_BACKEND=local \
+            WOODPECKER_AGENT_LABELS=\"agent=pts-build\" \
+            WOODPECKER_HOSTNAME=\"pentest-dev-vm\" \
+            WOODPECKER_MAX_WORKFLOWS=1 \
+            WOODPECKER_GRPC_KEEPALIVE_TIME=10s \
+            WOODPECKER_GRPC_KEEPALIVE_TIMEOUT=20s \
+            \"\$AGENT_BIN\" agent > /tmp/wp-agent.log 2>&1 </dev/null &
         sleep 2
         echo 'Downloaded and started: \$AGENT_BIN'
     "
