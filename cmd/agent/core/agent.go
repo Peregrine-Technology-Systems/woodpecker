@@ -302,8 +302,8 @@ func run(ctx context.Context, c *cli.Command, backends []types.Backend) error {
 	// Proactive token refresh (#116): exit cleanly at 75% of the token lifetime
 	// when idle so systemd restarts with a fresh registration before the token
 	// expires. Prevents silent auth failures mid-pipeline on long-running agents.
-	// agentTokenDuration must match server/rpc.jwtTokenDuration (24h).
-	const agentTokenDuration = 24 * time.Hour
+	// agentTokenDuration must match server/rpc.jwtTokenDuration (1h).
+	const agentTokenDuration = 1 * time.Hour
 	tokenRefreshAt := time.Now().Add(agentTokenDuration * 3 / 4)
 	serviceWaitingGroup.Go(func() error {
 		select {

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- fix: revert jwtTokenDuration 24h → 1h; proper fix is heartbeat-based refresh via extend() (#116) — piggybacking a new token on the 30s keepalive avoids reconnection and keeps the attack window bounded by heartbeat interval rather than token lifetime
+
 - fix: permission middleware writes perms table outside the write queue — source of remaining SQLITE_BUSY on GET requests; affects pipeline restart API (#126)
 
 - fix: pts-wake.sh SSH adds ConnectTimeout=15 — without it, SSH hangs indefinitely if sshd accepts the TCP connection before finishing its banner exchange (kernel accepts port 22 before sshd is ready on boot); the readiness poll retry loop never fired because it was stuck mid-banner, not getting a connection refused
