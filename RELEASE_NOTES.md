@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- fix: SQLite reader pool no longer uses _txlock=immediate — applying BEGIN IMMEDIATE to reader connections caused all 10 pool connections to compete for the same RESERVED lock under concurrent webhook load, producing "database table is locked: pipelines" on POST /api/hook even after the dedicated-writer fix (#107). Reader DSN now uses deferred locking (SQLite default); _txlock=immediate is kept only on the single writer connection where it prevents upgrade-deadlocks (#114)
+
 - fix: pts-build.sh runs go build under `nice -n 10` — lowers CPU priority of the compile so the agent's WebSocket heartbeat goroutine is scheduled even under full-core saturation; prevents keepalive misses that drop the session and kill the compile (#115)
 - fix: pts-wake.sh sets WOODPECKER_GRPC_KEEPALIVE_TIME=10s and WOODPECKER_GRPC_KEEPALIVE_TIMEOUT=20s — shorter ping interval with a longer timeout gives the server more tolerance for heartbeats missed during CPU-intensive compile on pentest-dev-vm (#115)
 - fix: woodpecker-agent.service and scaler.service changed from Requires= to Wants= for woodpecker-server.service — Requires= cascaded server restarts to kill both the agent and scaler simultaneously; Wants= keeps them alive through a server restart and lets them reconnect when the server returns (#112 — SSH-applied to d3ci42, codified in nfpm template)
