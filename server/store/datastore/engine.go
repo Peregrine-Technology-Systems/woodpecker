@@ -50,10 +50,18 @@ func (s storage) writeEngine() *xorm.Engine {
 
 func NewEngine(opts *store.Opts) (store.Store, error) {
 	dsn := opts.Config
+	// Reader DSN: WAL + busy_timeout, but NO _txlock=immediate.
+	// Readers use deferred locking so they do not compete for the RESERVED lock
+	// that the writer holds. Applying _txlock=immediate to readers caused all
+	// reader connections to fight for the same lock under concurrent webhook
+	// load, producing "database table is locked" on /api/hook (#114).
+	readerDSN := dsn
+	writerDSN := dsn
 	if opts.Driver == "sqlite3" {
-		dsn = applySqliteDefaults(dsn)
+		readerDSN = applySQLiteReaderDefaults(dsn)
+		writerDSN = applySQLiteWriterDefaults(dsn)
 	}
-	engine, err := xorm.NewEngine(opts.Driver, dsn)
+	engine, err := xorm.NewEngine(opts.Driver, readerDSN)
 	if err != nil {
 		return nil, err
 	}
@@ -81,7 +89,8 @@ func NewEngine(opts *store.Opts) (store.Store, error) {
 		// write queue drain goroutine. WAL allows readers and this one writer to
 		// coexist without blocking. MaxOpenConns=1 here guarantees no goroutine
 		// other than the drain goroutine ever opens a write connection (#107).
-		writer, err := xorm.NewEngine(opts.Driver, dsn)
+		// Uses _txlock=immediate to prevent upgrade-deadlocks on the write path.
+		writer, err := xorm.NewEngine(opts.Driver, writerDSN)
 		if err != nil {
 			return nil, err
 		}
