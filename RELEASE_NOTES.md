@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- fix: pts-wake.sh rewritten — agent now runs as systemd service on pentest-dev-vm (woodpecker-agent.service auto-starts on boot); wake step just starts the VM and polls the Woodpecker API for agent registration, no SSH required. Eliminates all SSH-based agent-start complexity and the exit-255 mystery class of bugs. TTL increased to 120min.
+
 - fix: pts-wake.sh replaces setsid bash-c with setsid env to start agent — bash -c inner shell couldn't exec the binary even with positional arg because the env vars are set by env directly on the process, no inner shell required
 
 - fix: pts-wake.sh passes AGENT_BIN as positional arg to inner bash-c — single-quoted setsid bash -c string does not inherit outer shell variables; $AGENT_BIN was silently empty so exec ran with no binary and the agent never started (#123)
