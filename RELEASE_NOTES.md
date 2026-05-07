@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- fix: pts-wake.sh agent poll uses startswith('pts-build-vm') — GCE registers with FQDN (pts-build-vm.us-central1-a.c.ci-runners-de.internal), exact match never fires (#140)
+
 - fix: pts-build-cleanup.yaml — remove stop-vm step (pts-build-vm self-stops after compile); update labels to platform:linux, tier:ondemand; delete pts-cleanup.sh (#140)
 
 - fix: pts-test.sh and pts-lint.sh use full Go binary path /usr/local/go/bin/go — /etc/profile.d/go.sh only runs for login shells; Woodpecker pipeline steps run non-login bash (#1343)
