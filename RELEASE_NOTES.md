@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- feat: pts-build-vm is now ephemeral — pts-wake.sh creates fresh from ci-agent family image on every build; pts-cleanup.sh deletes the VM after compile. Eliminates image staleness (infra#1656), stale agent.conf, and manual taint/recreate cycle. (#1669)
+
 - perf: pts-build.sh restores web UI dist/ from GCS cache instead of running pnpm on every compile — UI never changes so pnpm was wasted time; fallback to pnpm build only on cold cache, saves result back to GCS
 
 - fix: pts-wake.sh agent poll uses startswith('pts-build-vm') — GCE registers with FQDN (pts-build-vm.us-central1-a.c.ci-runners-de.internal), exact match never fires (#140)

@@ -70,13 +70,8 @@ CGO_ENABLED=0 nice -n 10 go build \
     -ldflags "-s -w -X go.woodpecker-ci.org/woodpecker/v3/version.Version=${VERSION}" \
     -o bin/woodpecker-agent ./cmd/agent
 echo "    $(du -h bin/woodpecker-agent | cut -f1)"
-
-# Leave agent binary in place for the next pts-wake run — avoids the GitHub
-# Release download on every cold-start. The wake step finds this exact version
-# and uses it as the pts-build CI agent, ensuring agent/server version parity.
-cp bin/woodpecker-agent "/opt/woodpecker/woodpecker-agent-${VERSION}"
-chmod +x "/opt/woodpecker/woodpecker-agent-${VERSION}"
-echo "    agent binary cached: /opt/woodpecker/woodpecker-agent-${VERSION}"
+# Ephemeral VM (#1669): no local agent binary caching — VM is deleted after compile.
+# Agent binary is published via GitHub Release (Phase 3b) for Packer image baking.
 
 echo ""; echo "==> Saving GCS build cache..."
 gsutil -m -q rsync -r "${GOCACHE}/" "${BUILD_CACHE_BUCKET}/go-build/" 2>/dev/null && \
