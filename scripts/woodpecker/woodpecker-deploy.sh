@@ -177,6 +177,17 @@ find "${RELEASES_DIR}" -maxdepth 1 -mindepth 1 -type d | sort -r | \
     [ "${dir}" != "${current}" ] && rm -rf "${dir}" && echo "    Pruned: ${dir}"
 done
 
+# ── Enforce Wants= (not Requires=) in woodpecker-agent.service ──
+# Requires= cascades server restarts to the agent, killing in-flight pipelines.
+# Wants= starts the agent after the server but never stops it on server restart (#112).
+AGENT_UNIT="/etc/systemd/system/woodpecker-agent.service"
+if [ -f "${AGENT_UNIT}" ] && grep -q "^Requires=woodpecker-server" "${AGENT_UNIT}" 2>/dev/null; then
+    echo "    Fixing woodpecker-agent.service: Requires= → Wants="
+    sed -i 's/^Requires=woodpecker-server/Wants=woodpecker-server/' "${AGENT_UNIT}"
+    systemctl daemon-reload
+    echo "    woodpecker-agent.service fixed (daemon-reloaded)"
+fi
+
 # ── Enforce agent.env labels ──
 # The d3ci42-local agent must advertise ONLY backend=local — never platform=linux.
 # platform=linux causes it to compete with GCP VMs for regular CI tasks, running

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- fix: woodpecker-deploy.sh enforces Wants= (not Requires=) in woodpecker-agent.service on every deploy — Requires= cascades server restarts to kill the local agent, interrupting in-flight pipelines (#112)
+
 - perf: pts-build.sh restores web UI dist/ from GCS cache instead of running pnpm on every compile — UI never changes so pnpm was wasted time; fallback to pnpm build only on cold cache, saves result back to GCS
 
 - fix: pts-wake.sh agent poll uses startswith('pts-build-vm') — GCE registers with FQDN (pts-build-vm.us-central1-a.c.ci-runners-de.internal), exact match never fires (#140)
