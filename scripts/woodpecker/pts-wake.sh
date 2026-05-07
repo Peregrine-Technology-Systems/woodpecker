@@ -61,7 +61,7 @@ for i in $(seq 1 36); do
 import sys,json,time
 agents=json.load(sys.stdin)
 now=int(time.time())
-found=[a for a in agents if a.get('name','')=='pts-build-vm' and now-a.get('last_contact',0)<60]
+found=[a for a in agents if a.get('name','').startswith('pts-build-vm') and now-a.get('last_contact',0)<60]
 print(len(found))
 " 2>/dev/null || echo 0)
     if [ "${FOUND:-0}" -gt 0 ]; then
