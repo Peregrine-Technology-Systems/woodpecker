@@ -57,6 +57,7 @@ gcloud compute instances create "${PTS_BUILD_VM}" \
     --scopes=cloud-platform \
     --tags=pts-build,woodpecker-agent \
     --metadata="agent-label=pts-build,ci-tier=ondemand,pts-build-pipeline=${CI_PIPELINE_NUMBER:-0}" \
+    --no-address \
     --no-restart-on-failure \
     --maintenance-policy=MIGRATE \
     --quiet

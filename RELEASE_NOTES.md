@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- fix: pts-wake.sh adds --no-address to gcloud instances create — avoids IN_USE_ADDRESSES quota in us-central1 (limit=8, exhausted by fleet); Cloud NAT handles egress to d3ci42 without external IP
+
 - feat: pts-build-vm is now ephemeral — pts-wake.sh creates fresh from ci-agent family image on every build; pts-cleanup.sh deletes the VM after compile. Eliminates image staleness (infra#1656), stale agent.conf, and manual taint/recreate cycle. (#1669)
 
 - perf: pts-build.sh restores web UI dist/ from GCS cache instead of running pnpm on every compile — UI never changes so pnpm was wasted time; fallback to pnpm build only on cold cache, saves result back to GCS
