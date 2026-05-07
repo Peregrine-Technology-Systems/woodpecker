@@ -70,7 +70,7 @@ for ZONE in ${ZONE_LIST}; do
             --service-account="ci-agent@${PTS_BUILD_PROJECT}.iam.gserviceaccount.com" \
             --scopes=cloud-platform \
             --tags=pts-build,woodpecker-agent \
-            --metadata="agent-label=pts-build,ci-tier=ondemand,pts-build-pipeline=${CI_PIPELINE_NUMBER:-0},pts-build-zone=${ZONE}" \
+            --metadata="agent-label=pts-build,pts-build-pipeline=${CI_PIPELINE_NUMBER:-0},pts-build-zone=${ZONE}" \
             --no-restart-on-failure \
             --maintenance-policy=MIGRATE \
             --quiet 2>&1; then
