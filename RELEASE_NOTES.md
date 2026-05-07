@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- fix: pts-build-compile.yaml and pts-build-cleanup.yaml add event:manual so compile and cleanup run on manual pts-build triggers (#153)
+
 - fix: pts-wake.sh removes --no-address — Cloud NAT not configured in ci-runners-de so --no-address leaves VM with no internet, blocking agent-config from reaching GCP SM; zone fallback already handles regional IP quota (#149 revert)
 
 - chore: pts-build trigger changed from push-to-main to manual-only — prevents server restart cascade from killing all in-flight pipelines on every code merge (#152)
