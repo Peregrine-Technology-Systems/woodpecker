@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- fix: pts-wake.sh removes --no-address — Cloud NAT not configured in ci-runners-de so --no-address leaves VM with no internet, blocking agent-config from reaching GCP SM; zone fallback already handles regional IP quota (#149 revert)
+
 - chore: pts-build trigger changed from push-to-main to manual-only — prevents server restart cascade from killing all in-flight pipelines on every code merge (#152)
 
 - feat: pts-wake.sh zone fallback — tries all 11 agent zones in sequence on capacity failure; zone stored in VM metadata (pts-build-zone) so pts-cleanup.sh deletes in the correct zone (#150)
