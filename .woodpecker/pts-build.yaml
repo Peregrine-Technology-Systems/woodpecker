@@ -1,6 +1,5 @@
 when:
-  - event: push
-    branch: main
+  - event: manual
 
 labels:
   platform: linux

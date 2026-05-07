@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- chore: pts-build trigger changed from push-to-main to manual-only — prevents server restart cascade from killing all in-flight pipelines on every code merge (#152)
+
 - feat: pts-wake.sh zone fallback — tries all 11 agent zones in sequence on capacity failure; zone stored in VM metadata (pts-build-zone) so pts-cleanup.sh deletes in the correct zone (#150)
 
 - fix: pts-wake.sh adds --no-address to gcloud instances create — avoids IN_USE_ADDRESSES quota in us-central1 (limit=8, exhausted by fleet); Cloud NAT handles egress to d3ci42 without external IP
