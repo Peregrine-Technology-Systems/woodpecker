@@ -37,10 +37,23 @@ gsutil -m -q rsync -r "${BUILD_CACHE_BUCKET}/go-mod/" "${GOMODCACHE}/" 2>/dev/nu
     echo "    go-mod: $(du -sh "${GOMODCACHE}" | cut -f1)" || echo "    go-mod: cold"
 
 # ── Web UI ──
-echo ""; echo "==> Building web UI..."
-cd web && pnpm install --frozen-lockfile >/dev/null 2>&1 && pnpm build >/dev/null 2>&1
-echo "    $(ls dist/ | wc -l) files"
-cd ..
+# We never change the UI — restore the pre-built dist/ from GCS instead of
+# running pnpm on every compile. Only falls back to pnpm if GCS cache is empty.
+echo ""; echo "==> Restoring web UI dist/ from GCS cache..."
+mkdir -p web/dist
+gsutil -m -q rsync -r "${BUILD_CACHE_BUCKET}/woodpecker-web-dist/" web/dist/ 2>/dev/null
+DIST_COUNT=$(ls web/dist/ 2>/dev/null | wc -l)
+if [ "${DIST_COUNT}" -gt 10 ]; then
+    echo "    dist/: ${DIST_COUNT} files (from GCS cache)"
+else
+    echo "    GCS cache empty or stale — running pnpm build..."
+    cd web && pnpm install --no-frozen-lockfile >/dev/null 2>&1 && \
+        node_modules/.bin/vite build --base=/BASE_PATH >/dev/null 2>&1
+    echo "    dist/: $(ls dist/ | wc -l) files (freshly built)"
+    cd ..
+    gsutil -m -q rsync -r web/dist/ "${BUILD_CACHE_BUCKET}/woodpecker-web-dist/" 2>/dev/null && \
+        echo "    dist/ saved to GCS cache"
+fi
 
 # ── Compile ──
 mkdir -p bin
