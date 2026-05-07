@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- fix: pts-build-cleanup.yaml — remove stop-vm step (pts-build-vm self-stops after compile); update labels to platform:linux, tier:ondemand; delete pts-cleanup.sh (#140)
+
 - fix: pts-test.sh and pts-lint.sh use full Go binary path /usr/local/go/bin/go — /etc/profile.d/go.sh only runs for login shells; Woodpecker pipeline steps run non-login bash (#1343)
 
 - feat: migrate pts-build from pentest-dev-vm (peregrine-pentest-dev) to pts-build-vm (ci-runners-de) — dedicated build VM with no scan services; wake step now runs on GCP fleet (platform:linux, tier:ondemand) instead of backend:local (#140)

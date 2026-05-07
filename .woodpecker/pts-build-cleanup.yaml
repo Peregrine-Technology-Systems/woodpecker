@@ -5,16 +5,11 @@ when:
 
 labels:
   platform: linux
-  backend: local
+  tier: ondemand
 
 depends_on: [pts-build-compile]
 
 steps:
-  - name: stop-vm
-    image: bash
-    commands:
-      - scripts/woodpecker/pts-cleanup.sh
-
   - name: notify
     image: bash
     environment:
@@ -24,4 +19,3 @@ steps:
       - scripts/woodpecker/pts-notify.sh
     when:
       - status: [success, failure]
-    depends_on: [stop-vm]
