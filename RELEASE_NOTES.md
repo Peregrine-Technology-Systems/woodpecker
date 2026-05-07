@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- fix: pts-wake.sh sets ttl-override-min=45 label so ttl-reaper-dev-vm.sh uses a 45min threshold instead of its 90min default — reaper was stopping abandoned VMs before the build could complete; 45min covers boot+cache+compile+cleanup (#138)
+- fix: pts-build.yaml removes platform:linux workflow label — d3ci42 local agent no longer advertises that label after PR #131 label cleanup (#138)
+
 - fix: pts-build.sh redirects GOCACHE and GOMODCACHE to /mnt/pentest-data (200GB data disk) when available — the 30GB root partition fills up when the Woodpecker agent workspace sets HOME to a temp directory; gsutil rsync downloads 3.5GB of cache to root and is killed mid-transfer
 
 - fix: pts-wake.sh rewritten — agent now runs as systemd service on pentest-dev-vm (woodpecker-agent.service auto-starts on boot); wake step just starts the VM and polls the Woodpecker API for agent registration, no SSH required. Eliminates all SSH-based agent-start complexity and the exit-255 mystery class of bugs. TTL increased to 120min.

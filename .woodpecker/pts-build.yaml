@@ -4,7 +4,6 @@ when:
 
 labels:
   backend: local
-  platform: linux
 
 steps:
   - name: wake
