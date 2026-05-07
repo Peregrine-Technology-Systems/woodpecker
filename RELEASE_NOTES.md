@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- fix: pts-test.sh and pts-lint.sh use full Go binary path /usr/local/go/bin/go — /etc/profile.d/go.sh only runs for login shells; Woodpecker pipeline steps run non-login bash (#1343)
+
+- feat: migrate pts-build from pentest-dev-vm (peregrine-pentest-dev) to pts-build-vm (ci-runners-de) — dedicated build VM with no scan services; wake step now runs on GCP fleet (platform:linux, tier:ondemand) instead of backend:local (#140)
+
 - fix: pts-wake.sh sets ttl-override-min=45 label so ttl-reaper-dev-vm.sh uses a 45min threshold instead of its 90min default — reaper was stopping abandoned VMs before the build could complete; 45min covers boot+cache+compile+cleanup (#138)
 - fix: pts-build.yaml removes platform:linux workflow label — d3ci42 local agent no longer advertises that label after PR #131 label cleanup (#138)
 

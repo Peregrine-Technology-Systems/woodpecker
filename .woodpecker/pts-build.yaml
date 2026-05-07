@@ -3,7 +3,8 @@ when:
     branch: main
 
 labels:
-  backend: local
+  platform: linux
+  tier: ondemand
 
 steps:
   - name: wake

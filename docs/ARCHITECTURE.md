@@ -23,7 +23,7 @@ Health endpoint: `http://localhost:8000/healthz` (returns 204 when healthy)
 
 ### Local Agent (`woodpecker-agent.service`)
 
-`pts-build.yaml` uses `backend: local` — steps run directly on d3ci42 as subprocesses rather than on a GCP agent VM. This requires a local `woodpecker-agent` process registered to the server.
+d3ci42 runs a local `woodpecker-agent` process for `backend: local` steps (internal tooling only — NOT pts-build as of #140).
 
 ```
 /etc/systemd/system/woodpecker-agent.service
@@ -33,82 +33,115 @@ Health endpoint: `http://localhost:8000/healthz` (returns 204 when healthy)
 
 Key agent config (`agent.env`):
 ```
-WOODPECKER_SERVER=localhost:9000        # gRPC direct — bypasses Caddy
+WOODPECKER_SERVER=localhost:9000   # gRPC direct — bypasses Caddy
 WOODPECKER_BACKEND=local
 WOODPECKER_MAX_WORKFLOWS=2
-WOODPECKER_AGENT_LABELS=backend=local,platform=linux  # platform=linux matches pts-build.yaml label selector
+WOODPECKER_AGENT_LABELS=backend=local  # NEVER add platform=linux — causes d3ci42 to steal GCP fleet tasks
 WOODPECKER_HOSTNAME=d3ci42-local
 ```
 
-`WOODPECKER_AGENT_SECRET` is injected from `/etc/woodpecker/secrets.env` via a separate `EnvironmentFile=` line. The service declares `Requires=woodpecker-server.service` so it starts after and restarts with the server.
+`WOODPECKER_AGENT_SECRET` is injected from `/etc/woodpecker/secrets.env` via a separate `EnvironmentFile=` line. The service declares `Wants=woodpecker-server.service` (not `Requires=` — agent should not cascade-stop the server on failure).
 
-**Incident 2026-05-05**: the infra#1403 migration created `woodpecker-server.service` but not `woodpecker-agent.service`. `backend: local` pipelines (pts-build) queued at `status: created` forever — the queue showed 0 workers with matching labels even with 4 VMs and 8 GCP agents registered (those agents have no `backend=local` label). Manually created the service; tracked for codification in peregrine-infrastructure#1465.
+**Stale agent.conf self-heal (#77)**: after a woodpecker-server restart that changes the JWT signing key or resets the agents DB, the agent's saved ID (`/etc/woodpecker/agent.conf`) becomes invalid. The agent detects `Unauthenticated` / `AgentID not found` / `sql: no rows` errors and calls `log.Fatal()` — the process exits with status 1, `Restart=on-failure` triggers, systemd restarts with no conf, and the agent re-registers fresh.
 
-**Operator note**: after a woodpecker binary update, `ExecStart=` in `woodpecker-agent.service` must be updated to point to the new agent binary. Not yet automated — tracked in #1465.
+### Build + Deploy Pipeline (three workflows, #74/#80/#140)
 
-**Stale agent.conf self-heal (#77)**: after a woodpecker-server restart that changes the JWT signing key or resets the agents DB, the agent's saved ID (`/etc/woodpecker/agent.conf`) becomes invalid. The agent detects `Unauthenticated` / `AgentID not found` / `sql: no rows` errors and calls `log.Fatal()` — the process exits with status 1, `Restart=on-failure` triggers, systemd restarts with no conf, and the agent re-registers fresh. Previous behaviour: the runner retry loop kept the process alive indefinitely with workers=0, requiring manual `rm /etc/woodpecker/agent.conf && systemctl restart woodpecker-agent`.
+Triggered on every push to `main`. Three decoupled Woodpecker workflows — wake/compile on pts-build-vm (GCP), cleanup on any GCP agent, deploy via standalone systemd timer on d3ci42.
 
-### Build + Deploy Pipeline (three workflows, #74/#80)
-
-Triggered on every push to `main`. Three decoupled Woodpecker workflows — compile on pentest-dev-vm, VM cleanup on d3ci42-local, deploy via standalone systemd timer:
-
-**Why three workflows / decoupled deploy:** pts-build.sh previously ran `systemctl restart woodpecker-server` inside the pipeline step. This restarted the server that the pentest-dev-vm agent was connected to, killing the gRPC connection and marking the pipeline killed before health check could run (self-kill loop). The deploy now happens entirely outside any Woodpecker pipeline.
+**Why three workflows / decoupled deploy:** pts-build.sh previously ran `systemctl restart woodpecker-server` inside the pipeline step. This restarted the server mid-pipeline, killing the gRPC connection and marking the pipeline killed before the health check could run (self-kill loop). The deploy now happens entirely outside any Woodpecker pipeline.
 
 ```
-Workflow 1 — pts-build.yaml (d3ci42-local, label: platform=linux, lightweight):
+Workflow 1 — pts-build.yaml (GCP agent, labels: platform:linux, tier:ondemand):
   pts-wake.sh:
-    1. gcloud instances start pentest-dev-vm
-    2. Set TTL label (ttl-expire-epoch) as safety net
-    3. SSH → pentest-dev: start woodpecker-agent with label agent=pts-build
-    4. Poll /api/agents until pentest-dev-vm registers (up to 100s)
+    1. gcloud instances start pts-build-vm (project: ci-runners-de)
+    2. Set ttl-override-min=45 + ttl-expire-epoch labels (reaper coordination)
+    3. Poll /api/agents until pts-build-vm registers (up to 180s)
 
-Workflow 2 — pts-build-compile.yaml (pentest-dev-vm agent, label: agent=pts-build):
+Workflow 2 — pts-build-compile.yaml (pts-build-vm agent, label: agent=pts-build):
   pts-build.sh:
-    5. GCS build cache restore
-    6. pnpm build (web UI)
-    7. CGO_ENABLED=1 go build woodpecker-server
-    8. CGO_ENABLED=0 go build woodpecker-agent
-    9. GCS build cache save
-   10. Upload binary + SHA256 to gs://ci-runners-de-build-cache/woodpecker-deploy/${VERSION}/
-   11. Write pending-deploy marker to gs://.../woodpecker-deploy/pending
-   12. GitHub Release + binary assets
-   13. ci-image-builder wake
+    4. GCS build cache restore (GOCACHE + GOMODCACHE from gs://ci-runners-de-build-cache/)
+    5. pnpm build (web UI)
+    6. CGO_ENABLED=1 go build woodpecker-server
+    7. CGO_ENABLED=0 go build woodpecker-agent
+    8. GCS build cache save
+    9. Upload binary + SHA256 to gs://ci-runners-de-build-cache/woodpecker-deploy/${VERSION}/
+   10. Write pending-deploy marker to gs://.../woodpecker-deploy/pending
+   11. GitHub Release + binary assets (woodpecker-server-linux-amd64, woodpecker-agent-linux-amd64)
+   12. Write job to gs://ci-runners-de-image-builder-state/jobs/ + start ci-image-builder
 
-Workflow 3 — pts-build-cleanup.yaml (d3ci42-local, always runs):
+Workflow 3 — pts-build-cleanup.yaml (GCP agent, always runs):
   pts-cleanup.sh:
-   14. gcloud instances stop pentest-dev-vm
-   15. Remove TTL labels
+   13. gcloud instances stop pts-build-vm
   pts-notify.sh:
-   16. Slack notify (success/failure of compile workflow)
+   14. Slack notify (success/failure of compile workflow)
 
 Separately on d3ci42 — woodpecker-deploy.service (systemd timer, every 30s):
   woodpecker-deploy.sh:
-   17. Poll GCS for pending-deploy marker; exit 0 if absent
-   18. Download binary, verify SHA256
-   19. Stage release: mkdir, cp, chmod
-   20. ln -sfn releases/${VERSION} current  (atomic symlink)
-   21. systemctl restart woodpecker-server
-   22. 90s health check: poll /healthz until version matches or timeout
-   23. On failure: rollback symlink + systemctl restart + Slack alert
-   24. On success: prune old releases (keep 3), remove pending marker, Slack success
+   15. Poll GCS for pending-deploy marker; exit 0 if absent
+   16. Download binary, verify SHA256
+   17. Stage release: mkdir, cp, chmod
+   18. ln -sfn releases/${VERSION} current  (atomic symlink)
+   19. systemctl restart woodpecker-server
+   20. 90s health check: poll /healthz until version matches or timeout
+   21. On failure: rollback symlink + systemctl restart + Slack alert
+   22. On success: prune old releases (keep 3), remove pending marker, Slack success
 ```
 
+**pts-build-vm** (`ci-runners-de`, zone `us-central1-a`):  
+Dedicated GCE VM with the `pts-build` image family baked by ci-image-builder. Contains Go + gcc + pnpm toolchain. Stopped when idle; started by pts-wake.sh on each build. woodpecker-agent.service auto-starts on boot with label `agent=pts-build`.
+
 **GCS build cache** (`gs://ci-runners-de-build-cache`):  
-Restored at step 5, saved after step 9. Warm cache reduces compile from ~8 min to ~1–2 min.
+Restored at step 4, saved after step 8. No persistent disk on pts-build-vm — cache lives entirely in GCS. Warm cache reduces compile from ~20 min to ~2 min.
 
 **GCS deploy path** (`gs://ci-runners-de-build-cache/woodpecker-deploy/`):  
-Binary and SHA256 at `${VERSION}/woodpecker-server{,.sha256}`. Pending marker at `pending` (content: `${VERSION}\n${COMMIT_SHA}\n${PIPELINE_NUM}`). The marker is deleted after a successful deploy or a failed deploy (to prevent infinite retry loops).
+Binary and SHA256 at `${VERSION}/woodpecker-server{,.sha256}`. Pending marker at `pending` (content: `${VERSION}\n${COMMIT_SHA}\n${PIPELINE_NUM}`). Deleted after successful or failed deploy.
 
-**TTL safety net:** pts-wake.sh writes `ttl-expire-epoch` label on pentest-dev-vm at start. If pts-build-cleanup fails to stop the VM, the TTL reaper on d3ci42 catches it.
+**TTL coordination:** pts-wake.sh sets `ttl-override-min=45` on pts-build-vm. The `ttl-reaper-dev-vm.sh` timer on d3ci42 reads this label and keeps the VM alive for 45 min — enough for boot + cache restore + compile + cleanup.
 
 **woodpecker-deploy.sh operational notes:**  
 - Runs as `woodpecker-deploy.service` (oneshot) fired by `woodpecker-deploy.timer` (every 30s)  
 - Exclusive flock at `/tmp/woodpecker-deploy.lock` prevents concurrent runs  
 - Sources `/etc/woodpecker/secrets.env` for `SLACK_WEBHOOK_URL`  
-- Rollback target: `readlink -f /opt/woodpecker/server/current` before symlink swap  
-- Codification tracked in peregrine-infrastructure#1511
+- Rollback target: `readlink -f /opt/woodpecker/server/current` before symlink swap
 
-**Reference incident (2026-05-05):** pts-build self-killed by restarting woodpecker-server mid-pipeline. Binary uploaded to GCS but symlink never swapped because health check step never ran.
+---
+
+### pts-build-vm Image Rebuild Runbook
+
+The `pts-build` Packer image bakes in the Go/gcc/pnpm toolchain and a woodpecker-agent binary. **Routine woodpecker server builds do NOT require an image rebuild** — the agent on pts-build-vm just picks up pipeline steps regardless of which server version is being compiled.
+
+Rebuild the pts-build image when:
+- `libsqlite3-dev`, `pnpm`, or Go version need updating
+- The woodpecker-agent binary has breaking gRPC protocol changes incompatible with the current pts-build-vm agent
+
+**Trigger a rebuild:**
+```bash
+WP_AGENT_VERSION="v3.13.0-pts.NNN"   # agent version to bake in
+REQUEST_ID=$(python3 -c "import uuid; print(str(uuid.uuid4()))")
+JOB_JSON="{\"request_id\":\"${REQUEST_ID}\",\"build_type\":\"pts-build\",\"wp_agent_version\":\"${WP_AGENT_VERSION}\",\"triggered_by\":\"manual\"}"
+
+echo "$JOB_JSON" | gsutil -q cp - "gs://ci-runners-de-image-builder-state/jobs/${REQUEST_ID}.json"
+gcloud compute instances start ci-image-builder \
+  --zone=us-central1-a --project=ci-runners-de --quiet
+
+echo "Job submitted: ${REQUEST_ID}"
+```
+
+ci-image-builder's `bootstrap.sh` downloads `woodpecker-agent-linux-amd64` from the fork's GitHub Release for `$WP_AGENT_VERSION`, runs `packer build pts-build.pkr.hcl`, and the new image lands in the `pts-build` GCE family. The builder stops itself on completion.
+
+**Check build progress:**
+```bash
+# Watch build logs
+gsutil ls "gs://ci-runners-de-image-builder-state/logs/" | sort | tail -5
+gsutil cat "gs://ci-runners-de-image-builder-state/logs/LATEST_LOG_FILE"
+
+# Confirm new image in pts-build family
+gcloud compute images list \
+  --project=ci-runners-de \
+  --filter="family=pts-build" \
+  --sort-by=~creationTimestamp --limit=3 \
+  --format="table(name,status,creationTimestamp)"
+```
 
 ### `Dockerfile.archived`
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # pts-build.sh — compile woodpecker and publish to GCS for deployment.
-# Runs natively on pentest-dev-vm via the pts-build Woodpecker agent (#74).
+# Runs natively on pts-build-vm via the pts-build Woodpecker agent (#140).
 # Does NOT touch d3ci42 directly — binary is placed in GCS and a pending-deploy
 # marker is written. woodpecker-deploy.sh on d3ci42 picks it up via systemd timer.
 #
@@ -19,7 +19,7 @@ echo "==> pts-build: ${VERSION} (${SHA_SHORT})"
 export PATH="/usr/local/go/bin:$PATH"
 # Use the persistent 200GB data disk for build caches — the 30GB root
 # partition fills up when the agent's HOME is a temp workspace directory.
-DATA_DISK="/mnt/pentest-data"
+DATA_DISK="/mnt/pts-build-data"
 if [ -d "${DATA_DISK}" ] && [ "$(df -P "${DATA_DISK}" | awk 'NR==2{print $4}')" -gt 5000000 ]; then
     GOCACHE="${DATA_DISK}/go-build-cache"
     GOMODCACHE="${DATA_DISK}/go-mod-cache"

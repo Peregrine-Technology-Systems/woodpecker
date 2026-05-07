@@ -1,9 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Packer puts Go at /usr/local/go/bin; /etc/profile.d/go.sh adds it to PATH for
-# login shells only. This script runs under non-login bash, so export directly.
-export PATH="/usr/local/go/bin:$PATH"
+GO=/usr/local/go/bin/go
 
 echo "==> Running go vet on Peregrine packages..."
 
@@ -16,6 +14,6 @@ PACKAGES=(
   go.woodpecker-ci.org/woodpecker/v3/server/queue/...
 )
 
-go vet "${PACKAGES[@]}"
+"${GO}" vet "${PACKAGES[@]}"
 
 echo "==> Lint passed"
