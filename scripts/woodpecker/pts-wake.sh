@@ -7,7 +7,7 @@ set -euo pipefail
 PENTEST_PROJECT="peregrine-pentest-dev"
 PENTEST_ZONE="us-central1-a"
 PENTEST_VM="pentest-dev-vm"
-TTL_MINUTES=120  # generous budget: boot + cache restore + compile + deploy
+TTL_MINUTES=45  # boot (~3min) + cache restore (~10min) + compile (~20min) + slack
 
 WP_SERVER="d3ci42.peregrinetechsys.net"  # used only for reference
 
