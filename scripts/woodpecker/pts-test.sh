@@ -1,9 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Packer puts Go at /usr/local/go/bin; /etc/profile.d/go.sh adds it to PATH for
-# login shells only. This script runs under non-login bash, so export directly.
-export PATH="/usr/local/go/bin:$PATH"
+GO=/usr/local/go/bin/go
 
 echo "==> Running tests on Peregrine plugin packages..."
 
@@ -25,6 +23,6 @@ if [ -n "$HEAD_TREE" ] && [ "$HEAD_TREE" = "$MAIN_TREE" ]; then
   exit 0
 fi
 
-go test -v -count=1 "${PACKAGES[@]}"
+"${GO}" test -v -count=1 "${PACKAGES[@]}"
 
 echo "==> Tests passed"
