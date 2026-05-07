@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- feat: pts-wake.sh zone fallback — tries all 11 agent zones in sequence on capacity failure; zone stored in VM metadata (pts-build-zone) so pts-cleanup.sh deletes in the correct zone (#150)
+
 - fix: pts-wake.sh adds --no-address to gcloud instances create — avoids IN_USE_ADDRESSES quota in us-central1 (limit=8, exhausted by fleet); Cloud NAT handles egress to d3ci42 without external IP
 
 - feat: pts-build-vm is now ephemeral — pts-wake.sh creates fresh from ci-agent family image on every build; pts-cleanup.sh deletes the VM after compile. Eliminates image staleness (infra#1656), stale agent.conf, and manual taint/recreate cycle. (#1669)
