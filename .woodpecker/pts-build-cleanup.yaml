@@ -5,7 +5,7 @@ when:
 
 labels:
   platform: linux
-  backend: local
+  tier: ondemand
 
 depends_on: [pts-build-compile]
 

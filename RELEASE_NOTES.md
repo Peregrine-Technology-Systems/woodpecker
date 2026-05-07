@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- fix: pts-build-cleanup.yaml and pts-cleanup.sh migrated to pts-build-vm (ci-runners-de) — cleanup now runs on GCP fleet agent (platform:linux, tier:ondemand), not d3ci42 local; also removes ttl-override-min label on cleanup (#140)
+
 - fix: woodpecker-deploy.sh enforces Wants= (not Requires=) in woodpecker-agent.service on every deploy — Requires= cascades server restarts to the agent, killing in-flight pipelines (#112)
 
 - fix: pts-test.sh and pts-lint.sh use full Go binary path /usr/local/go/bin/go — /etc/profile.d/go.sh only runs for login shells; Woodpecker pipeline steps run non-login bash (#1343)
