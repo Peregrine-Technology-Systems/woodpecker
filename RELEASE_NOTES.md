@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- feat: pts-build.sh creates infra tracking issue on every successful build (Phase 3d) — SOC 2 CC7.2 traceability; the auto-PR from ci-image-builder must be linked to this issue before merge
+
 - fix: pts-build-compile.yaml and pts-build-cleanup.yaml add event:manual so compile and cleanup run on manual pts-build triggers (#153)
 
 - fix: pts-wake.sh removes --no-address — Cloud NAT not configured in ci-runners-de so --no-address leaves VM with no internet, blocking agent-config from reaching GCP SM; zone fallback already handles regional IP quota (#149 revert)
