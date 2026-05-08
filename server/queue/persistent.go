@@ -29,12 +29,55 @@ import (
 
 // WithTaskStore returns a queue that is backed by the TaskStore. This
 // ensures the task Queue can be restored when the system starts.
+// Zombie tasks — tasks whose parent pipeline is in a terminal state — are
+// evicted from the store and not loaded into the in-memory queue (#154).
 func WithTaskStore(ctx context.Context, q Queue, s store.Store) Queue {
 	tasks, _ := s.TaskList()
-	if err := q.PushAtOnce(ctx, tasks); err != nil {
+
+	var valid []*model.Task
+	evicted := 0
+	for _, task := range tasks {
+		pl, err := s.GetPipeline(task.PipelineID)
+		if err != nil {
+			// Pipeline not found — orphaned task; evict it.
+			log.Warn().Msgf("queue restore: task %s has no pipeline %d — evicting", task.ID, task.PipelineID)
+			_ = s.TaskDelete(task.ID)
+			evicted++
+			continue
+		}
+		if isTerminalPipeline(pl.Status) {
+			if deleteErr := s.TaskDelete(task.ID); deleteErr != nil {
+				log.Error().Err(deleteErr).Msgf("queue restore: failed to delete zombie task %s", task.ID)
+			} else {
+				log.Info().Msgf("queue restore: evicted zombie task %s (pipeline %d status=%s)", task.ID, task.PipelineID, pl.Status)
+				evicted++
+			}
+			continue
+		}
+		valid = append(valid, task)
+	}
+	if evicted > 0 {
+		log.Info().Msgf("queue restore: evicted %d zombie tasks from terminal pipelines (#154)", evicted)
+	}
+
+	if err := q.PushAtOnce(ctx, valid); err != nil {
 		log.Error().Err(err).Msg("PushAtOnce failed")
 	}
 	return &persistentQueue{q, s}
+}
+
+// isTerminalPipeline returns true when a pipeline has reached a final state
+// and will never dispatch further tasks. Tasks from terminal pipelines are
+// zombies — they will never be picked up and should be evicted on startup.
+func isTerminalPipeline(status model.StatusValue) bool {
+	switch status {
+	case model.StatusSuccess, model.StatusFailure, model.StatusKilled,
+		model.StatusError, model.StatusDeclined, model.StatusSkipped,
+		model.StatusSuperseded, model.StatusCanceled:
+		return true
+	default:
+		return false
+	}
 }
 
 type persistentQueue struct {
