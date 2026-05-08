@@ -197,6 +197,22 @@ func setupEvilGlobals(ctx context.Context, c *cli.Command, s store.Store) (err e
 	// have no queue task and will never complete. Mark them as killed.
 	pipeline.ReconcileOrphaned(s)
 
+	// #170: Run ReconcileOrphaned on a 2-minute background timer so pipelines
+	// orphaned after startup (agent disconnect, VM preemption) are also caught.
+	// The function is idempotent and safe to call repeatedly.
+	go func() {
+		ticker := time.NewTicker(2 * time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				pipeline.ReconcileOrphaned(s)
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
 	// WebSocket agent transport (#474) — shares business logic with gRPC
 	server.Config.Services.WSAgentRPC = woodpeckerGrpc.NewRPC(
 		server.Config.Services.Queue,

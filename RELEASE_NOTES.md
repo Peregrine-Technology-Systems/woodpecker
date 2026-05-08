@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- fix: ReconcileOrphaned runs every 2min on a background timer — orphaned pipelines created post-startup are now auto-killed within 2 minutes instead of requiring server restart (#170)
+
 - fix: agent disconnect no longer marks workflow killed when all steps already completed — disconnect handler unconditionally set StatusKilled even when every step had exit_code=0; now computes workflow status from steps if none were in-flight (#168)
 - fix: pts-build-cleanup runs on d3ci42-local (backend:local) instead of tier:ondemand MIG — MIG agent not available immediately after compile completes, causing pipeline to time out and show killed; d3ci42-local is always connected and picks up cleanup instantly (#166)
 
