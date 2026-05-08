@@ -102,6 +102,8 @@ func (s *RPC) Next(c context.Context, agentFilter rpc.Filter) (*rpc.Workflow, er
 			return workflow, err
 		}
 
+		log.Debug().Str("task_id", task.ID).Strs("run_on", task.RunOn).Any("dep_status", task.DepStatus).Msg("ShouldRun: false — skipping task (#162)")
+
 		// task should not run, so mark it as done
 		if err := s.Done(c, task.ID, rpc.WorkflowState{}); err != nil {
 			log.Error().Err(err).Msgf("marking workflow task '%s' as done failed", task.ID)

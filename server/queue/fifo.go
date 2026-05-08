@@ -323,7 +323,7 @@ func (q *fifo) filterWaiting() {
 	for element := q.pending.Front(); element != nil; element = element.Next() {
 		task, _ := element.Value.(*model.Task)
 		if q.depsInQueue(task) {
-			log.Debug().Msgf("queue: waiting due to unmet dependencies %v", task.ID)
+			log.Debug().Str("task_id", task.ID).Strs("run_on", task.RunOn).Any("dep_status", task.DepStatus).Msg("filterWaiting: task skipped — unmet deps (#162)")
 			q.waitingOnDeps.PushBack(task)
 			filtered = append(filtered, element)
 		}
