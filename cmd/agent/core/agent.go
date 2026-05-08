@@ -243,16 +243,31 @@ func run(ctx context.Context, c *cli.Command, backends []types.Backend) error {
 		// Stale conf: AgentID in agent.conf no longer exists in the server DB
 		// (server restart clears agents). Delete the conf so the next systemd
 		// restart re-registers fresh instead of crash-looping on the same ID. (#101)
+		// Also handles WS transport 401 (JWT expired/rotated) where status.FromError
+		// returns ok=false because the failure is at the HTTP upgrade layer, not gRPC. (#77)
+		errMsg := err.Error()
+		isStaleConf := false
 		if s, ok := status.FromError(err); ok {
 			msg := s.Message()
 			if strings.Contains(msg, "AgentID not found") ||
 				strings.Contains(msg, "sql: no rows") ||
 				strings.Contains(msg, "token is expired") {
-				if agentConfigPath != "" {
-					if removeErr := os.Remove(agentConfigPath); removeErr == nil {
-						log.Warn().Str("path", agentConfigPath).Msg("removed stale agent.conf — next start will re-register (#101)")
-					}
-				}
+				isStaleConf = true
+			}
+		}
+		// WS transport: HTTP 401/403 from the upgrade handshake arrives as a plain error (#77)
+		if strings.Contains(errMsg, "401") ||
+			strings.Contains(errMsg, "403") ||
+			strings.Contains(errMsg, "Unauthorized") ||
+			strings.Contains(errMsg, "authentication failed") {
+			isStaleConf = true
+		}
+		if status.Code(err) == codes.Unauthenticated {
+			isStaleConf = true
+		}
+		if isStaleConf && agentConfigPath != "" {
+			if removeErr := os.Remove(agentConfigPath); removeErr == nil {
+				log.Warn().Str("path", agentConfigPath).Msg("removed stale agent.conf — next start will re-register (#77/#101)")
 			}
 		}
 		return err
