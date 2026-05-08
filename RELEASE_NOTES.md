@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- fix: agent proactively reconnects at 75% of JWT token lifetime when idle — prevents expiry-caused WS rejection without requiring manual intervention (#116; proto-based extend refresh is a follow-up)
 - fix: pipeline status stays 'running' while any workflow is still executing — previously a canceled cleanup workflow could collapse a running compile to 'killed' (#111)
 - feat: woodpecker-deploy.sh auto-rotates JWT secret and API token on every deploy — eliminates manual token rotation after server restarts (#92)
 - fix: queue logs debug-level reason when task skipped in filterWaiting/ShouldRun — surfaces root cause for pts-build-cleanup skips on manual trigger (#162)
