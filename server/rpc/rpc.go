@@ -258,7 +258,10 @@ func (s *RPC) ReleaseAgentTasks(c context.Context, agentID int64) {
 
 		now := time.Now().Unix()
 
-		// Mark pending/running steps as killed
+		// Mark pending/running steps as killed. Track whether any steps
+		// were actually in-flight — if all steps already completed, the
+		// workflow should reflect their outcome, not be marked killed (#168).
+		anyKilled := false
 		for _, step := range workflow.Children {
 			if step.Running() || step.State == model.StatusPending {
 				step.State = model.StatusKilled
@@ -268,16 +271,22 @@ func (s *RPC) ReleaseAgentTasks(c context.Context, agentID int64) {
 					log.Error().Err(err).Int64("step_id", step.ID).
 						Msg("release: failed to kill step")
 				}
+				anyKilled = true
 			}
 		}
 
-		// Mark workflow as killed
-		workflow.State = model.StatusKilled
+		// If all steps had already completed before the disconnect, compute
+		// workflow status from them instead of marking killed (#168).
 		workflow.Finished = now
-		workflow.Error = "agent disconnected"
+		if anyKilled {
+			workflow.State = model.StatusKilled
+			workflow.Error = "agent disconnected"
+		} else {
+			workflow.State = pipeline.WorkflowStatus(workflow.Children)
+		}
 		if err := s.store.WorkflowUpdate(workflow); err != nil {
 			log.Error().Err(err).Int64("workflow_id", workflowID).
-				Msg("release: failed to kill workflow")
+				Msg("release: failed to update workflow on disconnect")
 		}
 
 		// Update parent pipeline status

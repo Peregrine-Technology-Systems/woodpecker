@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- fix: agent disconnect no longer marks workflow killed when all steps already completed — disconnect handler unconditionally set StatusKilled even when every step had exit_code=0; now computes workflow status from steps if none were in-flight (#168)
+
 - perf: drop go-mod GCS cache — replace with go mod download; module cache had grown to 3.5GB and blocked pts-build #314 for 15min on restore; go mod download fetches only what go.sum requires in ~30s (#164)
 
 - fix: pts-build.yaml missing branch:main filter — any manual trigger on a non-main branch creates an orphaned pts-build-vm; compile never runs so cleanup skips too (#163)
