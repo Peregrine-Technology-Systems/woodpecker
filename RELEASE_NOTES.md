@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- feat: woodpecker-deploy.sh auto-rotates JWT secret and API token on every deploy — eliminates manual token rotation after server restarts (#92)
 - fix: queue logs debug-level reason when task skipped in filterWaiting/ShouldRun — surfaces root cause for pts-build-cleanup skips on manual trigger (#162)
 - fix: agent now detects Unauthenticated (JWT expired/rotated) at WS connect time and deletes stale agent.conf — previously looped forever on sql: no rows without self-healing (#77)
 - fix: YAML compiler logs parse errors at ERROR level with filename — non-ASCII/invalid UTF-8 in pipeline YAML previously failed silently, blocking all workflows in the repo (#95)
