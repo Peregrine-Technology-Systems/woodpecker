@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- fix: pts-build.yaml missing branch:main filter — any manual trigger on a non-main branch creates an orphaned pts-build-vm; compile never runs so cleanup skips too (#163)
+
+- fix: step_builder.go: IncludesStatusSuccess used for success RunsOn population — copy-paste bug used IncludesStatusFailure for both failure and success, causing workflows with when.status:[success] (without failure) to never be added to RunsOn and therefore never dispatch (#162)
+
+- fix: WithTaskStore evicts zombie tasks from terminal pipelines on startup — tasks whose pipeline is killed/success/error/failed were loaded into the in-memory queue and inflated pending metrics indefinitely; now detected via GetPipeline lookup and deleted from the store before queue restore (#154)
+
 - fix: woodpecker-deploy.sh enforces Wants= (not Requires=) in woodpecker-agent.service on every deploy — Requires= cascades server restarts to kill the local agent, interrupting in-flight pipelines (#112)
 - fix: pts-wake.sh removes ci-tier=ondemand from VM metadata — pts-build-vm was registering as a general-purpose ondemand agent and picking up regular CI tasks when cleanup was delayed; compile step routes via agent:pts-build so the tier label is redundant (#159)
 

@@ -193,7 +193,7 @@ func (b *StepBuilder) genItemForWorkflow(workflow *model.Workflow, axis matrix.A
 	if !slices.Contains(item.RunsOn, "failure") && parsed.When.IncludesStatusFailure(workflowMetadata, true, environ) {
 		item.RunsOn = append(item.RunsOn, "failure")
 	}
-	if !slices.Contains(item.RunsOn, "success") && parsed.When.IncludesStatusFailure(workflowMetadata, true, environ) {
+	if !slices.Contains(item.RunsOn, "success") && parsed.When.IncludesStatusSuccess(workflowMetadata, true, environ) {
 		item.RunsOn = append(item.RunsOn, "success")
 	}
 
