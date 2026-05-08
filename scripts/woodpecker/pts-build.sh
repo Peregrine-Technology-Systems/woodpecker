@@ -30,11 +30,15 @@ else
 fi
 mkdir -p "${GOCACHE}" "${GOMODCACHE}"
 
-echo "==> Restoring GCS build cache..."
+echo "==> Restoring GCS build cache (go-build only)..."
 gsutil -m -q rsync -r "${BUILD_CACHE_BUCKET}/go-build/" "${GOCACHE}/" 2>/dev/null && \
     echo "    go-build: $(du -sh "${GOCACHE}" | cut -f1)" || echo "    go-build: cold"
-gsutil -m -q rsync -r "${BUILD_CACHE_BUCKET}/go-mod/" "${GOMODCACHE}/" 2>/dev/null && \
-    echo "    go-mod: $(du -sh "${GOMODCACHE}" | cut -f1)" || echo "    go-mod: cold"
+
+# go-mod: download only what go.sum requires — faster and never accumulates stale
+# modules. GCS go-mod/ is intentionally NOT restored (#164).
+echo "==> Downloading Go modules (go mod download)..."
+export GOMODCACHE
+go mod download 2>/dev/null && echo "    modules ready" || echo "    ⚠️  go mod download had warnings (non-fatal)"
 
 # ── Web UI ──
 # We never change the UI — restore the pre-built dist/ from GCS instead of
@@ -73,11 +77,10 @@ echo "    $(du -h bin/woodpecker-agent | cut -f1)"
 # Ephemeral VM (#1669): no local agent binary caching — VM is deleted after compile.
 # Agent binary is published via GitHub Release (Phase 3b) for Packer image baking.
 
-echo ""; echo "==> Saving GCS build cache..."
+echo ""; echo "==> Saving GCS build cache (go-build only)..."
 gsutil -m -q rsync -r "${GOCACHE}/" "${BUILD_CACHE_BUCKET}/go-build/" 2>/dev/null && \
     echo "    go-build saved" || echo "    ⚠️  go-build save failed (non-fatal)"
-gsutil -m -q rsync -r "${GOMODCACHE}/" "${BUILD_CACHE_BUCKET}/go-mod/" 2>/dev/null && \
-    echo "    go-mod saved" || echo "    ⚠️  go-mod save failed (non-fatal)"
+# go-mod not saved — go mod download is faster than GCS rsync for 3.5GB (#164)
 
 # ── Upload binary to GCS for deployment ──
 # woodpecker-deploy.sh on d3ci42 polls DEPLOY_BUCKET/pending and picks this up.
