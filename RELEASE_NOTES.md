@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- feat: dual-emit ci_* aliases for Woodpecker server metrics — Grafana dashboards can migrate from woodpecker_* prefix without gaps (#173)
+
 - fix: ReconcileOrphaned runs every 2min on a background timer — orphaned pipelines created post-startup are now auto-killed within 2 minutes instead of requiring server restart (#170)
 
 - fix: agent disconnect no longer marks workflow killed when all steps already completed — disconnect handler unconditionally set StatusKilled even when every step had exit_code=0; now computes workflow status from steps if none were in-flight (#168)
