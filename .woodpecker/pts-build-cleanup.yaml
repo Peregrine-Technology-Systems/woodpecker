@@ -4,8 +4,7 @@ when:
     status: [success, failure]
 
 labels:
-  platform: linux
-  tier: ondemand
+  backend: local
 
 depends_on: [pts-build-compile]
 

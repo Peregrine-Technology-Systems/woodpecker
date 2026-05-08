@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- fix: pts-build-cleanup runs on d3ci42-local (backend:local) instead of tier:ondemand MIG — MIG agent not available immediately after compile completes, causing pipeline to time out and show killed; d3ci42-local is always connected and picks up cleanup instantly (#166)
+
 - perf: drop go-mod GCS cache — replace with go mod download; module cache had grown to 3.5GB and blocked pts-build #314 for 15min on restore; go mod download fetches only what go.sum requires in ~30s (#164)
 
 - fix: pts-build.yaml missing branch:main filter — any manual trigger on a non-main branch creates an orphaned pts-build-vm; compile never runs so cleanup skips too (#163)
