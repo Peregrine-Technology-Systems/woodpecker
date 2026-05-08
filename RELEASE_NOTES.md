@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- fix: step_builder.go: IncludesStatusSuccess used for success RunsOn population — copy-paste bug used IncludesStatusFailure for both failure and success, causing workflows with when.status:[success] (without failure) to never be added to RunsOn and therefore never dispatch (#162)
+
 - fix: WithTaskStore evicts zombie tasks from terminal pipelines on startup — tasks whose pipeline is killed/success/error/failed were loaded into the in-memory queue and inflated pending metrics indefinitely; now detected via GetPipeline lookup and deleted from the store before queue restore (#154)
 
 - fix: woodpecker-deploy.sh enforces Wants= (not Requires=) in woodpecker-agent.service on every deploy — Requires= cascades server restarts to kill the local agent, interrupting in-flight pipelines (#112)
