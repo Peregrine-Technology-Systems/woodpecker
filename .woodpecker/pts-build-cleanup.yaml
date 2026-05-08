@@ -1,5 +1,5 @@
 when:
-  - event: push
+  - event: [push, manual]
     branch: main
     status: [success, failure]
 
@@ -10,6 +10,14 @@ labels:
 depends_on: [pts-build-compile]
 
 steps:
+  - name: delete-vm
+    image: bash
+    environment:
+      WOODPECKER_API_TOKEN:
+        from_secret: woodpecker_api_token
+    commands:
+      - scripts/woodpecker/pts-cleanup.sh
+
   - name: notify
     image: bash
     environment:
@@ -19,3 +27,4 @@ steps:
       - scripts/woodpecker/pts-notify.sh
     when:
       - status: [success, failure]
+    depends_on: [delete-vm]

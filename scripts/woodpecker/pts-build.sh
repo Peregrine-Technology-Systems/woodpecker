@@ -70,13 +70,8 @@ CGO_ENABLED=0 nice -n 10 go build \
     -ldflags "-s -w -X go.woodpecker-ci.org/woodpecker/v3/version.Version=${VERSION}" \
     -o bin/woodpecker-agent ./cmd/agent
 echo "    $(du -h bin/woodpecker-agent | cut -f1)"
-
-# Leave agent binary in place for the next pts-wake run — avoids the GitHub
-# Release download on every cold-start. The wake step finds this exact version
-# and uses it as the pts-build CI agent, ensuring agent/server version parity.
-cp bin/woodpecker-agent "/opt/woodpecker/woodpecker-agent-${VERSION}"
-chmod +x "/opt/woodpecker/woodpecker-agent-${VERSION}"
-echo "    agent binary cached: /opt/woodpecker/woodpecker-agent-${VERSION}"
+# Ephemeral VM (#1669): no local agent binary caching — VM is deleted after compile.
+# Agent binary is published via GitHub Release (Phase 3b) for Packer image baking.
 
 echo ""; echo "==> Saving GCS build cache..."
 gsutil -m -q rsync -r "${GOCACHE}/" "${BUILD_CACHE_BUCKET}/go-build/" 2>/dev/null && \
@@ -171,6 +166,24 @@ else
     echo "    ⚠️  Could not write builder job — non-blocking"
 fi
 rm -f "${JOB_FILE}"
+
+# ── Create infra tracking issue (SOC 2 CC7.2 traceability) ──
+# The ci-image-builder auto-PR (chore/agent-image-bump) must be linked to
+# an issue for our standard PR→issue audit trail.
+echo ""; echo "==> Phase 3d: create infra tracking issue"
+if [ -n "${GH_TOKEN:-}" ]; then
+    INFRA_REPO="Peregrine-Technology-Systems/peregrine-infrastructure"
+    ISSUE_BODY="## Build record\n\n- **Version:** ${VERSION}\n- **Pipeline:** #${CI_PIPELINE_NUMBER:-?}\n- **Commit:** \`${COMMIT_SHA:0:8}\` on woodpecker fork\n- **Binary SHA256:** \`${SHA256:0:16}...\`\n- **GitHub Release:** https://github.com/Peregrine-Technology-Systems/woodpecker/releases/tag/${VERSION}\n\n## Action\n\nReview and merge the auto-generated \`chore/agent-image-bump\` PR to pin the new ci-agent image to this agent binary. The PR is opened automatically by ci-image-builder.\n\nLink that PR to this issue before merging (SOC 2 CC7.2 traceability)."
+    ISSUE_RESP=$(curl -sS -X POST \
+        -H "Authorization: Bearer ${GH_TOKEN}" \
+        -H "Content-Type: application/json" \
+        "https://api.github.com/repos/${INFRA_REPO}/issues" \
+        -d "{\"title\":\"chore: pin ci-agent image built from ${VERSION}\",\"body\":\"${ISSUE_BODY}\"}")
+    ISSUE_URL=$(echo "${ISSUE_RESP}" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("html_url",""))' 2>/dev/null || echo "")
+    [ -n "${ISSUE_URL}" ] && echo "    Tracking issue: ${ISSUE_URL}" || echo "    ⚠️  Could not create tracking issue (non-blocking)"
+else
+    echo "    Skipping: GH_TOKEN not set"
+fi
 
 echo ""; echo "==> pts-build complete: ${VERSION}"
 echo "    Deployment will complete within 2 minutes via woodpecker-deploy.sh on d3ci42."

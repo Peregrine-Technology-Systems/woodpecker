@@ -3,6 +3,21 @@
 ## Unreleased
 
 - fix: woodpecker-deploy.sh enforces Wants= (not Requires=) in woodpecker-agent.service on every deploy — Requires= cascades server restarts to kill the local agent, interrupting in-flight pipelines (#112)
+- fix: pts-wake.sh removes ci-tier=ondemand from VM metadata — pts-build-vm was registering as a general-purpose ondemand agent and picking up regular CI tasks when cleanup was delayed; compile step routes via agent:pts-build so the tier label is redundant (#159)
+
+- feat: pts-build.sh creates infra tracking issue on every successful build (Phase 3d) — SOC 2 CC7.2 traceability; the auto-PR from ci-image-builder must be linked to this issue before merge
+
+- fix: pts-build-compile.yaml and pts-build-cleanup.yaml add event:manual so compile and cleanup run on manual pts-build triggers (#153)
+
+- fix: pts-wake.sh removes --no-address — Cloud NAT not configured in ci-runners-de so --no-address leaves VM with no internet, blocking agent-config from reaching GCP SM; zone fallback already handles regional IP quota (#149 revert)
+
+- chore: pts-build trigger changed from push-to-main to manual-only — prevents server restart cascade from killing all in-flight pipelines on every code merge (#152)
+
+- feat: pts-wake.sh zone fallback — tries all 11 agent zones in sequence on capacity failure; zone stored in VM metadata (pts-build-zone) so pts-cleanup.sh deletes in the correct zone (#150)
+
+- fix: pts-wake.sh adds --no-address to gcloud instances create — avoids IN_USE_ADDRESSES quota in us-central1 (limit=8, exhausted by fleet); Cloud NAT handles egress to d3ci42 without external IP
+
+- feat: pts-build-vm is now ephemeral — pts-wake.sh creates fresh from ci-agent family image on every build; pts-cleanup.sh deletes the VM after compile. Eliminates image staleness (infra#1656), stale agent.conf, and manual taint/recreate cycle. (#1669)
 
 - perf: pts-build.sh restores web UI dist/ from GCS cache instead of running pnpm on every compile — UI never changes so pnpm was wasted time; fallback to pnpm build only on cold cache, saves result back to GCS
 
