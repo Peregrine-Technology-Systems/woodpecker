@@ -15,6 +15,9 @@
 package yaml
 
 import (
+	"fmt"
+	"unicode/utf8"
+
 	"codeberg.org/6543/xyaml"
 
 	"go.woodpecker-ci.org/woodpecker/v3/pipeline/frontend/yaml/types"
@@ -22,6 +25,9 @@ import (
 
 // ParseBytes parses the configuration from bytes b.
 func ParseBytes(b []byte) (*types.Workflow, error) {
+	if !utf8.Valid(b) {
+		return nil, fmt.Errorf("pipeline YAML contains invalid UTF-8 bytes — check for non-ASCII characters (#95)")
+	}
 	out := new(types.Workflow)
 	err := xyaml.Unmarshal(b, out)
 	if err != nil {

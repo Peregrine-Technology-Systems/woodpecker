@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- fix: YAML compiler logs parse errors at ERROR level with filename — non-ASCII/invalid UTF-8 in pipeline YAML previously failed silently, blocking all workflows in the repo (#95)
 - fix: unknown /api/* paths now return 404 JSON instead of SPA HTML — prevents client tools from silently parsing HTML as API response (#27)
 - feat: dual-emit ci_* aliases for Woodpecker server metrics — Grafana dashboards can migrate from woodpecker_* prefix without gaps (#173)
 
