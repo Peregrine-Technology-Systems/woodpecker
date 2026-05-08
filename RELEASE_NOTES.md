@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- fix: woodpecker-deploy.sh enforces Wants= (not Requires=) in woodpecker-agent.service on every deploy — Requires= cascades server restarts to kill the local agent, interrupting in-flight pipelines (#112)
 - fix: pts-wake.sh removes ci-tier=ondemand from VM metadata — pts-build-vm was registering as a general-purpose ondemand agent and picking up regular CI tasks when cleanup was delayed; compile step routes via agent:pts-build so the tier label is redundant (#159)
 
 - feat: pts-build.sh creates infra tracking issue on every successful build (Phase 3d) — SOC 2 CC7.2 traceability; the auto-PR from ci-image-builder must be linked to this issue before merge
