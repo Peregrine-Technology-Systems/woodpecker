@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- fix: unknown /api/* paths now return 404 JSON instead of SPA HTML — prevents client tools from silently parsing HTML as API response (#27)
 - feat: dual-emit ci_* aliases for Woodpecker server metrics — Grafana dashboards can migrate from woodpecker_* prefix without gaps (#173)
 
 - fix: ReconcileOrphaned runs every 2min on a background timer — orphaned pipelines created post-startup are now auto-killed within 2 minutes instead of requiring server restart (#170)
