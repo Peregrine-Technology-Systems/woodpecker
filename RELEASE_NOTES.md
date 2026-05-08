@@ -3,6 +3,7 @@
 ## Unreleased
 
 - fix: agent disconnect no longer marks workflow killed when all steps already completed — disconnect handler unconditionally set StatusKilled even when every step had exit_code=0; now computes workflow status from steps if none were in-flight (#168)
+- fix: pts-build-cleanup runs on d3ci42-local (backend:local) instead of tier:ondemand MIG — MIG agent not available immediately after compile completes, causing pipeline to time out and show killed; d3ci42-local is always connected and picks up cleanup instantly (#166)
 
 - perf: drop go-mod GCS cache — replace with go mod download; module cache had grown to 3.5GB and blocked pts-build #314 for 15min on restore; go mod download fetches only what go.sum requires in ~30s (#164)
 
