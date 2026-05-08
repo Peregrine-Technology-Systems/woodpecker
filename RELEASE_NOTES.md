@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- perf: drop go-mod GCS cache — replace with go mod download; module cache had grown to 3.5GB and blocked pts-build #314 for 15min on restore; go mod download fetches only what go.sum requires in ~30s (#164)
+
 - fix: pts-build.yaml missing branch:main filter — any manual trigger on a non-main branch creates an orphaned pts-build-vm; compile never runs so cleanup skips too (#163)
 
 - fix: step_builder.go: IncludesStatusSuccess used for success RunsOn population — copy-paste bug used IncludesStatusFailure for both failure and success, causing workflows with when.status:[success] (without failure) to never be added to RunsOn and therefore never dispatch (#162)
