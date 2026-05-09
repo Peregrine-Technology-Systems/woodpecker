@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- chore: pre-commit hook enforces 95% per-file coverage on changed Go files. Wiring/registration files exempt with documented rationale (#177 follow-up)
+- test: sqlite_dsn.go to 100% — added regression test for the defensive `url.ParseQuery` failure recovery path (malformed percent-encoding in operator DSN should not crash; defaults still applied) (#177 follow-up)
+- fix: SQLite DSN strips `cache=shared` and force-strips `_txlock` from reader / forces `_txlock=immediate` on writer — operator-supplied DSN values previously survived through `applySQLiteDefaults` (which only filled missing keys), reintroducing the #114 RESERVED-lock contention and producing "database table is locked: pipelines" SQLITE_LOCKED errors on `/api/hook` despite the write queue (#177)
 - chore: pre-commit hook enforces 95% per-file coverage on changed Go files (CI separately enforces 90%); wiring + registration-only files (cmd/server/setup.go, server/router/api.go, migration/migration.go, store/store.go) are explicitly exempt with documented rationale. Closes the recurring "fix passes unit tests but breaks in production" loop by making coverage gaps a hard pre-merge stop (#47 follow-up)
 - test: substantive coverage additions for the queue-priority chain — `persistentQueue.UpdatePriority` (success/queue-error/DB-error paths), dispatch hook claim-and-decline, pause-skips-process, depsInQueue running branch, ErrExternal Error/Unwrap, InfoT.String, New() unsupported-backend, Task.ShouldRun all branches, audit-log-failure-doesn't-fail-request handler path, oauth2-proxy header attribution, login fallback. Brings the entire bundle to ≥95% per-file (#47 follow-up)
 - fix: rpc test's `stubQueue` implements `Queue.UpdatePriority` so the package builds — local per-package tests in #47 missed this stub; CI runs all packages and caught it (#47)
