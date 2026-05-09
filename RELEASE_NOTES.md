@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- fix: SQLite DSN strips `cache=shared` and force-strips `_txlock` from reader / forces `_txlock=immediate` on writer — operator-supplied DSN values previously survived through `applySQLiteDefaults` (which only filled missing keys), reintroducing the #114 RESERVED-lock contention and producing "database table is locked: pipelines" SQLITE_LOCKED errors on `/api/hook` despite the write queue (#177)
 - fix: startup scan for corrupt pipeline JSON columns — logs WARN per corrupt (pipeline_id, column) pair and summary at server boot; surfaces rows silently skipped by runtime skip-and-log (#64)
 - docs: ARCHITECTURE.md d3ci42 environment audit — port map, service units, config files, GCP SM secrets, full crontab, healthcheck.sh 5-check description, JWT lifecycle updated post-#92 (#66)
 
