@@ -34,6 +34,14 @@ type Task struct {
 	AgentID      int64                  `json:"agent_id"     xorm:"'agent_id'"`
 	PipelineID   int64                  `json:"pipeline_id"  xorm:"'pipeline_id'"`
 	RepoID       int64                  `json:"repo_id"      xorm:"'repo_id'"`
+	// Priority drives queue dispatch order — higher values dispatch first.
+	// Default 0 preserves FIFO semantics for tasks without an explicit
+	// priority; the admin API in #47 mutates this. (#45)
+	Priority int64 `json:"priority"     xorm:"'priority' NOT NULL DEFAULT 0 INDEX(priority_created)"`
+	// Created is the secondary sort key inside a priority bucket. Auto-filled
+	// by xorm on insert. Existing pre-migration rows stay at 0 and drain
+	// first in rowid order before any post-migration insert.
+	Created int64 `json:"created"      xorm:"'created' NOT NULL DEFAULT 0 INDEX(priority_created) created"`
 } //	@name	Task
 
 // TableName return database table name for xorm.
