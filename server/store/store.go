@@ -156,6 +156,12 @@ type Store interface {
 	TaskInsert(*model.Task) error
 	TaskDelete(string) error
 
+	// PriorityAudit (#48): append-only audit of task-priority mutations.
+	// Insert is called by the priority PATCH handler (#47); List is the
+	// read side of GET /api/queue/audit, paginated by id descending.
+	PriorityAuditInsert(*model.PriorityAudit) error
+	PriorityAuditList(*model.PriorityAuditListOptions) ([]*model.PriorityAudit, error)
+
 	// ServerConfig
 	ServerConfigGet(string) (string, error)
 	ServerConfigSet(string, string) error

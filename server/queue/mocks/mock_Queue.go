@@ -579,6 +579,46 @@ func (_c *MockQueue_Resume_Call) RunAndReturn(run func()) *MockQueue_Resume_Call
 	return _c
 }
 
+// SetDispatchHook provides a mock function for the type MockQueue
+func (_mock *MockQueue) SetDispatchHook(fn queue.DispatchFunc) {
+	_mock.Called(fn)
+	return
+}
+
+// MockQueue_SetDispatchHook_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'SetDispatchHook'
+type MockQueue_SetDispatchHook_Call struct {
+	*mock.Call
+}
+
+// SetDispatchHook is a helper method to define mock.On call
+//   - fn queue.DispatchFunc
+func (_e *MockQueue_Expecter) SetDispatchHook(fn interface{}) *MockQueue_SetDispatchHook_Call {
+	return &MockQueue_SetDispatchHook_Call{Call: _e.mock.On("SetDispatchHook", fn)}
+}
+
+func (_c *MockQueue_SetDispatchHook_Call) Run(run func(fn queue.DispatchFunc)) *MockQueue_SetDispatchHook_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		var arg0 queue.DispatchFunc
+		if args[0] != nil {
+			arg0 = args[0].(queue.DispatchFunc)
+		}
+		run(
+			arg0,
+		)
+	})
+	return _c
+}
+
+func (_c *MockQueue_SetDispatchHook_Call) Return() *MockQueue_SetDispatchHook_Call {
+	_c.Call.Return()
+	return _c
+}
+
+func (_c *MockQueue_SetDispatchHook_Call) RunAndReturn(run func(fn queue.DispatchFunc)) *MockQueue_SetDispatchHook_Call {
+	_c.Run(run)
+	return _c
+}
+
 // Wait provides a mock function for the type MockQueue
 func (_mock *MockQueue) Wait(c context.Context, id string) error {
 	ret := _mock.Called(c, id)
@@ -634,9 +674,4 @@ func (_c *MockQueue_Wait_Call) Return(err error) *MockQueue_Wait_Call {
 func (_c *MockQueue_Wait_Call) RunAndReturn(run func(c context.Context, id string) error) *MockQueue_Wait_Call {
 	_c.Call.Return(run)
 	return _c
-}
-
-// SetDispatchHook provides a mock function for the type MockQueue.
-func (_mock *MockQueue) SetDispatchHook(fn queue.DispatchFunc) {
-	_mock.Called(fn)
 }
