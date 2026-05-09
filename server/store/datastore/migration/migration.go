@@ -55,6 +55,8 @@ var migrationTasks = []*xormigrate.Migration{
 	&unsanitizeOrgAndUserNames,
 	&replaceZeroForgeIDsInOrgs,
 	&fixForgeColumns,
+	&addTaskPriority,
+	&addPriorityAudit,
 }
 
 var allBeans = []any{
@@ -76,6 +78,7 @@ var allBeans = []any{
 	new(model.Forge),
 	new(model.Workflow),
 	new(model.Org),
+	new(model.PriorityAudit),
 }
 
 // TODO: make xormigrate context aware

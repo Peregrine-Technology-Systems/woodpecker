@@ -152,3 +152,24 @@ func (q *persistentQueue) ErrorAtOnce(c context.Context, ids []string, err error
 	}
 	return nil
 }
+
+// UpdatePriority mutates both the in-memory queue position and the
+// persisted DB row so the priority survives a server restart. The
+// in-memory mutation must succeed first — if it fails (task not pending)
+// we return ErrNotFound without touching the DB. (#47)
+func (q *persistentQueue) UpdatePriority(taskID string, newPriority int64) (int64, error) {
+	old, err := q.Queue.UpdatePriority(taskID, newPriority)
+	if err != nil {
+		return 0, err
+	}
+	if dbErr := q.store.UpdateTaskPriority(taskID, newPriority); dbErr != nil {
+		// In-memory updated but DB didn't — log loudly. Next restart will
+		// re-seed from DB and the in-memory mutation is lost. Acceptable
+		// at this scale (low-thousands of tasks; restart re-syncs).
+		log.Error().Err(dbErr).Str("task_id", taskID).
+			Int64("old_priority", old).Int64("new_priority", newPriority).
+			Msg("priority: in-memory updated but DB update failed — persistence drift until next restart")
+		return old, dbErr
+	}
+	return old, nil
+}

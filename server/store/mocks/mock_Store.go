@@ -4478,6 +4478,119 @@ func (_c *MockStore_PipelineConfigCreate_Call) RunAndReturn(run func(pipelineCon
 	return _c
 }
 
+// PriorityAuditInsert provides a mock function for the type MockStore
+func (_mock *MockStore) PriorityAuditInsert(priorityAudit *model.PriorityAudit) error {
+	ret := _mock.Called(priorityAudit)
+
+	if len(ret) == 0 {
+		panic("no return value specified for PriorityAuditInsert")
+	}
+
+	var r0 error
+	if returnFunc, ok := ret.Get(0).(func(*model.PriorityAudit) error); ok {
+		r0 = returnFunc(priorityAudit)
+	} else {
+		r0 = ret.Error(0)
+	}
+	return r0
+}
+
+// MockStore_PriorityAuditInsert_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'PriorityAuditInsert'
+type MockStore_PriorityAuditInsert_Call struct {
+	*mock.Call
+}
+
+// PriorityAuditInsert is a helper method to define mock.On call
+//   - priorityAudit *model.PriorityAudit
+func (_e *MockStore_Expecter) PriorityAuditInsert(priorityAudit interface{}) *MockStore_PriorityAuditInsert_Call {
+	return &MockStore_PriorityAuditInsert_Call{Call: _e.mock.On("PriorityAuditInsert", priorityAudit)}
+}
+
+func (_c *MockStore_PriorityAuditInsert_Call) Run(run func(priorityAudit *model.PriorityAudit)) *MockStore_PriorityAuditInsert_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		var arg0 *model.PriorityAudit
+		if args[0] != nil {
+			arg0 = args[0].(*model.PriorityAudit)
+		}
+		run(
+			arg0,
+		)
+	})
+	return _c
+}
+
+func (_c *MockStore_PriorityAuditInsert_Call) Return(err error) *MockStore_PriorityAuditInsert_Call {
+	_c.Call.Return(err)
+	return _c
+}
+
+func (_c *MockStore_PriorityAuditInsert_Call) RunAndReturn(run func(priorityAudit *model.PriorityAudit) error) *MockStore_PriorityAuditInsert_Call {
+	_c.Call.Return(run)
+	return _c
+}
+
+// PriorityAuditList provides a mock function for the type MockStore
+func (_mock *MockStore) PriorityAuditList(priorityAuditListOptions *model.PriorityAuditListOptions) ([]*model.PriorityAudit, error) {
+	ret := _mock.Called(priorityAuditListOptions)
+
+	if len(ret) == 0 {
+		panic("no return value specified for PriorityAuditList")
+	}
+
+	var r0 []*model.PriorityAudit
+	var r1 error
+	if returnFunc, ok := ret.Get(0).(func(*model.PriorityAuditListOptions) ([]*model.PriorityAudit, error)); ok {
+		return returnFunc(priorityAuditListOptions)
+	}
+	if returnFunc, ok := ret.Get(0).(func(*model.PriorityAuditListOptions) []*model.PriorityAudit); ok {
+		r0 = returnFunc(priorityAuditListOptions)
+	} else {
+		if ret.Get(0) != nil {
+			r0 = ret.Get(0).([]*model.PriorityAudit)
+		}
+	}
+	if returnFunc, ok := ret.Get(1).(func(*model.PriorityAuditListOptions) error); ok {
+		r1 = returnFunc(priorityAuditListOptions)
+	} else {
+		r1 = ret.Error(1)
+	}
+	return r0, r1
+}
+
+// MockStore_PriorityAuditList_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'PriorityAuditList'
+type MockStore_PriorityAuditList_Call struct {
+	*mock.Call
+}
+
+// PriorityAuditList is a helper method to define mock.On call
+//   - priorityAuditListOptions *model.PriorityAuditListOptions
+func (_e *MockStore_Expecter) PriorityAuditList(priorityAuditListOptions interface{}) *MockStore_PriorityAuditList_Call {
+	return &MockStore_PriorityAuditList_Call{Call: _e.mock.On("PriorityAuditList", priorityAuditListOptions)}
+}
+
+func (_c *MockStore_PriorityAuditList_Call) Run(run func(priorityAuditListOptions *model.PriorityAuditListOptions)) *MockStore_PriorityAuditList_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		var arg0 *model.PriorityAuditListOptions
+		if args[0] != nil {
+			arg0 = args[0].(*model.PriorityAuditListOptions)
+		}
+		run(
+			arg0,
+		)
+	})
+	return _c
+}
+
+func (_c *MockStore_PriorityAuditList_Call) Return(priorityAudits []*model.PriorityAudit, err error) *MockStore_PriorityAuditList_Call {
+	_c.Call.Return(priorityAudits, err)
+	return _c
+}
+
+func (_c *MockStore_PriorityAuditList_Call) RunAndReturn(run func(priorityAuditListOptions *model.PriorityAuditListOptions) ([]*model.PriorityAudit, error)) *MockStore_PriorityAuditList_Call {
+	_c.Call.Return(run)
+	return _c
+}
+
 // RegistryCreate provides a mock function for the type MockStore
 func (_mock *MockStore) RegistryCreate(registry *model.Registry) error {
 	ret := _mock.Called(registry)
@@ -6292,6 +6405,63 @@ func (_c *MockStore_UpdateRepo_Call) Return(err error) *MockStore_UpdateRepo_Cal
 }
 
 func (_c *MockStore_UpdateRepo_Call) RunAndReturn(run func(repo *model.Repo) error) *MockStore_UpdateRepo_Call {
+	_c.Call.Return(run)
+	return _c
+}
+
+// UpdateTaskPriority provides a mock function for the type MockStore
+func (_mock *MockStore) UpdateTaskPriority(taskID string, priority int64) error {
+	ret := _mock.Called(taskID, priority)
+
+	if len(ret) == 0 {
+		panic("no return value specified for UpdateTaskPriority")
+	}
+
+	var r0 error
+	if returnFunc, ok := ret.Get(0).(func(string, int64) error); ok {
+		r0 = returnFunc(taskID, priority)
+	} else {
+		r0 = ret.Error(0)
+	}
+	return r0
+}
+
+// MockStore_UpdateTaskPriority_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'UpdateTaskPriority'
+type MockStore_UpdateTaskPriority_Call struct {
+	*mock.Call
+}
+
+// UpdateTaskPriority is a helper method to define mock.On call
+//   - taskID string
+//   - priority int64
+func (_e *MockStore_Expecter) UpdateTaskPriority(taskID interface{}, priority interface{}) *MockStore_UpdateTaskPriority_Call {
+	return &MockStore_UpdateTaskPriority_Call{Call: _e.mock.On("UpdateTaskPriority", taskID, priority)}
+}
+
+func (_c *MockStore_UpdateTaskPriority_Call) Run(run func(taskID string, priority int64)) *MockStore_UpdateTaskPriority_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		var arg0 string
+		if args[0] != nil {
+			arg0 = args[0].(string)
+		}
+		var arg1 int64
+		if args[1] != nil {
+			arg1 = args[1].(int64)
+		}
+		run(
+			arg0,
+			arg1,
+		)
+	})
+	return _c
+}
+
+func (_c *MockStore_UpdateTaskPriority_Call) Return(err error) *MockStore_UpdateTaskPriority_Call {
+	_c.Call.Return(err)
+	return _c
+}
+
+func (_c *MockStore_UpdateTaskPriority_Call) RunAndReturn(run func(taskID string, priority int64) error) *MockStore_UpdateTaskPriority_Call {
 	_c.Call.Return(run)
 	return _c
 }

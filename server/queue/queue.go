@@ -148,6 +148,13 @@ type Queue interface {
 	// worker assignment. If it returns handled=true, the task moves directly
 	// to running without being assigned to an agent worker.
 	SetDispatchHook(fn DispatchFunc)
+
+	// UpdatePriority finds a pending or waiting-on-deps task by ID and
+	// updates its Priority, re-inserting at the correct position in the
+	// pending list if it was pending. Returns the old priority on success.
+	// Running tasks return ErrNotFound — priority is a dispatch-time
+	// concept and a task that already started cannot be reordered. (#47)
+	UpdatePriority(taskID string, newPriority int64) (oldPriority int64, err error)
 }
 
 // DispatchFunc is called for each pending task before worker assignment.

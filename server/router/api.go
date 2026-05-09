@@ -186,6 +186,17 @@ func apiRoutes(e *gin.RouterGroup) {
 			queue.POST("/resume", api.ResumeQueue)
 			queue.GET("/norunningpipelines", api.BlockTilQueueHasRunningItem)
 		}
+		// Audit-log read access is open to any authenticated SSO user
+		// (#48) — the trail is a transparency surface for all reorders,
+		// so visibility shouldn't be admin-gated. Same MustUser group
+		// also hosts the priority PATCH (#47): per peregrine-grafana#184
+		// the audit trail is the deterrent, not admin gating.
+		queueAudit := apiBase.Group("/queue")
+		{
+			queueAudit.Use(session.MustUser())
+			queueAudit.GET("/audit", api.GetQueueAudit)
+			queueAudit.PATCH("/tasks/:task_id/priority", api.PatchTaskPriority)
+		}
 
 		// global secrets can be read without actual values by any user
 		readGlobalSecrets := apiBase.Group("/secrets")
