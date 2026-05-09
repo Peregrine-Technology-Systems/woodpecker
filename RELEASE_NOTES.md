@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- fix: agent proactively reconnects at 75% of JWT token lifetime when idle — prevents expiry-caused WS rejection without requiring manual intervention (#116; proto-based extend refresh is a follow-up)
+- fix: pipeline status stays 'running' while any workflow is still executing — previously a canceled cleanup workflow could collapse a running compile to 'killed' (#111)
+- feat: woodpecker-deploy.sh auto-rotates JWT secret and API token on every deploy — eliminates manual token rotation after server restarts (#92)
+- fix: queue logs debug-level reason when task skipped in filterWaiting/ShouldRun — surfaces root cause for pts-build-cleanup skips on manual trigger (#162)
+- fix: agent now detects Unauthenticated (JWT expired/rotated) at WS connect time and deletes stale agent.conf — previously looped forever on sql: no rows without self-healing (#77)
+- fix: YAML compiler logs parse errors at ERROR level with filename — non-ASCII/invalid UTF-8 in pipeline YAML previously failed silently, blocking all workflows in the repo (#95)
+- fix: unknown /api/* paths now return 404 JSON instead of SPA HTML — prevents client tools from silently parsing HTML as API response (#27)
+- feat: dual-emit ci_* aliases for Woodpecker server metrics — Grafana dashboards can migrate from woodpecker_* prefix without gaps (#173)
+
 - fix: ReconcileOrphaned runs every 2min on a background timer — orphaned pipelines created post-startup are now auto-killed within 2 minutes instead of requiring server restart (#170)
 
 - fix: agent disconnect no longer marks workflow killed when all steps already completed — disconnect handler unconditionally set StatusKilled even when every step had exit_code=0; now computes workflow status from steps if none were in-flight (#168)

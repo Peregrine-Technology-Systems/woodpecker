@@ -30,9 +30,19 @@ import (
 // yielded StatusPartial after #28 introduced the success+killed → partial
 // rule (one killed workflow is not "partial" — partial requires at least one
 // actual success AND at least one killed).
+//
+// Guard: if any workflow is still active (running or pending), the pipeline
+// must remain StatusRunning — a canceled cleanup step must not collapse a
+// still-executing compile to killed/partial (#111).
 func PipelineStatus(workflows []*model.Workflow) model.StatusValue {
 	if len(workflows) == 0 {
 		return model.StatusSuccess
+	}
+
+	for _, w := range workflows {
+		if w.State == model.StatusRunning || w.State == model.StatusPending {
+			return model.StatusRunning
+		}
 	}
 
 	status := workflows[0].State

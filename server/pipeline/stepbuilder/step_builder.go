@@ -134,6 +134,7 @@ func (b *StepBuilder) genItemForWorkflow(workflow *model.Workflow, axis matrix.A
 	// parse yaml pipeline
 	parsed, err := yaml.ParseString(substituted)
 	if err != nil {
+		log.Error().Err(err).Str("file", workflow.Name).Str("repo", b.Repo.FullName).Msg("YAML parse error (#95)")
 		return nil, &pipeline_errors.PipelineError{Message: err.Error(), Type: pipeline_errors.PipelineErrorTypeCompiler}
 	}
 

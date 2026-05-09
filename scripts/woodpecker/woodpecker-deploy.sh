@@ -204,6 +204,64 @@ if [ -f "${AGENT_ENV}" ]; then
     fi
 fi
 
+# ── Auto-rotate JWT secret and API token (#92) ──
+echo "$(date -u +%FT%TZ) woodpecker-deploy: rotating JWT secret and API token..."
+
+NEW_JWT_SECRET=$(openssl rand -hex 32)
+
+# Update EnvironmentFile so woodpecker-server picks up the new secret on next restart
+if grep -q "^WOODPECKER_JWT_SECRET=" /etc/woodpecker/secrets.env 2>/dev/null; then
+    sed -i "s|^WOODPECKER_JWT_SECRET=.*|WOODPECKER_JWT_SECRET=${NEW_JWT_SECRET}|" /etc/woodpecker/secrets.env
+else
+    echo "WOODPECKER_JWT_SECRET=${NEW_JWT_SECRET}" >> /etc/woodpecker/secrets.env
+fi
+
+# Store new JWT secret in GCP SM
+gcloud secrets versions add woodpecker--jwt-secret \
+    --data-file=<(printf '%s' "${NEW_JWT_SECRET}") \
+    --project=ci-runners-de 2>/dev/null || \
+gcloud secrets create woodpecker--jwt-secret \
+    --data-file=<(printf '%s' "${NEW_JWT_SECRET}") \
+    --project=ci-runners-de
+
+# Restart server to pick up new JWT secret; wait for healthy
+systemctl restart woodpecker-server
+JWT_HEALTH_DEADLINE=$(( $(date +%s) + HEALTH_BUDGET ))
+while true; do
+    if [ "$(date +%s)" -gt "${JWT_HEALTH_DEADLINE}" ]; then
+        slack ":warning:" "JWT rotation: server did not come healthy after secret rotation — manual check required (#92)"
+        break
+    fi
+    RUNNING_VERSION=$(healthz_version)
+    if [ "${RUNNING_VERSION}" = "${VERSION}" ]; then
+        break
+    fi
+    sleep 3
+done
+
+# Refresh the API token by calling the server's own endpoint (user ID 1).
+# The API token is signed with user.Hash (stored in DB), not WOODPECKER_JWT_SECRET,
+# so we ask the server to sign a fresh one rather than constructing it here.
+EXISTING_API_TOKEN=$(gcloud secrets versions access latest --secret="woodpecker-api-token" --project=ci-runners-de 2>/dev/null || echo "")
+if [ -n "${EXISTING_API_TOKEN}" ]; then
+    NEW_API_TOKEN=$(curl -sf --max-time 10 -X POST \
+        -H "Authorization: Bearer ${EXISTING_API_TOKEN}" \
+        "http://localhost:8000/api/user/token" 2>/dev/null || echo "")
+    if [ -n "${NEW_API_TOKEN}" ]; then
+        gcloud secrets versions add woodpecker-api-token \
+            --data-file=<(printf '%s' "${NEW_API_TOKEN}") \
+            --project=ci-runners-de 2>/dev/null || \
+        gcloud secrets create woodpecker-api-token \
+            --data-file=<(printf '%s' "${NEW_API_TOKEN}") \
+            --project=ci-runners-de
+        echo "$(date -u +%FT%TZ) woodpecker-deploy: JWT secret and API token rotated successfully (#92)"
+    else
+        slack ":warning:" "JWT rotation: could not refresh API token from /api/user/token — old token may have expired; manual rotation needed (#92)"
+    fi
+else
+    slack ":warning:" "JWT rotation: woodpecker-api-token not found in GCP SM — skipping API token refresh (#92)"
+fi
+
 # Remove pending marker
 gsutil -q rm "${DEPLOY_BUCKET}/pending" 2>/dev/null || true
 

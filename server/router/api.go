@@ -15,6 +15,8 @@
 package router
 
 import (
+	"net/http"
+
 	"github.com/gin-gonic/gin"
 	"github.com/rs/zerolog"
 
@@ -276,6 +278,11 @@ func apiRoutes(e *gin.RouterGroup) {
 
 		// Plugin routes — each StatusHook owns a sub-path under /api/plugins/<name>/
 		registerPluginRoutes(apiBase)
+
+		// Unknown /api/* paths → 404 JSON, not SPA HTML (#27)
+		apiBase.Any("/*path", func(c *gin.Context) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "not found", "path": c.Request.URL.Path})
+		})
 	}
 }
 
