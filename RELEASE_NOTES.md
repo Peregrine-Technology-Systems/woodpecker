@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- fix: ReconcileOrphaned background timer uses 2-tick grace period instead of killing on first sighting — the 2-min timer (#170) reused the startup-orphan signature ("running with no queue task"), so a spot-agent disconnect (WS close 1006) that briefly leaves a pipeline taskless was misread as permanent and the legitimate pipeline was killed. New `OrphanReconciler.Tick` records first observation and only kills on second consecutive observation; startup reconcile keeps aggressive single-pass behavior because the in-memory queue is provably empty after restart (#176)
 - fix: startup scan for corrupt pipeline JSON columns — logs WARN per corrupt (pipeline_id, column) pair and summary at server boot; surfaces rows silently skipped by runtime skip-and-log (#64)
 - docs: ARCHITECTURE.md d3ci42 environment audit — port map, service units, config files, GCP SM secrets, full crontab, healthcheck.sh 5-check description, JWT lifecycle updated post-#92 (#66)
 

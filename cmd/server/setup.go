@@ -197,18 +197,20 @@ func setupEvilGlobals(ctx context.Context, c *cli.Command, s store.Store) (err e
 	// #891: Reconcile orphaned "running" pipelines after restart.
 	// The in-memory queue is lost on restart — pipelines that were running
 	// have no queue task and will never complete. Mark them as killed.
-	pipeline.ReconcileOrphaned(s)
+	pipeline.ReconcileOrphanedAtStartup(s)
 
-	// #170: Run ReconcileOrphaned on a 2-minute background timer so pipelines
-	// orphaned after startup (agent disconnect, VM preemption) are also caught.
-	// The function is idempotent and safe to call repeatedly.
+	// #170/#176: Run a grace-period reconciler on a 2-minute background timer.
+	// Unlike the startup pass this MUST tolerate transient task-less windows
+	// caused by spot-agent disconnects (WS close 1006) — a pipeline is killed
+	// only after being observed orphaned across consecutive ticks.
+	reconciler := pipeline.NewOrphanReconciler()
 	go func() {
 		ticker := time.NewTicker(2 * time.Minute)
 		defer ticker.Stop()
 		for {
 			select {
 			case <-ticker.C:
-				pipeline.ReconcileOrphaned(s)
+				reconciler.Tick(s)
 			case <-ctx.Done():
 				return
 			}
