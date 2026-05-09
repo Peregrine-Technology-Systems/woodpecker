@@ -17,6 +17,7 @@ package router
 import (
 	"net/http"
 	"net/url"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/rs/zerolog/log"
@@ -51,7 +52,26 @@ func Load(noRouteHandler http.HandlerFunc, middleware ...gin.HandlerFunc) http.H
 	e.Use(session.SetUser())
 	e.Use(token.Refresh)
 
-	e.NoRoute(gin.WrapF(noRouteHandler))
+	// Unknown /api/* paths return 404 JSON; everything else falls through
+	// to the SPA handler (web/dist index.html). This replaces the previous
+	// `apiBase.Any("/*path", …)` catch-all (#27), which conflicted with
+	// gin's tree when /api/ had any parameterized routes — gin disallows
+	// catch-all wildcards as siblings of named/static routes at the same
+	// node, so adding e.g. `PATCH /api/queue/tasks/:task_id/priority`
+	// caused the server to panic at startup with
+	//   "catch-all wildcard '*path' in new path '/api/*path' conflicts
+	//    with existing path segment 're' in existing prefix 'pi/re'"
+	// Reference: pl#367 deploy panic 2026-05-09 20:32:51 UTC. (#27 / #189)
+	e.NoRoute(func(c *gin.Context) {
+		if strings.HasPrefix(c.Request.URL.Path, "/api/") {
+			c.JSON(http.StatusNotFound, gin.H{
+				"error": "not found",
+				"path":  c.Request.URL.Path,
+			})
+			return
+		}
+		noRouteHandler(c.Writer, c.Request)
+	})
 
 	base := e.Group(server.Config.Server.RootPath)
 	{
