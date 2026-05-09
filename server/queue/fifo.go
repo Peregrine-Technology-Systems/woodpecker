@@ -74,14 +74,34 @@ func NewMemoryQueue(ctx context.Context) Queue {
 	return q
 }
 
-// PushAtOnce pushes multiple tasks to the tail of this queue.
+// PushAtOnce pushes multiple tasks into this queue at the position implied
+// by Priority (higher dispatches first). FIFO within ties is preserved by
+// inserting at the back of any equal-priority block. Default priority 0
+// means new tasks land at the back of the queue, matching pre-#46 behavior.
 func (q *fifo) PushAtOnce(_ context.Context, tasks []*model.Task) error {
 	q.Lock()
 	for _, task := range tasks {
-		q.pending.PushBack(task)
+		q.insertByPriority(task)
 	}
 	q.Unlock()
 	return nil
+}
+
+// insertByPriority inserts task into q.pending so the list stays sorted by
+// Priority DESC. Within a priority bucket the new task lands at the back —
+// `existing.Priority < task.Priority` is strict, so equal-priority entries
+// are walked past, preserving FIFO order within ties (#46).
+//
+// Caller must hold q.Mutex.
+func (q *fifo) insertByPriority(task *model.Task) {
+	for e := q.pending.Front(); e != nil; e = e.Next() {
+		existing, _ := e.Value.(*model.Task)
+		if existing.Priority < task.Priority {
+			q.pending.InsertBefore(task, e)
+			return
+		}
+	}
+	q.pending.PushBack(task)
 }
 
 // Poll retrieves and removes a task head of this queue.
@@ -311,10 +331,12 @@ func (q *fifo) process() {
 }
 
 func (q *fifo) filterWaiting() {
-	// resubmits all waiting tasks to pending, deps may have cleared
+	// resubmits all waiting tasks to pending, deps may have cleared.
+	// Re-insertion is priority-aware (#46) so a high-priority task whose
+	// deps just cleared dispatches ahead of low-priority pending tasks.
 	for element := q.waitingOnDeps.Front(); element != nil; element = element.Next() {
 		task, _ := element.Value.(*model.Task)
-		q.pending.PushBack(task)
+		q.insertByPriority(task)
 	}
 
 	// rebuild waitingDeps
@@ -364,7 +386,10 @@ func (q *fifo) resubmitExpiredPipelines() {
 		if time.Now().After(taskState.deadline) {
 			log.Info().Msgf("queue: resubmitting expired task %s", taskID)
 			taskState.error = ErrTaskExpired
-			q.pending.PushFront(taskState.item)
+			// Re-queue at the back of the task's own priority bucket
+			// (#46) — pre-#46 PushFront would let a priority-0 expired
+			// task jump ahead of priority-5 pending tasks.
+			q.insertByPriority(taskState.item)
 			delete(q.running, taskID)
 			close(taskState.done)
 		}
