@@ -1089,3 +1089,301 @@ func findTaskByAgent(tasks map[string]int64, agentID int64) string {
 	}
 	return ""
 }
+
+// pendingIDs returns the IDs of tasks currently in q.pending in dispatch
+// order. Used by the priority tests below.
+func pendingIDs(q *fifo) []string {
+	q.Lock()
+	defer q.Unlock()
+	var ids []string
+	for e := q.pending.Front(); e != nil; e = e.Next() {
+		t, _ := e.Value.(*model.Task)
+		ids = append(ids, t.ID)
+	}
+	return ids
+}
+
+// TestFifoPriority_HigherDispatchesFirst encodes the #46 contract: a
+// higher-priority task pushed AFTER a lower-priority one still dispatches
+// first.
+func TestFifoPriority_HigherDispatchesFirst(t *testing.T) {
+	ctx, cancel, q := setupTestQueue(t)
+	defer cancel(nil)
+
+	low := &model.Task{ID: "low", Priority: 0}
+	high := &model.Task{ID: "high", Priority: 5}
+
+	assert.NoError(t, q.PushAtOnce(ctx, []*model.Task{low, high}))
+	assert.Equal(t, []string{"high", "low"}, pendingIDs(q))
+}
+
+// TestFifoPriority_FIFOWithinSamePriority verifies the FIFO contract is
+// preserved at default priority (regression guard) AND at non-zero
+// priority (new behavior).
+func TestFifoPriority_FIFOWithinSamePriority(t *testing.T) {
+	ctx, cancel, q := setupTestQueue(t)
+	defer cancel(nil)
+
+	tasks := []*model.Task{
+		{ID: "a", Priority: 0},
+		{ID: "b", Priority: 0},
+		{ID: "c", Priority: 5},
+		{ID: "d", Priority: 5},
+		{ID: "e", Priority: 0},
+	}
+	assert.NoError(t, q.PushAtOnce(ctx, tasks))
+	assert.Equal(t, []string{"c", "d", "a", "b", "e"}, pendingIDs(q),
+		"priority bucket order: c/d (priority=5) before a/b/e (priority=0); FIFO within each bucket")
+}
+
+// TestFifoPriority_DefaultPreservesFIFO is a regression guard: when no task
+// has explicit priority (all default 0), behavior is identical to pre-#46.
+func TestFifoPriority_DefaultPreservesFIFO(t *testing.T) {
+	ctx, cancel, q := setupTestQueue(t)
+	defer cancel(nil)
+
+	tasks := []*model.Task{
+		{ID: "first"},
+		{ID: "second"},
+		{ID: "third"},
+	}
+	assert.NoError(t, q.PushAtOnce(ctx, tasks))
+	assert.Equal(t, []string{"first", "second", "third"}, pendingIDs(q))
+}
+
+// TestFifoPriority_InsertionIntoNonEmptyQueue exercises the "high task
+// jumps over many low tasks" path — multiple existing pending tasks at
+// priority=0, then a single priority=5 task arrives.
+func TestFifoPriority_InsertionIntoNonEmptyQueue(t *testing.T) {
+	ctx, cancel, q := setupTestQueue(t)
+	defer cancel(nil)
+
+	// Seed with three priority-0 tasks.
+	assert.NoError(t, q.PushAtOnce(ctx, []*model.Task{
+		{ID: "a", Priority: 0},
+		{ID: "b", Priority: 0},
+		{ID: "c", Priority: 0},
+	}))
+	// One priority-5 task arrives later.
+	assert.NoError(t, q.PushAtOnce(ctx, []*model.Task{{ID: "vip", Priority: 5}}))
+	assert.Equal(t, []string{"vip", "a", "b", "c"}, pendingIDs(q))
+}
+
+// TestFifoPriority_MultipleHighPriorityArrivals verifies new high-priority
+// tasks land at the BACK of the high-priority bucket, not at the absolute
+// front — preserves FIFO between high-priority tasks.
+func TestFifoPriority_MultipleHighPriorityArrivals(t *testing.T) {
+	ctx, cancel, q := setupTestQueue(t)
+	defer cancel(nil)
+
+	assert.NoError(t, q.PushAtOnce(ctx, []*model.Task{{ID: "low", Priority: 0}}))
+	assert.NoError(t, q.PushAtOnce(ctx, []*model.Task{{ID: "vip-1", Priority: 10}}))
+	assert.NoError(t, q.PushAtOnce(ctx, []*model.Task{{ID: "vip-2", Priority: 10}}))
+	assert.NoError(t, q.PushAtOnce(ctx, []*model.Task{{ID: "vip-3", Priority: 10}}))
+
+	assert.Equal(t, []string{"vip-1", "vip-2", "vip-3", "low"}, pendingIDs(q),
+		"vip-1 arrived first → dispatches first within its priority bucket")
+}
+
+// TestFifoPriority_FilterWaitingPreservesPriority covers the filterWaiting
+// path: a high-priority task whose deps just cleared must dispatch ahead
+// of any low-priority tasks already pending.
+func TestFifoPriority_FilterWaitingPreservesPriority(t *testing.T) {
+	ctx, cancel, q := setupTestQueue(t)
+	defer cancel(nil)
+
+	// Push one low-priority task with no deps; it goes to pending.
+	assert.NoError(t, q.PushAtOnce(ctx, []*model.Task{{ID: "low", Priority: 0}}))
+
+	// Push a high-priority task with an unmet dep — it'll move from
+	// pending → waitingOnDeps on the next process tick.
+	dep := "missing-dep"
+	high := &model.Task{
+		ID:           "high",
+		Priority:     10,
+		Dependencies: []string{dep},
+		DepStatus:    map[string]model.StatusValue{dep: ""},
+	}
+	assert.NoError(t, q.PushAtOnce(ctx, []*model.Task{high}))
+
+	// Manually move 'high' to waitingOnDeps so we can exercise filterWaiting
+	// in isolation (the natural q.process loop also does this, but we want
+	// determinism in the test).
+	q.Lock()
+	for e := q.pending.Front(); e != nil; e = e.Next() {
+		t, _ := e.Value.(*model.Task)
+		if t.ID == "high" {
+			q.pending.Remove(e)
+			q.waitingOnDeps.PushBack(t)
+			break
+		}
+	}
+	// Clear the dep so filterWaiting will move it back to pending.
+	high.Dependencies = nil
+	high.DepStatus = nil
+	q.Unlock()
+
+	// Run filterWaiting directly.
+	q.Lock()
+	q.filterWaiting()
+	q.Unlock()
+
+	assert.Equal(t, []string{"high", "low"}, pendingIDs(q),
+		"high-priority task whose deps cleared dispatches before lower-priority pending")
+}
+
+// TestFifo_DispatchHookClaimsTask covers the external-dispatch branch in
+// process(): when a hook returns handled=true, the task moves from pending
+// to running without being assigned to an agent worker. Coverage gap before
+// this test was the entire `if q.dispatchHook != nil` block.
+func TestFifo_DispatchHookClaimsTask(t *testing.T) {
+	ctx, cancel, q := setupTestQueue(t)
+	defer cancel(nil)
+
+	claimed := make(chan string, 1)
+	q.SetDispatchHook(func(_ context.Context, task *model.Task) (bool, error) {
+		claimed <- task.ID
+		return true, nil
+	})
+
+	assert.NoError(t, q.PushAtOnce(ctx, []*model.Task{{ID: "hooked", Priority: 0}}))
+
+	select {
+	case id := <-claimed:
+		assert.Equal(t, "hooked", id)
+	case <-time.After(2 * time.Second):
+		t.Fatal("dispatch hook never fired")
+	}
+
+	waitForProcess()
+	info := q.Info(ctx)
+	assert.Empty(t, info.Pending, "task should have moved out of pending")
+	assert.Len(t, info.Running, 1, "task should be tracked as running by the hook")
+}
+
+// TestFifo_DispatchHookDeclines covers the path where the hook returns
+// handled=false — the task stays pending and falls through to normal
+// worker assignment.
+func TestFifo_DispatchHookDeclines(t *testing.T) {
+	ctx, cancel, q := setupTestQueue(t)
+	defer cancel(nil)
+
+	q.SetDispatchHook(func(context.Context, *model.Task) (bool, error) {
+		return false, nil
+	})
+
+	assert.NoError(t, q.PushAtOnce(ctx, []*model.Task{{ID: "declined"}}))
+	waitForProcess()
+
+	info := q.Info(ctx)
+	assert.Len(t, info.Pending, 1, "declined task should remain pending")
+}
+
+// TestFifo_PauseSkipsProcess covers the `if q.paused` early-return branch
+// in process().
+func TestFifo_PauseSkipsProcess(t *testing.T) {
+	ctx, cancel, q := setupTestQueue(t)
+	defer cancel(nil)
+
+	q.Pause()
+	assert.NoError(t, q.PushAtOnce(ctx, []*model.Task{{ID: "blocked"}}))
+
+	// Even after the process loop runs, no worker is assigned because
+	// the loop early-returns under paused.
+	pollCtx, pollCancel := context.WithTimeout(ctx, 200*time.Millisecond)
+	defer pollCancel()
+	_, err := q.Poll(pollCtx, 1, filterFnTrue)
+	assert.Error(t, err, "Poll should time out while paused")
+
+	q.Resume()
+	waitForProcess()
+	got, err := q.Poll(ctx, 1, filterFnTrue)
+	assert.NoError(t, err)
+	assert.Equal(t, "blocked", got.ID, "task dispatches after Resume")
+}
+
+// TestFifoDeps_DepInRunning exercises the branch in depsInQueue that walks
+// the running map. Pre-existing test only covered the pending branch.
+func TestFifoDeps_DepInRunning(t *testing.T) {
+	ctx, cancel, q := setupTestQueue(t)
+	defer cancel(nil)
+
+	// Push and immediately poll to move 'parent' into running.
+	parent := &model.Task{ID: "parent"}
+	assert.NoError(t, q.PushAtOnce(ctx, []*model.Task{parent}))
+	waitForProcess()
+	got, err := q.Poll(ctx, 1, filterFnTrue)
+	assert.NoError(t, err)
+	assert.Equal(t, "parent", got.ID)
+
+	// Push a child that depends on parent — depsInQueue should see the
+	// dep in q.running and route the child to waitingOnDeps via
+	// filterWaiting.
+	child := &model.Task{
+		ID:           "child",
+		Dependencies: []string{"parent"},
+		DepStatus:    map[string]model.StatusValue{"parent": ""},
+	}
+	assert.NoError(t, q.PushAtOnce(ctx, []*model.Task{child}))
+	waitForProcess()
+
+	info := q.Info(ctx)
+	assert.Len(t, info.WaitingOnDeps, 1, "child should be in waiting-on-deps because parent is running")
+}
+
+// TestFifoUpdateDepStatus_PropagatesToWaitingOnDeps exercises
+// updateDepStatusInQueue: when a running task finishes, every queued
+// consumer that depends on it should have its DepStatus updated.
+//
+// Realistic scenario: dep is running, consumer is waitingOnDeps. We can't
+// usefully construct a "consumer in pending while dep is running" scenario
+// because filterWaiting moves anything with deps-in-queue into
+// waitingOnDeps. The pending/running loops in updateDepStatusInQueue are
+// exercised in steady-state workflows with multi-dep tasks; this test
+// covers the most common path (waitingOnDeps).
+func TestFifoUpdateDepStatus_PropagatesToWaitingOnDeps(t *testing.T) {
+	ctx, cancel, q := setupTestQueue(t)
+	defer cancel(nil)
+
+	// Push dep and consumer together; consumer has unmet deps so it
+	// moves to waitingOnDeps after the first process tick.
+	dep := &model.Task{ID: "dep"}
+	consumer := &model.Task{
+		ID:           "consumer",
+		Dependencies: []string{"dep"},
+		DepStatus:    map[string]model.StatusValue{"dep": ""},
+	}
+	assert.NoError(t, q.PushAtOnce(ctx, []*model.Task{dep, consumer}))
+	waitForProcess()
+
+	// Move dep into running by polling.
+	gotDep, err := q.Poll(ctx, 1, filterFnTrue)
+	assert.NoError(t, err)
+	assert.Equal(t, "dep", gotDep.ID)
+	waitForProcess()
+
+	// Consumer should now be in waitingOnDeps (depsInQueue saw dep in running).
+	info := q.Info(ctx)
+	assert.Len(t, info.WaitingOnDeps, 1, "consumer should be in waitingOnDeps")
+
+	// Finish dep. updateDepStatusInQueue should update the consumer's
+	// DepStatus["dep"] from "" to StatusSuccess.
+	assert.NoError(t, q.Done(ctx, "dep", model.StatusSuccess))
+	waitForProcess()
+
+	info = q.Info(ctx)
+	all := append(append([]*model.Task{}, info.Pending...), info.WaitingOnDeps...)
+	all = append(all, info.Running...)
+	var consumerSeen *model.Task
+	for _, t := range all {
+		if t.ID == "consumer" {
+			consumerSeen = t
+			break
+		}
+	}
+	assert.NotNil(t, consumerSeen, "consumer should still be in some queue list")
+	if consumerSeen != nil {
+		assert.Equal(t, model.StatusSuccess, consumerSeen.DepStatus["dep"],
+			"consumer's dep status should reflect the finished dep")
+	}
+}
