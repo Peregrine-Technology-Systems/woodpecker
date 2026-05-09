@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- fix: ReconcileOrphaned posts forge status when killing orphan pipelines so stuck-pending PR checks resolve to failure (#181). fork#44's "skip on agent-disconnect" only applied to the RPC path where the agent reported its own kill (workflow.Error contains a disconnect signature). Reconcile-driven kills don't set Error, so updatePipelineStatus posts normally — the upstream PR check on GitHub transitions to failure with description "pipeline killed", letting auto-merge wait-for-checks unblock. Fail-open: if the forge manager is unwired (tests) or the user/forge lookup fails, the kill itself still completes (#181)
 - chore: pre-commit hook enforces 95% per-file coverage on changed Go files. Wiring/registration files exempt with documented rationale (#177 follow-up)
 - test: sqlite_dsn.go to 100% — added regression test for the defensive `url.ParseQuery` failure recovery path (malformed percent-encoding in operator DSN should not crash; defaults still applied) (#177 follow-up)
 - fix: SQLite DSN strips `cache=shared` and force-strips `_txlock` from reader / forces `_txlock=immediate` on writer — operator-supplied DSN values previously survived through `applySQLiteDefaults` (which only filled missing keys), reintroducing the #114 RESERVED-lock contention and producing "database table is locked: pipelines" SQLITE_LOCKED errors on `/api/hook` despite the write queue (#177)
