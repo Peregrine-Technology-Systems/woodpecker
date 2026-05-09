@@ -218,3 +218,124 @@ func TestOrphanReconciler_InjectedClock(t *testing.T) {
 	r.now = func() time.Time { return fixed }
 	assert.Equal(t, fixed, r.now())
 }
+
+// TestReconcileOrphanedAtStartup_RepoListErrorReturnsZero covers the
+// defensive RepoListAll error path: log + early return 0.
+func TestReconcileOrphanedAtStartup_RepoListErrorReturnsZero(t *testing.T) {
+	mockStore := mocks.NewMockStore(t)
+	mockStore.On("RepoListAll", true, mock.Anything).Return(nil, assert.AnError)
+
+	count := ReconcileOrphanedAtStartup(mockStore)
+	assert.Equal(t, 0, count)
+	mockStore.AssertNotCalled(t, "GetActivePipelineList")
+}
+
+// TestReconcileOrphanedAtStartup_GetActiveErrorContinues covers the per-repo
+// continue branch: GetActivePipelineList errors for one repo; the loop
+// continues to the next repo without aborting the whole pass.
+func TestReconcileOrphanedAtStartup_GetActiveErrorContinues(t *testing.T) {
+	mockStore := mocks.NewMockStore(t)
+	repos := []*model.Repo{
+		{ID: 1, FullName: "org/broken"},
+		{ID: 2, FullName: "org/works"},
+	}
+	mockStore.On("RepoListAll", true, mock.Anything).Return(repos, nil)
+	mockStore.On("GetActivePipelineList", repos[0]).Return(nil, assert.AnError)
+	mockStore.On("GetActivePipelineList", repos[1]).Return([]*model.Pipeline{}, nil)
+
+	count := ReconcileOrphanedAtStartup(mockStore)
+	assert.Equal(t, 0, count, "broken repo errors don't kill pipelines on the working repo either")
+}
+
+// TestReconcileOrphaned_BackCompatAlias verifies the alias still works.
+func TestReconcileOrphaned_BackCompatAlias(t *testing.T) {
+	mockStore := mocks.NewMockStore(t)
+	mockStore.On("RepoListAll", true, mock.Anything).Return([]*model.Repo{}, nil)
+	count := ReconcileOrphaned(mockStore)
+	assert.Equal(t, 0, count)
+}
+
+// TestOrphanReconciler_TickRepoListError covers the timer-loop equivalent
+// of the startup defensive path.
+func TestOrphanReconciler_TickRepoListError(t *testing.T) {
+	mockStore := mocks.NewMockStore(t)
+	mockStore.On("RepoListAll", true, mock.Anything).Return(nil, assert.AnError)
+
+	r := NewOrphanReconciler()
+	count := r.Tick(mockStore)
+	assert.Equal(t, 0, count)
+}
+
+// TestOrphanReconciler_TickGetActiveErrorContinues — same per-repo continue
+// semantics as the startup version.
+func TestOrphanReconciler_TickGetActiveErrorContinues(t *testing.T) {
+	mockStore := mocks.NewMockStore(t)
+	repos := []*model.Repo{{ID: 1, FullName: "org/broken"}}
+	mockStore.On("RepoListAll", true, mock.Anything).Return(repos, nil)
+	mockStore.On("GetActivePipelineList", repos[0]).Return(nil, assert.AnError)
+
+	r := NewOrphanReconciler()
+	count := r.Tick(mockStore)
+	assert.Equal(t, 0, count)
+}
+
+// TestKillOrphan_UpdatePipelineFailureReturnsFalse covers the early-return
+// path: UpdatePipeline errors → killOrphan returns false → reconcile count
+// not incremented; workflow updates are NOT attempted.
+func TestKillOrphan_UpdatePipelineFailureReturnsFalse(t *testing.T) {
+	mockStore := mocks.NewMockStore(t)
+	repos := []*model.Repo{{ID: 1, FullName: "org/r"}}
+	mockStore.On("RepoListAll", true, mock.Anything).Return(repos, nil)
+	mockStore.On("GetActivePipelineList", repos[0]).Return([]*model.Pipeline{
+		{ID: 50, Number: 1, Status: model.StatusRunning, RepoID: 1},
+	}, nil)
+	mockStore.On("UpdatePipeline", mock.Anything).Return(assert.AnError)
+
+	count := ReconcileOrphanedAtStartup(mockStore)
+	assert.Equal(t, 0, count, "UpdatePipeline failure should not count as reconciled")
+	mockStore.AssertNotCalled(t, "WorkflowGetTree")
+}
+
+// TestKillOrphan_WorkflowGetTreeFailureCountsAsKilled — UpdatePipeline
+// succeeded so the kill counts; WorkflowGetTree errors short-circuit
+// the workflow walk but the pipeline-kill itself is durable.
+func TestKillOrphan_WorkflowGetTreeFailureCountsAsKilled(t *testing.T) {
+	mockStore := mocks.NewMockStore(t)
+	repos := []*model.Repo{{ID: 1, FullName: "org/r"}}
+	mockStore.On("RepoListAll", true, mock.Anything).Return(repos, nil)
+	mockStore.On("GetActivePipelineList", repos[0]).Return([]*model.Pipeline{
+		{ID: 51, Number: 1, Status: model.StatusRunning, RepoID: 1},
+	}, nil)
+	mockStore.On("UpdatePipeline", mock.Anything).Return(nil)
+	mockStore.On("WorkflowGetTree", mock.Anything).Return(nil, assert.AnError)
+
+	count := ReconcileOrphanedAtStartup(mockStore)
+	assert.Equal(t, 1, count, "pipeline kill counts even if workflow walk fails")
+}
+
+// TestKillOrphan_WorkflowUpdateFailureLoggedButContinues covers the
+// WorkflowUpdate error path: failure is logged but doesn't block other
+// workflow updates or the pipeline kill itself.
+func TestKillOrphan_WorkflowUpdateFailureLoggedButContinues(t *testing.T) {
+	mockStore := mocks.NewMockStore(t)
+	repos := []*model.Repo{{ID: 1, FullName: "org/r"}}
+	mockStore.On("RepoListAll", true, mock.Anything).Return(repos, nil)
+	mockStore.On("GetActivePipelineList", repos[0]).Return([]*model.Pipeline{
+		{ID: 52, Number: 1, Status: model.StatusRunning, RepoID: 1},
+	}, nil)
+	mockStore.On("UpdatePipeline", mock.Anything).Return(nil)
+	mockStore.On("WorkflowGetTree", mock.Anything).Return([]*model.Workflow{
+		{ID: 1, State: model.StatusRunning},
+		{ID: 2, State: model.StatusRunning},
+	}, nil)
+	// First WorkflowUpdate fails, second succeeds.
+	mockStore.On("WorkflowUpdate", mock.MatchedBy(func(w *model.Workflow) bool {
+		return w.ID == 1
+	})).Return(assert.AnError)
+	mockStore.On("WorkflowUpdate", mock.MatchedBy(func(w *model.Workflow) bool {
+		return w.ID == 2
+	})).Return(nil)
+
+	count := ReconcileOrphanedAtStartup(mockStore)
+	assert.Equal(t, 1, count, "pipeline still counts as reconciled despite per-workflow update failure")
+}
