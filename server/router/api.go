@@ -15,8 +15,6 @@
 package router
 
 import (
-	"net/http"
-
 	"github.com/gin-gonic/gin"
 	"github.com/rs/zerolog"
 
@@ -290,10 +288,11 @@ func apiRoutes(e *gin.RouterGroup) {
 		// Plugin routes — each StatusHook owns a sub-path under /api/plugins/<name>/
 		registerPluginRoutes(apiBase)
 
-		// Unknown /api/* paths → 404 JSON, not SPA HTML (#27)
-		apiBase.Any("/*path", func(c *gin.Context) {
-			c.JSON(http.StatusNotFound, gin.H{"error": "not found", "path": c.Request.URL.Path})
-		})
+		// NOTE: the "unknown /api/* → 404 JSON" behavior (#27) has moved
+		// to the engine-level NoRoute handler in router.go. Group-level
+		// `Any("/*path")` panics gin's tree as soon as the same prefix
+		// has any parameterized siblings (e.g. PATCH
+		// /api/queue/tasks/:task_id/priority added in #47).
 	}
 }
 
