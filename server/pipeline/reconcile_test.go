@@ -21,7 +21,10 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 
+	"go.woodpecker-ci.org/woodpecker/v3/server"
+	forge_mocks "go.woodpecker-ci.org/woodpecker/v3/server/forge/mocks"
 	"go.woodpecker-ci.org/woodpecker/v3/server/model"
+	services_mocks "go.woodpecker-ci.org/woodpecker/v3/server/services/mocks"
 	"go.woodpecker-ci.org/woodpecker/v3/server/store/mocks"
 )
 
@@ -338,4 +341,113 @@ func TestKillOrphan_WorkflowUpdateFailureLoggedButContinues(t *testing.T) {
 
 	count := ReconcileOrphanedAtStartup(mockStore)
 	assert.Equal(t, 1, count, "pipeline still counts as reconciled despite per-workflow update failure")
+}
+
+// TestKillOrphan_PostsForgeStatusWhenManagerWired locks in the #181 fix:
+// when a reconciler-driven kill happens, the forge gets a final status post
+// so the upstream PR check transitions out of `pending`. fork#44's "skip
+// on agent-disconnect" doesn't apply because reconcile kills don't set
+// workflow.Error to a disconnect signature.
+func TestKillOrphan_PostsForgeStatusWhenManagerWired(t *testing.T) {
+	// Snapshot + restore the global to avoid polluting other tests.
+	prevManager := server.Config.Services.Manager
+	defer func() { server.Config.Services.Manager = prevManager }()
+
+	mockStore := mocks.NewMockStore(t)
+	mockForge := forge_mocks.NewMockForge(t)
+	mockManager := services_mocks.NewMockManager(t)
+	server.Config.Services.Manager = mockManager
+
+	repos := []*model.Repo{{ID: 1, FullName: "org/r", UserID: 42}}
+	mockStore.On("RepoListAll", true, mock.Anything).Return(repos, nil)
+	mockStore.On("GetActivePipelineList", repos[0]).Return([]*model.Pipeline{
+		{ID: 100, Number: 1, Status: model.StatusRunning, RepoID: 1},
+	}, nil)
+	mockStore.On("UpdatePipeline", mock.Anything).Return(nil)
+	workflows := []*model.Workflow{
+		{ID: 50, State: model.StatusRunning, Name: "ci"},
+	}
+	mockStore.On("WorkflowGetTree", mock.Anything).Return(workflows, nil)
+	mockStore.On("WorkflowUpdate", mock.Anything).Return(nil)
+
+	// User + forge lookup
+	mockStore.On("GetUser", int64(42)).Return(&model.User{ID: 42, Login: "u"}, nil)
+	mockManager.On("ForgeFromRepo", repos[0]).Return(mockForge, nil)
+	mockForge.On("Refresh", mock.Anything, mock.Anything, mock.Anything).Return(nil).Maybe()
+	mockForge.On("Status", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
+
+	count := ReconcileOrphanedAtStartup(mockStore)
+	assert.Equal(t, 1, count)
+	mockForge.AssertCalled(t, "Status", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything)
+}
+
+// TestKillOrphan_NoForgeStatusWhenManagerMissing covers the test-context
+// path: when server.Config.Services.Manager is nil (typical in unit tests),
+// the kill still completes but no forge call is attempted. Fail-open
+// behavior — kill is durable regardless of forge wiring.
+func TestKillOrphan_NoForgeStatusWhenManagerMissing(t *testing.T) {
+	prevManager := server.Config.Services.Manager
+	defer func() { server.Config.Services.Manager = prevManager }()
+	server.Config.Services.Manager = nil
+
+	mockStore := mocks.NewMockStore(t)
+	repos := []*model.Repo{{ID: 1, FullName: "org/r", UserID: 42}}
+	mockStore.On("RepoListAll", true, mock.Anything).Return(repos, nil)
+	mockStore.On("GetActivePipelineList", repos[0]).Return([]*model.Pipeline{
+		{ID: 100, Number: 1, Status: model.StatusRunning, RepoID: 1},
+	}, nil)
+	mockStore.On("UpdatePipeline", mock.Anything).Return(nil)
+	mockStore.On("WorkflowGetTree", mock.Anything).Return([]*model.Workflow{}, nil)
+
+	count := ReconcileOrphanedAtStartup(mockStore)
+	assert.Equal(t, 1, count, "kill completes even without a forge manager")
+	// GetUser must NOT be called since we early-return before lookup.
+	mockStore.AssertNotCalled(t, "GetUser")
+}
+
+// TestKillOrphan_ForgeLookupFailureLogged covers the path where the forge
+// service can't be resolved — kill still completes; failure is logged.
+func TestKillOrphan_ForgeLookupFailureLogged(t *testing.T) {
+	prevManager := server.Config.Services.Manager
+	defer func() { server.Config.Services.Manager = prevManager }()
+
+	mockStore := mocks.NewMockStore(t)
+	mockManager := services_mocks.NewMockManager(t)
+	server.Config.Services.Manager = mockManager
+
+	repos := []*model.Repo{{ID: 1, FullName: "org/r", UserID: 42}}
+	mockStore.On("RepoListAll", true, mock.Anything).Return(repos, nil)
+	mockStore.On("GetActivePipelineList", repos[0]).Return([]*model.Pipeline{
+		{ID: 100, Number: 1, Status: model.StatusRunning, RepoID: 1},
+	}, nil)
+	mockStore.On("UpdatePipeline", mock.Anything).Return(nil)
+	mockStore.On("WorkflowGetTree", mock.Anything).Return([]*model.Workflow{}, nil)
+	mockStore.On("GetUser", int64(42)).Return(&model.User{ID: 42}, nil)
+	mockManager.On("ForgeFromRepo", repos[0]).Return(nil, assert.AnError)
+
+	count := ReconcileOrphanedAtStartup(mockStore)
+	assert.Equal(t, 1, count, "kill completes even when forge lookup fails")
+}
+
+// TestKillOrphan_GetUserFailureLogged covers the parallel path where the
+// repo's user can't be loaded — kill still completes; failure is logged.
+func TestKillOrphan_GetUserFailureLogged(t *testing.T) {
+	prevManager := server.Config.Services.Manager
+	defer func() { server.Config.Services.Manager = prevManager }()
+
+	mockStore := mocks.NewMockStore(t)
+	mockManager := services_mocks.NewMockManager(t)
+	server.Config.Services.Manager = mockManager
+
+	repos := []*model.Repo{{ID: 1, FullName: "org/r", UserID: 42}}
+	mockStore.On("RepoListAll", true, mock.Anything).Return(repos, nil)
+	mockStore.On("GetActivePipelineList", repos[0]).Return([]*model.Pipeline{
+		{ID: 100, Number: 1, Status: model.StatusRunning, RepoID: 1},
+	}, nil)
+	mockStore.On("UpdatePipeline", mock.Anything).Return(nil)
+	mockStore.On("WorkflowGetTree", mock.Anything).Return([]*model.Workflow{}, nil)
+	mockStore.On("GetUser", int64(42)).Return(nil, assert.AnError)
+
+	count := ReconcileOrphanedAtStartup(mockStore)
+	assert.Equal(t, 1, count)
 }

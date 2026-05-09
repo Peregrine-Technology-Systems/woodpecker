@@ -15,11 +15,13 @@
 package pipeline
 
 import (
+	"context"
 	"sync"
 	"time"
 
 	"github.com/rs/zerolog/log"
 
+	"go.woodpecker-ci.org/woodpecker/v3/server"
 	"go.woodpecker-ci.org/woodpecker/v3/server/model"
 	"go.woodpecker-ci.org/woodpecker/v3/server/store"
 )
@@ -55,7 +57,7 @@ func ReconcileOrphanedAtStartup(_store store.Store) int {
 			}
 			log.Info().Msgf("reconcile: killing orphaned pipeline %s#%d (was running, no queue task after restart)",
 				repo.FullName, pl.Number)
-			if killOrphan(_store, pl) {
+			if killOrphan(context.Background(), _store, pl, repo) {
 				reconciled++
 			}
 		}
@@ -149,7 +151,7 @@ func (r *OrphanReconciler) Tick(_store store.Store) int {
 				Dur("observed_for", now.Sub(firstSeenAt)).
 				Msgf("reconcile: killing orphaned pipeline %s#%d (running, no queue task across ≥%d ticks)",
 					repo.FullName, pl.Number, r.minObservations)
-			if killOrphan(_store, pl) {
+			if killOrphan(context.Background(), _store, pl, repo) {
 				reconciled++
 				delete(r.firstSeen, pl.ID)
 			}
@@ -177,10 +179,13 @@ func (r *OrphanReconciler) PendingCount() int {
 	return len(r.firstSeen)
 }
 
-// killOrphan marks one pipeline + its running workflows as killed. Returns
-// true on successful pipeline update; workflow update failures are logged
-// but don't reverse the pipeline transition.
-func killOrphan(_store store.Store, pl *model.Pipeline) bool {
+// killOrphan marks one pipeline + its running workflows as killed AND
+// posts a final failure status to the forge so the upstream PR check
+// transitions out of "pending" (#181). Returns true on successful pipeline
+// update; workflow update failures are logged but don't reverse the
+// pipeline transition; forge.Status failures are also logged but never
+// fail the kill — the DB transition is the durable contract.
+func killOrphan(ctx context.Context, _store store.Store, pl *model.Pipeline, repo *model.Repo) bool {
 	pl.Status = model.StatusKilled
 	if err := _store.UpdatePipeline(pl); err != nil {
 		log.Error().Err(err).Msgf("reconcile: failed to update pipeline %d", pl.ID)
@@ -189,6 +194,10 @@ func killOrphan(_store store.Store, pl *model.Pipeline) bool {
 
 	workflows, err := _store.WorkflowGetTree(pl)
 	if err != nil {
+		// Pipeline-kill is durable but we can't update workflows nor
+		// post forge status without the workflow tree. Surface the kill
+		// in DB and return — ReconcileOrphaned will retry next tick if
+		// the workflow tree is still inaccessible.
 		return true
 	}
 	for _, w := range workflows {
@@ -199,5 +208,38 @@ func killOrphan(_store store.Store, pl *model.Pipeline) bool {
 			}
 		}
 	}
+
+	// Reconcile-driven kills happen because the agent never returned —
+	// either the server restarted or the timer's grace period expired.
+	// In both cases the auto-requeue path is unreliable, so post a
+	// terminal failure to GitHub here. fork#44's "skip on agent
+	// disconnect" only applies to the RPC-side path where the agent
+	// REPORTED its disconnect (workflow.Error contains a disconnect
+	// signature); reconcile kills don't set Error, so updatePipelineStatus
+	// will post normally.
+	pl.Workflows = workflows
+	postReconcileForgeStatus(ctx, _store, pl, repo)
 	return true
+}
+
+// postReconcileForgeStatus is a fail-open wrapper around updatePipelineStatus
+// for the reconcile path. Looks up the user and forge service; on any
+// missing dependency (typically tests where server.Config.Services isn't
+// wired) it logs and returns without failing the caller.
+func postReconcileForgeStatus(ctx context.Context, _store store.Store, pl *model.Pipeline, repo *model.Repo) {
+	if server.Config.Services.Manager == nil {
+		log.Debug().Msgf("reconcile: forge status skip — services manager not configured (likely test context)")
+		return
+	}
+	user, err := _store.GetUser(repo.UserID)
+	if err != nil {
+		log.Warn().Err(err).Msgf("reconcile: forge status skip — cannot find user %d for repo %s", repo.UserID, repo.FullName)
+		return
+	}
+	_forge, err := server.Config.Services.Manager.ForgeFromRepo(repo)
+	if err != nil {
+		log.Warn().Err(err).Msgf("reconcile: forge status skip — cannot resolve forge for repo %s", repo.FullName)
+		return
+	}
+	updatePipelineStatus(ctx, _forge, pl, repo, user)
 }
