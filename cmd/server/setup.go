@@ -194,16 +194,19 @@ func setupEvilGlobals(ctx context.Context, c *cli.Command, s store.Store) (err e
 		return fmt.Errorf("could not setup log store: %w", err)
 	}
 
-	// #891: Reconcile orphaned "running" pipelines after restart.
-	// The in-memory queue is lost on restart — pipelines that were running
-	// have no queue task and will never complete. Mark them as killed.
-	pipeline.ReconcileOrphanedAtStartup(s)
+	// #891 / #176 / #188: Reconcile orphaned "running" pipelines.
+	// The reconciler asks the queue which pipelines have active tasks
+	// (Pending / Running / WaitingOnDeps) and only kills the rest.
+	// Heartbeating agents keep their task in q.Running via Extend(); a
+	// disconnected agent's task is moved to q.Pending by
+	// resubmitExpiredPipelines — either way, the queue is the source of
+	// truth for "is this pipeline making progress." This avoids both
+	// the original #170 "kill any running pipeline" misfire AND the
+	// #176 grace-period bandaid that wasn't long enough for normal
+	// pts-build runtimes (5-15 min).
+	pipeline.ReconcileOrphanedAtStartup(s, server.Config.Services.Queue)
 
-	// #170/#176: Run a grace-period reconciler on a 2-minute background timer.
-	// Unlike the startup pass this MUST tolerate transient task-less windows
-	// caused by spot-agent disconnects (WS close 1006) — a pipeline is killed
-	// only after being observed orphaned across consecutive ticks.
-	reconciler := pipeline.NewOrphanReconciler()
+	reconciler := pipeline.NewOrphanReconciler(server.Config.Services.Queue)
 	go func() {
 		ticker := time.NewTicker(2 * time.Minute)
 		defer ticker.Stop()

@@ -16,29 +16,56 @@ package pipeline
 
 import (
 	"context"
-	"sync"
-	"time"
 
 	"github.com/rs/zerolog/log"
 
 	"go.woodpecker-ci.org/woodpecker/v3/server"
 	"go.woodpecker-ci.org/woodpecker/v3/server/model"
+	"go.woodpecker-ci.org/woodpecker/v3/server/queue"
 	"go.woodpecker-ci.org/woodpecker/v3/server/store"
 )
 
-// defaultReconcileMinObservations is the number of consecutive Tick calls a
-// pipeline must appear orphaned in before the background reconciler kills it.
-// At a 2-minute tick interval this gives a 2-4 minute grace window — long
-// enough for a spot agent disconnect (WS close 1006) to reconnect and resume
-// without the pipeline being misread as a permanent orphan (#176).
-const defaultReconcileMinObservations = 2
+// activePipelineSet returns the set of pipeline IDs that have at least one
+// task in the in-memory queue (Pending, Running, or WaitingOnDeps). The
+// reconciler uses this to skip pipelines that are actively being worked on
+// — a heartbeating agent's `Extend()` calls keep its task in q.Running, and
+// a disconnected agent's task is moved by `resubmitExpiredPipelines` from
+// running back to pending (still in the queue), so the queue is the single
+// source of truth for "is this pipeline making progress, or about to."
+//
+// If the queue is nil (test contexts), returns an empty set — every
+// running pipeline is treated as orphaned, matching the legacy aggressive
+// behavior.
+func activePipelineSet(q queue.Queue) map[int64]struct{} {
+	set := make(map[int64]struct{})
+	if q == nil {
+		return set
+	}
+	info := q.Info(context.Background())
+	add := func(tasks []*model.Task) {
+		for _, t := range tasks {
+			if t != nil && t.PipelineID != 0 {
+				set[t.PipelineID] = struct{}{}
+			}
+		}
+	}
+	add(info.Pending)
+	add(info.Running)
+	add(info.WaitingOnDeps)
+	return set
+}
 
-// ReconcileOrphanedAtStartup runs the aggressive reconcile once at server boot
-// (#891). After a restart any DB-running pipeline is treated as orphaned —
-// the in-memory queue dispatch state is gone with the previous process, so a
-// "running" row that wasn't terminal-flushed before shutdown will never make
-// progress unless we kill it.
-func ReconcileOrphanedAtStartup(_store store.Store) int {
+// ReconcileOrphanedAtStartup runs once at server boot (#891). After a
+// restart any DB-running pipeline whose tasks weren't restored to the
+// queue is genuinely orphaned — the in-memory dispatch state is gone and
+// the only way the row will ever transition is if we kill it.
+//
+// At startup the queue HAS been populated by `WithTaskStore` from the
+// persistent task store (per `server/queue/persistent.go`), so a row
+// running with no queue task is provably lost. Killing immediately is
+// safe.
+func ReconcileOrphanedAtStartup(_store store.Store, q queue.Queue) int {
+	active := activePipelineSet(q)
 	repos, err := _store.RepoListAll(true, &model.ListOptions{Page: 1, PerPage: 200})
 	if err != nil {
 		log.Error().Err(err).Msg("reconcile: failed to list repos")
@@ -53,6 +80,11 @@ func ReconcileOrphanedAtStartup(_store store.Store) int {
 		}
 		for _, pl := range pipelines {
 			if pl.Status != model.StatusRunning {
+				continue
+			}
+			if _, hasTask := active[pl.ID]; hasTask {
+				log.Debug().Msgf("reconcile: %s#%d has active queue task — skipping (post-restart restore)",
+					repo.FullName, pl.Number)
 				continue
 			}
 			log.Info().Msgf("reconcile: killing orphaned pipeline %s#%d (was running, no queue task after restart)",
@@ -69,65 +101,47 @@ func ReconcileOrphanedAtStartup(_store store.Store) int {
 	return reconciled
 }
 
-// ReconcileOrphaned is the historical entry point used by tests and any
-// caller that wants the aggressive (startup-equivalent) behavior. New
-// background-timer callers must use OrphanReconciler.Tick instead, which
-// applies a grace period.
+// ReconcileOrphaned is the historical entry point. Kept for back-compat
+// with callers that don't want to wire up the queue dependency — but the
+// queue-less form treats every running pipeline as a kill candidate, which
+// is only correct at startup. Callers in steady-state code MUST use
+// OrphanReconciler.Tick or pass the queue explicitly to
+// ReconcileOrphanedAtStartup.
 func ReconcileOrphaned(_store store.Store) int {
-	return ReconcileOrphanedAtStartup(_store)
+	return ReconcileOrphanedAtStartup(_store, nil)
 }
 
-// OrphanReconciler is the long-lived state for the 2-minute background
-// reconcile timer (#170). It records the first time each "running" pipeline
-// was observed without progress and only kills a pipeline after it has been
-// observed orphaned across at least minObservations consecutive ticks. This
-// avoids the #176 misfire where a spot-agent disconnect briefly leaves a
-// legitimate pipeline taskless before the next dispatch.
-//
-// The startup reconcile (ReconcileOrphanedAtStartup) does NOT use this — at
-// startup the queue dispatch state is provably empty and there is no
-// possibility of in-flight redelivery.
+// OrphanReconciler holds the queue handle for the steady-state timer.
+// On every Tick it asks the queue which pipelines have active tasks and
+// only kills the rest. The earlier "grace period across consecutive ticks"
+// (#176) was a workaround for the same symptom — the queue check is the
+// principled replacement.
 type OrphanReconciler struct {
-	mu              sync.Mutex
-	firstSeen       map[int64]time.Time
-	minObservations int
-	now             func() time.Time // injected for tests
+	queue queue.Queue
 }
 
-// NewOrphanReconciler builds a reconciler with the default grace window.
-func NewOrphanReconciler() *OrphanReconciler {
-	return &OrphanReconciler{
-		firstSeen:       map[int64]time.Time{},
-		minObservations: defaultReconcileMinObservations,
-		now:             time.Now,
-	}
+// NewOrphanReconciler builds a queue-aware reconciler. The queue MUST be
+// the same instance used by the dispatcher; otherwise the active-task
+// snapshot won't reflect agent heartbeats.
+func NewOrphanReconciler(q queue.Queue) *OrphanReconciler {
+	return &OrphanReconciler{queue: q}
 }
 
-// Tick is called periodically by the background timer. It returns the number
-// of pipelines killed on this tick.
-//
-// Algorithm:
-//  1. Walk every active "running" pipeline.
-//  2. If first time observed: record in firstSeen, do NOT kill — let the
-//     next dispatch loop have a chance to redeliver (handles spot-agent
-//     reconnect after WS close 1006).
-//  3. If observed before AND still running on this tick: kill.
-//  4. After the walk: prune firstSeen entries for pipelines no longer
-//     in the orphan set (recovered, or already terminal).
+// Tick walks every running pipeline and kills those without a backing
+// queue task. Heartbeating agents keep their task in `q.Running` (via
+// Extend); a disconnected agent's task is moved to `q.Pending` by
+// resubmitExpiredPipelines (still in the queue). Either way, the queue
+// is the source of truth for "is this pipeline making progress."
 func (r *OrphanReconciler) Tick(_store store.Store) int {
+	active := activePipelineSet(r.queue)
+
 	repos, err := _store.RepoListAll(true, &model.ListOptions{Page: 1, PerPage: 200})
 	if err != nil {
 		log.Error().Err(err).Msg("reconcile: failed to list repos")
 		return 0
 	}
 
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	now := r.now()
-	seenThisTick := make(map[int64]struct{})
 	reconciled := 0
-
 	for _, repo := range repos {
 		pipelines, err := _store.GetActivePipelineList(repo)
 		if err != nil {
@@ -137,46 +151,23 @@ func (r *OrphanReconciler) Tick(_store store.Store) int {
 			if pl.Status != model.StatusRunning {
 				continue
 			}
-			seenThisTick[pl.ID] = struct{}{}
-
-			firstSeenAt, observedBefore := r.firstSeen[pl.ID]
-			if !observedBefore {
-				r.firstSeen[pl.ID] = now
-				log.Debug().Msgf("reconcile: observed taskless candidate %s#%d, awaiting grace period",
+			if _, hasTask := active[pl.ID]; hasTask {
+				log.Debug().Msgf("reconcile: %s#%d has active queue task — skipping",
 					repo.FullName, pl.Number)
 				continue
 			}
-
-			log.Info().
-				Dur("observed_for", now.Sub(firstSeenAt)).
-				Msgf("reconcile: killing orphaned pipeline %s#%d (running, no queue task across ≥%d ticks)",
-					repo.FullName, pl.Number, r.minObservations)
+			log.Info().Msgf("reconcile: killing orphaned pipeline %s#%d (running, no queue task)",
+				repo.FullName, pl.Number)
 			if killOrphan(context.Background(), _store, pl, repo) {
 				reconciled++
-				delete(r.firstSeen, pl.ID)
 			}
-		}
-	}
-
-	for id := range r.firstSeen {
-		if _, stillOrphan := seenThisTick[id]; !stillOrphan {
-			delete(r.firstSeen, id)
 		}
 	}
 
 	if reconciled > 0 {
-		log.Info().Msgf("reconcile: killed %d orphaned running pipelines after grace period", reconciled)
+		log.Info().Msgf("reconcile: killed %d orphaned running pipelines", reconciled)
 	}
 	return reconciled
-}
-
-// PendingCount reports how many pipelines are currently in the grace window
-// (observed once but not yet eligible for kill). Used by tests; can also be
-// surfaced as a metric if needed.
-func (r *OrphanReconciler) PendingCount() int {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return len(r.firstSeen)
 }
 
 // killOrphan marks one pipeline + its running workflows as killed AND
@@ -194,10 +185,6 @@ func killOrphan(ctx context.Context, _store store.Store, pl *model.Pipeline, rep
 
 	workflows, err := _store.WorkflowGetTree(pl)
 	if err != nil {
-		// Pipeline-kill is durable but we can't update workflows nor
-		// post forge status without the workflow tree. Surface the kill
-		// in DB and return — ReconcileOrphaned will retry next tick if
-		// the workflow tree is still inaccessible.
 		return true
 	}
 	for _, w := range workflows {
@@ -209,14 +196,6 @@ func killOrphan(ctx context.Context, _store store.Store, pl *model.Pipeline, rep
 		}
 	}
 
-	// Reconcile-driven kills happen because the agent never returned —
-	// either the server restarted or the timer's grace period expired.
-	// In both cases the auto-requeue path is unreliable, so post a
-	// terminal failure to GitHub here. fork#44's "skip on agent
-	// disconnect" only applies to the RPC-side path where the agent
-	// REPORTED its disconnect (workflow.Error contains a disconnect
-	// signature); reconcile kills don't set Error, so updatePipelineStatus
-	// will post normally.
 	pl.Workflows = workflows
 	postReconcileForgeStatus(ctx, _store, pl, repo)
 	return true
