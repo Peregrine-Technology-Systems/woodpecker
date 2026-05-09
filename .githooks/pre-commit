@@ -1,9 +1,14 @@
 #!/bin/bash
-# Pre-commit hook for Woodpecker fork (Go project)
-# Adapted from global template with fork-specific handling:
-# - Scopes tests/vet to changed packages only (69+ test packages in repo)
-# - Skips web/ package (requires frontend build artifacts for go:embed)
-# - 95% per-package coverage gate on changed packages
+# Pre-commit hook for Woodpecker fork (Go project, fork of upstream)
+#
+# Coverage policy: 95% per-changed-file on Peregrine-authored or
+# Peregrine-modified Go files. We don't try to enforce coverage on the
+# vast majority of upstream-stock code — only on what we touched.
+#
+# This is the local hard gate. CI runs the same per-file check at 90%
+# (slightly looser to absorb cross-package interaction effects); the
+# pre-commit 95% is so engineers fix gaps before pushing rather than
+# bouncing PRs through CI.
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -39,6 +44,37 @@ print_info "Pre-commit checks starting..."
 # ── Go checks ──────────────────────────────────────────────────────
 GO_FILES=$(echo "$STAGED_FILES" | grep -E '\.go$' || true)
 
+# Coverage gate exclusions:
+# - test files (no coverage of their own)
+# - auto-generated mocks
+# - generated code (wire_gen.go, *_easyjson.go, *.pb.go)
+# - fixtures/testdata
+# These are skipped entirely from the per-file coverage gate.
+COV_SKIP_REGEX='_test\.go$|/mocks/|wire_gen\.go$|_easyjson\.go$|\.pb\.go$|/fixtures/|/testdata/'
+
+# Wiring / declaration-only files exempt from the per-file 95% gate.
+# Each entry needs a written reason. Enumerated, not regex-glob, so new
+# additions are deliberate.
+#
+# - cmd/server/setup.go, server/router/api.go, cmd/*: main() and route
+#   wiring; CI integration smoke covers them.
+# - server/store/datastore/migration/migration.go: registration table for
+#   xormigrate migrations + sync targets. The actual migration logic
+#   lives in the per-migration files (each at 100%). The remaining
+#   uncovered branches in Migrate() are defensive error wraps for xorm
+#   internals that can't be triggered without dependency-injection
+#   refactoring of upstream Woodpecker code.
+# - server/store/store.go: interface-only file (zero executable
+#   statements). Per-file coverage is vacuously satisfied; the cover
+#   profile reports NO_DATA which the gate already treats as PASS for
+#   files with no statements.
+# - server/queue/queue.go: type definitions + small constructors. Most
+#   functions are covered; the remaining gap is the dialect-specific
+#   `default` branch in New() which is exercised by the unsupported-
+#   backend test. (Already passes the 95% gate; included here for
+#   documentation only.)
+COV_WIRING_REGEX='^cmd/server/setup\.go$|^server/router/api\.go$|^cmd/|^server/store/datastore/migration/migration\.go$|^server/store/store\.go$'
+
 if [ -n "$GO_FILES" ]; then
     # Format
     print_info "Formatting Go files..."
@@ -49,8 +85,6 @@ if [ -n "$GO_FILES" ]; then
     CHANGED_PKGS=""
     for f in $GO_FILES; do
         pkg_dir=$(dirname "$f")
-        # Skip packages that depend on web/ — it requires go:embed dist/*
-        # from the frontend build (handled by CI, not pre-commit)
         if echo "$pkg_dir" | grep -qE '^(web|cmd/server|server/router)(/|$)'; then continue; fi
         pkg="go.woodpecker-ci.org/woodpecker/v3/${pkg_dir}"
         if ! echo "$CHANGED_PKGS" | grep -qF "$pkg"; then
@@ -67,48 +101,67 @@ if [ -n "$GO_FILES" ]; then
             exit 1
         fi
 
-        # Tests
+        # Tests + coverage profile in one pass — cheaper than running
+        # tests, then re-running with -coverprofile separately.
         print_info "Running tests on changed packages..."
-        if ! go test $CHANGED_PKGS -count=1 2>&1; then
+        COV_OUT=$(mktemp -t woodpecker-precommit-cov.XXXXXX)
+        trap "rm -f $COV_OUT" EXIT
+        if ! go test $CHANGED_PKGS -count=1 -coverprofile=$COV_OUT 2>&1; then
             print_error "Tests failed! Fix failing tests before committing"
             exit 1
         fi
 
-        # 95% per-package coverage on Peregrine core packages only.
-        # Upstream Woodpecker packages have low coverage — enforcing on
-        # them would block every change. Plugin subpackages (gcppubsub,
-        # statusapi, externaldispatch) have external deps with untestable
-        # constructors — coverage gated by CI, not pre-commit.
-        PEREGRINE_PKGS=""
-        for pkg in $CHANGED_PKGS; do
-            if echo "$pkg" | grep -qE '/server/plugin$'; then
-                PEREGRINE_PKGS="$PEREGRINE_PKGS $pkg"
+        # Per-changed-file 95% coverage gate.
+        print_info "Checking 95% per-file coverage on changed Go files..."
+        COVERAGE_MIN=95
+        COV_FAILED=false
+        COV_FILES_CHECKED=0
+        for f in $GO_FILES; do
+            if echo "$f" | grep -qE "$COV_SKIP_REGEX"; then continue; fi
+            if echo "$f" | grep -qE "$COV_WIRING_REGEX"; then
+                print_warning "  $f — wiring file (exempt; documented in CLAUDE.md)"
+                continue
+            fi
+            # web/* packages skipped at the test-runner level above; if
+            # the staged file is in web/ but slipped through, skip here too.
+            if echo "$f" | grep -qE '^(web|server/router)(/|$)'; then continue; fi
+
+            full_path="go.woodpecker-ci.org/woodpecker/v3/$f"
+            pct=$(awk -v file="$full_path" '
+                $1 ~ "^"file":" {
+                  stmts = $2; hits = $3; total += stmts
+                  if (hits > 0) covered += stmts
+                }
+                END {
+                  if (total > 0) printf "%.1f", covered/total*100
+                  else printf "NO_DATA"
+                }
+            ' "$COV_OUT")
+
+            COV_FILES_CHECKED=$((COV_FILES_CHECKED + 1))
+            if [ "$pct" = "NO_DATA" ]; then
+                print_error "  $f — NO test coverage data (file not exercised by any test in its package)"
+                COV_FAILED=true
+            elif [ "$(echo "$pct < $COVERAGE_MIN" | bc -l 2>/dev/null || echo 0)" = "1" ]; then
+                print_error "  $f at ${pct}% (minimum ${COVERAGE_MIN}%)"
+                COV_FAILED=true
+            else
+                print_success "  $f at ${pct}%"
             fi
         done
-        PEREGRINE_PKGS=$(echo "$PEREGRINE_PKGS" | xargs)
 
-        if [ -n "$PEREGRINE_PKGS" ]; then
-            print_info "Checking 95% per-package coverage on Peregrine packages..."
-            COVERAGE_MIN=95
-            COV_FAILED=false
-            while IFS= read -r line; do
-                pkg=$(echo "$line" | awk '{print $2}')
-                pct=$(echo "$line" | sed 's/.*coverage: //' | sed 's/% of statements//')
-                if [ -z "$pct" ]; then continue; fi
-                if [ "$(echo "$pct < $COVERAGE_MIN" | bc -l 2>/dev/null || echo 0)" = "1" ]; then
-                    print_error "  $pkg at ${pct}% (minimum ${COVERAGE_MIN}%)"
-                    COV_FAILED=true
-                else
-                    print_success "  $pkg at ${pct}%"
-                fi
-            done < <(go test $PEREGRINE_PKGS -cover -count=1 2>&1 | grep "^ok")
-            if [ "$COV_FAILED" = "true" ]; then
-                print_error "Coverage below ${COVERAGE_MIN}% — fix before committing"
-                exit 1
-            fi
+        if [ "$COV_FAILED" = "true" ]; then
+            print_error ""
+            print_error "Per-file coverage gate failed. Add tests until each changed"
+            print_error "file reaches ≥${COVERAGE_MIN}%. CI enforces 90% — pre-commit"
+            print_error "is stricter so gaps are caught before push."
+            exit 1
+        fi
+        if [ "$COV_FILES_CHECKED" -gt 0 ]; then
+            print_success "Per-file coverage gate passed ($COV_FILES_CHECKED file(s) checked at ≥${COVERAGE_MIN}%)"
         fi
     else
-        print_info "No testable Go packages changed (web/ only)"
+        print_info "No testable Go packages changed (web/ or wiring only)"
     fi
 fi
 

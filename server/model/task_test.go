@@ -87,3 +87,80 @@ func TestTask_GetLabels(t *testing.T) {
 		}, task.Labels)
 	})
 }
+
+func TestTask_TableName(t *testing.T) {
+	assert.Equal(t, "tasks", Task{}.TableName())
+}
+
+func TestTask_String(t *testing.T) {
+	task := &Task{
+		ID:           "abc-123",
+		Dependencies: []string{"dep1", "dep2"},
+		DepStatus:    map[string]StatusValue{"dep1": StatusSuccess},
+	}
+	got := task.String()
+	assert.Contains(t, got, "abc-123")
+	assert.Contains(t, got, "dep1")
+}
+
+func TestTask_ShouldRun(t *testing.T) {
+	t.Run("default RunOn (nil) and all deps successful — should run", func(t *testing.T) {
+		task := &Task{
+			DepStatus: map[string]StatusValue{
+				"dep1": StatusSuccess,
+				"dep2": StatusSuccess,
+			},
+		}
+		assert.True(t, task.ShouldRun())
+	})
+
+	t.Run("default RunOn (nil) and one dep failed — should NOT run", func(t *testing.T) {
+		task := &Task{
+			DepStatus: map[string]StatusValue{
+				"dep1": StatusSuccess,
+				"dep2": StatusFailure,
+			},
+		}
+		assert.False(t, task.ShouldRun())
+	})
+
+	t.Run("RunOn=[failure] and one dep failed — should run", func(t *testing.T) {
+		task := &Task{
+			RunOn:     []string{string(StatusFailure)},
+			DepStatus: map[string]StatusValue{"dep1": StatusFailure},
+		}
+		assert.True(t, task.ShouldRun())
+	})
+
+	t.Run("RunOn=[failure] and all deps successful — should NOT run", func(t *testing.T) {
+		task := &Task{
+			RunOn:     []string{string(StatusFailure)},
+			DepStatus: map[string]StatusValue{"dep1": StatusSuccess},
+		}
+		assert.False(t, task.ShouldRun())
+	})
+
+	t.Run("RunOn=[success,failure] — always run", func(t *testing.T) {
+		task := &Task{
+			RunOn:     []string{string(StatusSuccess), string(StatusFailure)},
+			DepStatus: map[string]StatusValue{"dep1": StatusSuccess},
+		}
+		assert.True(t, task.ShouldRun())
+	})
+
+	t.Run("RunOn explicitly empty — same as default", func(t *testing.T) {
+		task := &Task{
+			RunOn:     []string{},
+			DepStatus: map[string]StatusValue{"dep1": StatusSuccess},
+		}
+		assert.True(t, task.ShouldRun())
+	})
+
+	t.Run("RunOn=[other] — neither success nor failure", func(t *testing.T) {
+		task := &Task{
+			RunOn:     []string{"unknown"},
+			DepStatus: map[string]StatusValue{"dep1": StatusSuccess},
+		}
+		assert.False(t, task.ShouldRun())
+	})
+}
