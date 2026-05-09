@@ -164,3 +164,7 @@ func TestTask_ShouldRun(t *testing.T) {
 		assert.False(t, task.ShouldRun())
 	})
 }
+
+func TestPriorityAudit_TableName(t *testing.T) {
+	assert.Equal(t, "priority_audit", PriorityAudit{}.TableName())
+}

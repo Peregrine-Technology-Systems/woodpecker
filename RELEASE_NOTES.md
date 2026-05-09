@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- test: model/priority_audit.go to 100% — added TableName test (#48 follow-up)
+- feat: priority_audit table + `GET /api/queue/audit` paginated endpoint — append-only record of every queue priority mutation written by the priority PATCH handler (#47). Cursor-paginated by id (`?limit=N&before=<id>`); default limit 50, max 200. Read access is `MustUser`-gated (any authenticated SSO user can see the trail; admin gating is reserved for the mutation path). Required for SOC 2 CC7.2 / ISO 27001 A.12.4 traceability since the audit-trail-as-deterrent is the design's only check on reorder authority. task_id is stored as TEXT (Task.ID is a string composite, not BIGINT as the issue's Postgres-flavored DDL suggested); no FK constraint (Woodpecker doesn't model FKs and SQLite needs `PRAGMA foreign_keys=ON` to enforce them). (#48)
 - test: server/queue/fifo.go to ≥95% per-file coverage — dispatch hook claim/decline, pause-skips-process, depsInQueue running branch, updateDepStatusInQueue waitingOnDeps propagation (#46 follow-up)
 - feat: dispatcher inserts pending tasks by priority — `server/queue/fifo.go` keeps `q.pending` sorted by `Priority DESC` with FIFO within each priority bucket. `PushAtOnce`, the `filterWaiting` re-queue (when deps clear), and the `resubmitExpiredPipelines` retry path all use the same `insertByPriority` helper. Pre-#46 `PushFront` on retry would have let a low-priority expired task jump ahead of high-priority pending tasks; that's gone. Default priority 0 makes existing behavior identical (regression-tested). (#46)
 - chore: pre-commit hook enforces 95% per-file coverage on changed Go files (#45 follow-up)

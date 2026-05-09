@@ -186,6 +186,15 @@ func apiRoutes(e *gin.RouterGroup) {
 			queue.POST("/resume", api.ResumeQueue)
 			queue.GET("/norunningpipelines", api.BlockTilQueueHasRunningItem)
 		}
+		// Audit-log read access is open to any authenticated SSO user
+		// (#48) — the trail is a transparency surface for all reorders,
+		// so visibility shouldn't be admin-gated. Mirrors the pattern
+		// used by readGlobalSecrets vs secrets below.
+		queueAudit := apiBase.Group("/queue")
+		{
+			queueAudit.Use(session.MustUser())
+			queueAudit.GET("/audit", api.GetQueueAudit)
+		}
 
 		// global secrets can be read without actual values by any user
 		readGlobalSecrets := apiBase.Group("/secrets")
