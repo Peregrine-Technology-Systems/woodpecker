@@ -3,6 +3,8 @@
 ## Unreleased
 
 - feat: dispatcher inserts pending tasks by priority — `server/queue/fifo.go` keeps `q.pending` sorted by `Priority DESC` with FIFO within each priority bucket. `PushAtOnce`, the `filterWaiting` re-queue (when deps clear), and the `resubmitExpiredPipelines` retry path all use the same `insertByPriority` helper. Pre-#46 `PushFront` on retry would have let a low-priority expired task jump ahead of high-priority pending tasks; that's gone. Default priority 0 makes existing behavior identical (regression-tested). (#46)
+- chore: pre-commit hook enforces 95% per-file coverage on changed Go files (#45 follow-up)
+- test: model/task.go to 100% — added Task.TableName, String, ShouldRun-across-all-RunOn-permutations (#45 follow-up)
 - feat: add `priority` and `created` columns to the `tasks` table — foundation for the queue control plane (peregrine-grafana#184). Default priority=0 preserves FIFO; created is auto-filled by xorm on insert and is the secondary sort key inside a priority bucket. `TaskList()` now orders by `priority DESC, created ASC` so the persistent-queue restore at server startup seeds the in-memory queue in dispatch order. Composite index `priority_created` on both columns. Foundation for the dispatcher (#46), audit table (#48), and admin reorder API (#47). (#45)
 - fix: startup scan for corrupt pipeline JSON columns — logs WARN per corrupt (pipeline_id, column) pair and summary at server boot; surfaces rows silently skipped by runtime skip-and-log (#64)
 - docs: ARCHITECTURE.md d3ci42 environment audit — port map, service units, config files, GCP SM secrets, full crontab, healthcheck.sh 5-check description, JWT lifecycle updated post-#92 (#66)
