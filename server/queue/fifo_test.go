@@ -1185,6 +1185,117 @@ func TestFifoPriority_MultipleHighPriorityArrivals(t *testing.T) {
 		"vip-1 arrived first → dispatches first within its priority bucket")
 }
 
+// TestFifoUpdatePriority_RepositionsPending verifies the #47 contract:
+// a pending task's priority can be raised in-flight and the dispatch order
+// reflects the new value immediately.
+func TestFifoUpdatePriority_RepositionsPending(t *testing.T) {
+	ctx, cancel, q := setupTestQueue(t)
+	defer cancel(nil)
+
+	assert.NoError(t, q.PushAtOnce(ctx, []*model.Task{
+		{ID: "a", Priority: 0},
+		{ID: "b", Priority: 0},
+		{ID: "c", Priority: 0},
+	}))
+	assert.Equal(t, []string{"a", "b", "c"}, pendingIDs(q))
+
+	old, err := q.UpdatePriority("c", 5)
+	assert.NoError(t, err)
+	assert.EqualValues(t, 0, old)
+	assert.Equal(t, []string{"c", "a", "b"}, pendingIDs(q),
+		"raising c's priority moves it to the front of the priority-5 bucket")
+}
+
+// TestFifoUpdatePriority_LoweringPriority — symmetric guard: lowering a
+// task's priority moves it to the back of its new bucket.
+func TestFifoUpdatePriority_LoweringPriority(t *testing.T) {
+	ctx, cancel, q := setupTestQueue(t)
+	defer cancel(nil)
+
+	assert.NoError(t, q.PushAtOnce(ctx, []*model.Task{
+		{ID: "high1", Priority: 5},
+		{ID: "high2", Priority: 5},
+		{ID: "low", Priority: 0},
+	}))
+	assert.Equal(t, []string{"high1", "high2", "low"}, pendingIDs(q))
+
+	old, err := q.UpdatePriority("high1", 0)
+	assert.NoError(t, err)
+	assert.EqualValues(t, 5, old)
+	assert.Equal(t, []string{"high2", "low", "high1"}, pendingIDs(q),
+		"high1 dropped to priority=0; lands at the back of the priority-0 bucket")
+}
+
+// TestFifoUpdatePriority_NotFoundForRunning — running tasks are not in
+// q.pending; UpdatePriority returns ErrNotFound so the handler can map
+// that to HTTP 409.
+func TestFifoUpdatePriority_NotFoundForRunning(t *testing.T) {
+	ctx, cancel, q := setupTestQueue(t)
+	defer cancel(nil)
+
+	assert.NoError(t, q.PushAtOnce(ctx, []*model.Task{{ID: "x", Priority: 0}}))
+	waitForProcess()
+	got, err := q.Poll(ctx, 1, filterFnTrue)
+	assert.NoError(t, err)
+	assert.NotNil(t, got)
+
+	_, err = q.UpdatePriority("x", 5)
+	assert.ErrorIs(t, err, ErrNotFound)
+}
+
+// TestFifoUpdatePriority_NotFoundForUnknown — non-existent task returns
+// ErrNotFound (handler maps to 409 with a clear "not pending" message).
+func TestFifoUpdatePriority_NotFoundForUnknown(t *testing.T) {
+	_, cancel, q := setupTestQueue(t)
+	defer cancel(nil)
+
+	_, err := q.UpdatePriority("does-not-exist", 5)
+	assert.ErrorIs(t, err, ErrNotFound)
+}
+
+// TestFifoUpdatePriority_WaitingOnDeps — task whose deps are unmet has
+// its priority field mutated; when filterWaiting moves it back to pending
+// the new priority drives placement.
+func TestFifoUpdatePriority_WaitingOnDeps(t *testing.T) {
+	ctx, cancel, q := setupTestQueue(t)
+	defer cancel(nil)
+
+	assert.NoError(t, q.PushAtOnce(ctx, []*model.Task{{ID: "low", Priority: 0}}))
+
+	dep := "missing"
+	waiter := &model.Task{
+		ID:           "waiter",
+		Priority:     0,
+		Dependencies: []string{dep},
+		DepStatus:    map[string]model.StatusValue{dep: ""},
+	}
+	assert.NoError(t, q.PushAtOnce(ctx, []*model.Task{waiter}))
+
+	q.Lock()
+	for e := q.pending.Front(); e != nil; e = e.Next() {
+		t, _ := e.Value.(*model.Task)
+		if t.ID == "waiter" {
+			q.pending.Remove(e)
+			q.waitingOnDeps.PushBack(t)
+			break
+		}
+	}
+	q.Unlock()
+
+	old, err := q.UpdatePriority("waiter", 10)
+	assert.NoError(t, err)
+	assert.EqualValues(t, 0, old)
+
+	q.Lock()
+	waiter.Dependencies = nil
+	waiter.DepStatus = nil
+	q.filterWaiting()
+	q.Unlock()
+
+	assert.Equal(t, []string{"waiter", "low"}, pendingIDs(q),
+		"elevated priority on the waiting task lands it ahead of 'low' once filterWaiting re-inserts")
+}
+
 // TestFifoPriority_FilterWaitingPreservesPriority covers the filterWaiting
 // path: a high-priority task whose deps just cleared must dispatch ahead
 // of any low-priority tasks already pending.

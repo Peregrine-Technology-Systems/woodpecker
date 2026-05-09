@@ -166,3 +166,27 @@ func TestMigrate(t *testing.T) {
 	assert.NoError(t, Migrate(t.Context(), engine, true))
 	closeDB()
 }
+
+// TestMigrate_ClosedEngineFails covers the error paths in Migrate (and
+// syncAll's wrap) — IsTableExist returns an error when the engine has
+// already been closed.
+func TestMigrate_ClosedEngineFails(t *testing.T) {
+	engine, err := xorm.NewEngine("sqlite3", ":memory:")
+	require.NoError(t, err)
+	require.NoError(t, engine.Close())
+
+	err = Migrate(t.Context(), engine, true)
+	assert.Error(t, err, "Migrate against a closed engine should fail")
+}
+
+// TestSyncAll_ClosedEngineWrapsError covers the syncAll-level error wrap
+// when the underlying engine is closed.
+func TestSyncAll_ClosedEngineWrapsError(t *testing.T) {
+	engine, err := xorm.NewEngine("sqlite3", ":memory:")
+	require.NoError(t, err)
+	require.NoError(t, engine.Close())
+
+	err = syncAll(engine)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "sync error", "error message should reference sync failure")
+}

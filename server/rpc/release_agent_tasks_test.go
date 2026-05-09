@@ -45,6 +45,9 @@ func (q *stubQueue) Pause()                             {}
 func (q *stubQueue) Resume()                            {}
 func (q *stubQueue) KickAgentWorkers(int64)             {}
 func (q *stubQueue) SetDispatchHook(queue.DispatchFunc) {}
+func (q *stubQueue) UpdatePriority(string, int64) (int64, error) {
+	return 0, queue.ErrNotFound
+}
 
 func TestReleaseAgentTasks_NoOrphanedTasks(t *testing.T) {
 	q := &stubQueue{info: queue.InfoT{}}

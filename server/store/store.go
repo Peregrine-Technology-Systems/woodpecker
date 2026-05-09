@@ -155,6 +155,10 @@ type Store interface {
 	TaskList() ([]*model.Task, error)
 	TaskInsert(*model.Task) error
 	TaskDelete(string) error
+	// UpdateTaskPriority sets the priority column on a single tasks row.
+	// Used by the priority PATCH handler (#47) to keep the persistent
+	// row in sync with the in-memory queue mutation.
+	UpdateTaskPriority(taskID string, priority int64) error
 
 	// PriorityAudit (#48): append-only audit of task-priority mutations.
 	// Insert is called by the priority PATCH handler (#47); List is the
