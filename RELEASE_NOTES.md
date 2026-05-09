@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- test: model/priority_audit.go to 100% — added TableName test (#48 follow-up)
 - feat: priority_audit table + `GET /api/queue/audit` paginated endpoint — append-only record of every queue priority mutation written by the priority PATCH handler (#47). Cursor-paginated by id (`?limit=N&before=<id>`); default limit 50, max 200. Read access is `MustUser`-gated (any authenticated SSO user can see the trail; admin gating is reserved for the mutation path). Required for SOC 2 CC7.2 / ISO 27001 A.12.4 traceability since the audit-trail-as-deterrent is the design's only check on reorder authority. task_id is stored as TEXT (Task.ID is a string composite, not BIGINT as the issue's Postgres-flavored DDL suggested); no FK constraint (Woodpecker doesn't model FKs and SQLite needs `PRAGMA foreign_keys=ON` to enforce them). (#48)
 - chore: pre-commit hook enforces 95% per-file coverage on changed Go files (#45 follow-up)
 - test: model/task.go to 100% — added Task.TableName, String, ShouldRun-across-all-RunOn-permutations (#45 follow-up)
