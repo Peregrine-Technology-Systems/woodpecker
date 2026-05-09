@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- fix: startup scan for corrupt pipeline JSON columns — logs WARN per corrupt (pipeline_id, column) pair and summary at server boot; surfaces rows silently skipped by runtime skip-and-log (#64)
+- docs: ARCHITECTURE.md d3ci42 environment audit — port map, service units, config files, GCP SM secrets, full crontab, healthcheck.sh 5-check description, JWT lifecycle updated post-#92 (#66)
+
+
 - fix: agent proactively reconnects at 75% of JWT token lifetime when idle — prevents expiry-caused WS rejection without requiring manual intervention (#116; proto-based extend refresh is a follow-up)
 - fix: pipeline status stays 'running' while any workflow is still executing — previously a canceled cleanup workflow could collapse a running compile to 'killed' (#111)
 - feat: woodpecker-deploy.sh auto-rotates JWT secret and API token on every deploy — eliminates manual token rotation after server restarts (#92)

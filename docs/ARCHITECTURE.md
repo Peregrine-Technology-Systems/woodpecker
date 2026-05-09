@@ -2,6 +2,134 @@
 
 This document describes the Peregrine-specific architecture decisions and operational contracts for the woodpecker-server fork. Upstream Woodpecker documentation covers the generic CI semantics; this file covers only what differs or is specific to our deployment.
 
+## d3ci42 Operating Environment
+
+### Port Map
+
+| Port | Listener | Purpose |
+|------|----------|---------|
+| 80 | Caddy | HTTP → HTTPS redirect |
+| 443 | Caddy | TLS termination — routes to 8000/9000 by content type |
+| 8000 | woodpecker-server | HTTP API, web UI, WebSocket agent transport (`/ws/agent`) |
+| 9000 | woodpecker-server | gRPC agent transport (direct, Caddy proxies `application/grpc*`) |
+| 9001 | woodpecker-server | Prometheus metrics endpoint (scraped by monitoring droplet) |
+| 8081 | scaler | Prometheus metrics endpoint (scraped via `metrics.d3ci42.peregrinetechsys.net/scaler/`) |
+
+Caddy routes (`/etc/caddy/Caddyfile`):
+1. `Content-Type: application/grpc*` → h2c `127.0.0.1:9000` (gRPC agents)
+2. `/ws/agent*` → `127.0.0.1:8000` with `flush_interval -1` and `keepalive off` (WS agents, long-lived, no buffering)
+3. Everything else → `127.0.0.1:8000` with `lb_try_duration 30s` (web UI, retried during restarts)
+
+### Service Units
+
+| Service | Binary | EnvironmentFile(s) | Restart |
+|---------|--------|-------------------|---------|
+| `woodpecker-server.service` | `/opt/woodpecker/server/current/woodpecker-server` | `/etc/woodpecker/server.env`, `/etc/woodpecker/secrets.env` | `on-failure` |
+| `woodpecker-agent.service` | `/opt/woodpecker/woodpecker-agent` | `/etc/woodpecker/agent.env`, `/etc/woodpecker/secrets.env` | `on-failure` |
+| `scaler.service` | `/opt/woodpecker/scaler/current/scaler` | `/etc/woodpecker/secrets.env` | `on-failure` |
+| `caddy.service` | `/usr/bin/caddy` | — | `no` (managed by OS package) |
+
+WorkingDirectory for all Woodpecker services: `/var/lib/woodpecker`  
+WorkingDirectory for scaler: `/opt/woodpecker`
+
+Restart ordering: `woodpecker-agent.service` declares `Wants=woodpecker-server.service` (not `Requires=` — agent does not cascade-stop the server).
+
+### Config Files
+
+**`/etc/woodpecker/server.env`** (non-secret, mode 644):
+```
+WOODPECKER_HOST=https://d3ci42.peregrinetechsys.net
+WOODPECKER_OPEN=false
+WOODPECKER_ADMIN=amalc
+WOODPECKER_GITHUB=true
+WOODPECKER_DATABASE_DRIVER=sqlite3
+WOODPECKER_DATABASE_DATASOURCE=file:/var/lib/woodpecker/woodpecker.sqlite?...
+WOODPECKER_METRICS_SERVER_ADDR=:9001
+WOODPECKER_TIMEOUT=15m
+WOODPECKER_WEBHOOK_ENDPOINT=http://webhook-sidecar:8080/webhook
+WOODPECKER_PLUGINS=gcppubsub
+WOODPECKER_PLUGIN_GCPPUBSUB_PROJECT=ci-runners-de
+WOODPECKER_PLUGIN_GCPPUBSUB_TOPIC=ci-events
+GOOGLE_APPLICATION_CREDENTIALS=/etc/gcp/server-sa-key.json
+WOODPECKER_MAX_WORKFLOWS=2
+```
+
+**`/etc/woodpecker/agent.env`** (non-secret, mode 644):
+```
+WOODPECKER_SERVER=localhost:9000   # gRPC direct — bypasses Caddy
+WOODPECKER_BACKEND=local
+WOODPECKER_MAX_WORKFLOWS=2
+WOODPECKER_AGENT_LABELS=backend=local   # NEVER add platform=linux — causes d3ci42 to steal GCP fleet tasks
+WOODPECKER_HOSTNAME=d3ci42-local
+CLOUDSDK_CONFIG=/root/.config/gcloud
+```
+
+**`/etc/woodpecker/secrets.env`** (GCP SM–sourced, mode 600) — key names:
+```
+WOODPECKER_GITHUB_CLIENT, WOODPECKER_GITHUB_SECRET   # OAuth app
+WOODPECKER_AGENT_SECRET                              # shared gRPC auth
+WOODPECKER_JWT_SECRET                                # agent JWT signing (rotated on deploy #92)
+WOODPECKER_ENCRYPTION_KEY                            # pipeline secret encryption
+WOODPECKER_API_TOKEN                                 # external API clients (scaler, Grafana)
+SLACK_WEBHOOK_URL
+HEALTHCHECKS_PING_URL
+GRAFANA_ADMIN_PASSWORD
+GRAFANA_LIVE_TOKEN
+GITHUB_TOKEN
+```
+
+**`/etc/gcp/server-sa-key.json`**: `ci-monitoring@ci-runners-de.iam.gserviceaccount.com` — roles: Compute Viewer (for GCP metrics), Pub/Sub Publisher (ci-events topic)  
+**`/etc/gcp/scaler-sa-key.json`**: scaler SA — roles: Compute Admin (MIG resize), GCS read/write (state bucket)
+
+**`/opt/woodpecker/scaler.yaml`**: source-of-truth scaler config. Deployed via `scripts/woodpecker/deploy.sh` scp on every main push.
+
+### cron (d3ci42 crontab, `/opt/woodpecker/crontab`)
+
+| Schedule | Script | Purpose |
+|----------|--------|---------|
+| `*/2 * * * *` | `healthcheck.sh` | 5-check deep health (healthz, queue API, orphan tasks, orphan VMs, ghost pipelines) |
+| `*/2 * * * *` | `mig-watchdog.sh` | Force MIG→0 when queue empty + no agents + VMs running |
+| `*/5 * * * *` | `watchdog-monitoring.sh` | Power-cycle monitoring droplet if Grafana unreachable |
+| `*/5 * * * *` | `wp-cron-ping.sh` | WordPress wp-cron ping for scheduled posts |
+| `*/10 * * * *` | `ttl-reaper-droplets.sh` ×4 | Reap TTL-expired DO droplets (identity, backend, orchestrator, sight) |
+| `3,8,…,58 * * * *` | `stale-flock-reaper.sh` | Release kernel-leaked FLOCK holds from killed pipelines |
+| `17 * * * *` | `snapshot-cron.sh` | Hourly d3ci42 droplet snapshot (content-hash-guarded) |
+| `42 * * * *` | `zombie-sweeper.sh` | Cancel pipelines stuck at status=created/pending (fork#31 residue) |
+| `30 */2 * * *` | `sync-posts-cron.sh` | Drift-sync blog posts via peregrine-publisher REST |
+| `0 2 * * *` | `backup.sh` | Daily SQLite backup |
+| `30 2 * * *` | `purge-logs.sh` | Daily log_entries purge (keeps SQLite < 1 GB) |
+| `0 3 * * *` | `droplet-sweeper.sh` | Daily journal vacuum, apt clean, tmp sweep |
+| `5 0 * * *` | `cron-wrapper.sh daily-cost-report.sh` | Daily GCP cost report → Slack |
+| `0 7 * * *` | `cron-wrapper.sh audit-repos.sh` | Daily repo audit |
+| `0 6 * * *` | `peregrine-websites-daily-check.sh` | Daily staging+production smoke check |
+| `15 6 * * *` | `auxscan-security-probe.sh` | Daily auxscan-nginx security probe |
+| `0 */6 * * *` | `cron-wrapper.sh ct-monitor.sh` | Certificate transparency monitor |
+| `0 6 * * 1` | `ci-agent-image-reaper.sh` | Reap old ci-agent/ci-agent-base images (keep 3/2) |
+| `0 5 * * 1` | `image-reaper.sh` | Reap old GCE worker-class images |
+| `0 8 * * 1` | `cron-wrapper.sh dependency-drift-check.sh` | Weekly dep drift |
+| `0 8 * * 1` | `cron-wrapper.sh packer-audit.sh` | Weekly Packer audit |
+| `30 4 * * 0` | `vm-init/install-fleet.sh` | Weekly vm-init.sh fleet pass |
+| `30 4 * * 0` | `cron-wrapper.sh audit-secret-allowlists.sh` | Weekly Woodpecker secret allowlist audit |
+| `0 3 * * 0` | `backup-secrets.sh` | Weekly secrets backup to GCP SM |
+| `30 3 * * *` | `rotate-worker-publisher-keys.sh` | Daily SA key rotation check (90-day lifecycle) |
+| `0 1 * * 1` | `cron-wrapper.sh audit-export.sh` | Weekly SOC 2 audit export |
+| `0 4 * * 1` | `cron-wrapper.sh image-scan.sh` | Weekly image vulnerability scan |
+| `0 10 1 * *` | `cron-wrapper.sh monthly-compliance-report.sh` | Monthly compliance report |
+| `0 9 1 1,4,7,10 *` | `cron-wrapper.sh access-audit.sh` | Quarterly access audit |
+
+**`cron-wrapper.sh`** fetches secrets from GCP SM into env vars, checks out the ci-infrastructure repo into a temp dir, and execs the named script. Used for all repo-level audits that need a git checkout but don't justify a full CI agent warm-up (Global CLAUDE.md rule #11).
+
+**`healthcheck.sh` five checks:**
+1. `/healthz` reachability (HTTP 204)
+2. Queue API returns 200 (catches 500 from orphaned agent registrations)
+3. Orphaned task detection — queue says "running" but no agents connected for 5+ min → `systemctl restart woodpecker-server` + Slack
+4. Orphaned VM detection — queue empty but MIG target > 0 for 5+ min → force resize to 0 + Slack
+5. Ghost pipeline detection — pipelines stuck "running" with `started_at=null` for 10+ min → auto-cancel + Slack
+
+Healthcheck pings `HEALTHCHECKS_PING_URL` on success (dead-man's-switch alert if cron stops).
+
+---
+
 ## Deployment
 
 ### Runtime (post peregrine-infrastructure#1403)
@@ -233,19 +361,18 @@ Heavy concurrent write load caused the server to freeze. The write queue (#55) e
 
 ## JWT Secret and API Token Lifecycle
 
-Woodpecker signs all user tokens and agent sessions with a JWT secret (`WOODPECKER_JWT_SECRET`). If this is not set, a random key is generated on each startup — all tokens and agent sessions are immediately invalidated on every restart.
+Woodpecker signs agent sessions with a JWT secret (`WOODPECKER_JWT_SECRET`) stored in `secrets.env` and GCP SM (`woodpecker--jwt-secret`).
 
-**Current state (2026-05-05):** `WOODPECKER_JWT_SECRET` is NOT set in `secrets.env`. Each restart invalidates all sessions. Agents self-heal via the stale-conf fix (#77) and reconnect within ~5 minutes. External API token (`woodpecker-api-token` in GCP SM) is also invalidated.
+**Current state (post #92, 2026-05-08):** `woodpecker-deploy.sh` rotates `WOODPECKER_JWT_SECRET` on every deploy:
+1. Generates a new 32-byte hex secret via `openssl rand -hex 32`
+2. Writes to `/etc/woodpecker/secrets.env` and pushes to GCP SM `woodpecker--jwt-secret`
+3. Restarts server; waits for `/healthz` to confirm new version
+4. Calls `/api/user/token` with the (still-valid) old API token to generate a fresh one
+5. Stores new API token in GCP SM `woodpecker-api-token`
 
-**Target state (tracked in #92):** woodpecker-deploy.sh rotates the JWT secret on every deploy:
-1. Generates `WOODPECKER_JWT_SECRET` → writes to `secrets.env` + GCP SM
-2. Restarts server with new secret
-3. After health check: self-signs a new API token with the new key
-4. Updates `woodpecker-api-token` in GCP SM
+After rotation, all agent JWT tokens are invalidated. Agents self-heal via the stale-conf fix (#77): they detect `Unauthenticated` / `AgentID not found` errors, delete `agent.conf`, and re-register fresh within ~5 minutes. External clients (scaler, Grafana) fetch the new token from GCP SM on their next cycle.
 
-This makes rotation automatic (once per deploy) and eliminates manual intervention after restarts.
-
-**Operator note:** Until #92 lands, any restart will require agents to reconnect (automatic via #77, ~5 min) and may require monitoring tools to wait for the next scrape cycle to clear alerts.
+**Note:** The API token is signed with `user.Hash` (stored in SQLite), NOT with `WOODPECKER_JWT_SECRET`. Rotating the JWT secret does not invalidate existing API tokens — step 4 refreshes the token as a best-practice rotation, not a necessity.
 
 ---
 
@@ -253,6 +380,7 @@ This makes rotation automatic (once per deploy) and eliminates manual interventi
 
 | Date | Symptom | Root cause | Fix |
 |---|---|---|---|
+| 2026-05-08 ~18:55 UTC | CI UNHEALTHY + QUEUE UNHEALTHY, agent disconnections, pts-build failures | Nil panic in scaler's `CancelOrphanedRunning` — `p["repo"].(map[string]interface{})` panicked on null repo field; crash loop every ~5s for 25 min | Safe type assertion via ok-idiom (peregrine-ci-scaler#941) |
 | 2026-05-05 ~19:08 UTC | All agents disconnected, Grafana red, teams reported WP down | `WOODPECKER_JWT_SECRET` not set — random key generated on each startup invalidates all sessions | Agents self-healed via #77. Permanent fix: automated JWT rotation in woodpecker-deploy.sh (#92) |
 | 2026-05-05 | `database table is locked` under burst webhook load | Write queue (#88) serializes goroutines but xorm pool had 100 SQLite connections — file-level lock still raced | `MaxOpenConns=1` for SQLite (#88) |
 | 2026-05-04 ~20:17 UTC | Server freeze, Slack up/down cascade | `database table is locked` under concurrent writes | Write queue (#55) |

@@ -101,6 +101,8 @@ func setupStore(ctx context.Context, c *cli.Command) (store.Store, error) {
 		return nil, fmt.Errorf("could not migrate datastore: %w", err)
 	}
 
+	datastore.RunStartupChecks(ctx, store)
+
 	return store, nil
 }
 
