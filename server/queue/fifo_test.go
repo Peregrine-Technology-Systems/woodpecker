@@ -1089,3 +1089,145 @@ func findTaskByAgent(tasks map[string]int64, agentID int64) string {
 	}
 	return ""
 }
+
+// pendingIDs returns the IDs of tasks currently in q.pending in dispatch
+// order. Used by the priority tests below.
+func pendingIDs(q *fifo) []string {
+	q.Lock()
+	defer q.Unlock()
+	var ids []string
+	for e := q.pending.Front(); e != nil; e = e.Next() {
+		t, _ := e.Value.(*model.Task)
+		ids = append(ids, t.ID)
+	}
+	return ids
+}
+
+// TestFifoPriority_HigherDispatchesFirst encodes the #46 contract: a
+// higher-priority task pushed AFTER a lower-priority one still dispatches
+// first.
+func TestFifoPriority_HigherDispatchesFirst(t *testing.T) {
+	ctx, cancel, q := setupTestQueue(t)
+	defer cancel(nil)
+
+	low := &model.Task{ID: "low", Priority: 0}
+	high := &model.Task{ID: "high", Priority: 5}
+
+	assert.NoError(t, q.PushAtOnce(ctx, []*model.Task{low, high}))
+	assert.Equal(t, []string{"high", "low"}, pendingIDs(q))
+}
+
+// TestFifoPriority_FIFOWithinSamePriority verifies the FIFO contract is
+// preserved at default priority (regression guard) AND at non-zero
+// priority (new behavior).
+func TestFifoPriority_FIFOWithinSamePriority(t *testing.T) {
+	ctx, cancel, q := setupTestQueue(t)
+	defer cancel(nil)
+
+	tasks := []*model.Task{
+		{ID: "a", Priority: 0},
+		{ID: "b", Priority: 0},
+		{ID: "c", Priority: 5},
+		{ID: "d", Priority: 5},
+		{ID: "e", Priority: 0},
+	}
+	assert.NoError(t, q.PushAtOnce(ctx, tasks))
+	assert.Equal(t, []string{"c", "d", "a", "b", "e"}, pendingIDs(q),
+		"priority bucket order: c/d (priority=5) before a/b/e (priority=0); FIFO within each bucket")
+}
+
+// TestFifoPriority_DefaultPreservesFIFO is a regression guard: when no task
+// has explicit priority (all default 0), behavior is identical to pre-#46.
+func TestFifoPriority_DefaultPreservesFIFO(t *testing.T) {
+	ctx, cancel, q := setupTestQueue(t)
+	defer cancel(nil)
+
+	tasks := []*model.Task{
+		{ID: "first"},
+		{ID: "second"},
+		{ID: "third"},
+	}
+	assert.NoError(t, q.PushAtOnce(ctx, tasks))
+	assert.Equal(t, []string{"first", "second", "third"}, pendingIDs(q))
+}
+
+// TestFifoPriority_InsertionIntoNonEmptyQueue exercises the "high task
+// jumps over many low tasks" path — multiple existing pending tasks at
+// priority=0, then a single priority=5 task arrives.
+func TestFifoPriority_InsertionIntoNonEmptyQueue(t *testing.T) {
+	ctx, cancel, q := setupTestQueue(t)
+	defer cancel(nil)
+
+	// Seed with three priority-0 tasks.
+	assert.NoError(t, q.PushAtOnce(ctx, []*model.Task{
+		{ID: "a", Priority: 0},
+		{ID: "b", Priority: 0},
+		{ID: "c", Priority: 0},
+	}))
+	// One priority-5 task arrives later.
+	assert.NoError(t, q.PushAtOnce(ctx, []*model.Task{{ID: "vip", Priority: 5}}))
+	assert.Equal(t, []string{"vip", "a", "b", "c"}, pendingIDs(q))
+}
+
+// TestFifoPriority_MultipleHighPriorityArrivals verifies new high-priority
+// tasks land at the BACK of the high-priority bucket, not at the absolute
+// front — preserves FIFO between high-priority tasks.
+func TestFifoPriority_MultipleHighPriorityArrivals(t *testing.T) {
+	ctx, cancel, q := setupTestQueue(t)
+	defer cancel(nil)
+
+	assert.NoError(t, q.PushAtOnce(ctx, []*model.Task{{ID: "low", Priority: 0}}))
+	assert.NoError(t, q.PushAtOnce(ctx, []*model.Task{{ID: "vip-1", Priority: 10}}))
+	assert.NoError(t, q.PushAtOnce(ctx, []*model.Task{{ID: "vip-2", Priority: 10}}))
+	assert.NoError(t, q.PushAtOnce(ctx, []*model.Task{{ID: "vip-3", Priority: 10}}))
+
+	assert.Equal(t, []string{"vip-1", "vip-2", "vip-3", "low"}, pendingIDs(q),
+		"vip-1 arrived first → dispatches first within its priority bucket")
+}
+
+// TestFifoPriority_FilterWaitingPreservesPriority covers the filterWaiting
+// path: a high-priority task whose deps just cleared must dispatch ahead
+// of any low-priority tasks already pending.
+func TestFifoPriority_FilterWaitingPreservesPriority(t *testing.T) {
+	ctx, cancel, q := setupTestQueue(t)
+	defer cancel(nil)
+
+	// Push one low-priority task with no deps; it goes to pending.
+	assert.NoError(t, q.PushAtOnce(ctx, []*model.Task{{ID: "low", Priority: 0}}))
+
+	// Push a high-priority task with an unmet dep — it'll move from
+	// pending → waitingOnDeps on the next process tick.
+	dep := "missing-dep"
+	high := &model.Task{
+		ID:           "high",
+		Priority:     10,
+		Dependencies: []string{dep},
+		DepStatus:    map[string]model.StatusValue{dep: ""},
+	}
+	assert.NoError(t, q.PushAtOnce(ctx, []*model.Task{high}))
+
+	// Manually move 'high' to waitingOnDeps so we can exercise filterWaiting
+	// in isolation (the natural q.process loop also does this, but we want
+	// determinism in the test).
+	q.Lock()
+	for e := q.pending.Front(); e != nil; e = e.Next() {
+		t, _ := e.Value.(*model.Task)
+		if t.ID == "high" {
+			q.pending.Remove(e)
+			q.waitingOnDeps.PushBack(t)
+			break
+		}
+	}
+	// Clear the dep so filterWaiting will move it back to pending.
+	high.Dependencies = nil
+	high.DepStatus = nil
+	q.Unlock()
+
+	// Run filterWaiting directly.
+	q.Lock()
+	q.filterWaiting()
+	q.Unlock()
+
+	assert.Equal(t, []string{"high", "low"}, pendingIDs(q),
+		"high-priority task whose deps cleared dispatches before lower-priority pending")
+}
