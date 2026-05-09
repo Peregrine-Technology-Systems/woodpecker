@@ -232,6 +232,26 @@ func TestApplySQLiteWriterDefaults_StripsCacheShared(t *testing.T) {
 	}
 }
 
+// TestParseSqliteDSN_MalformedQueryRecovers covers the defensive branch in
+// parseSqliteDSN where url.ParseQuery fails (e.g. invalid percent-encoding).
+// The function must recover by returning empty url.Values and let the
+// downstream defaults still get applied — operators with malformed DSNs
+// should still get a working engine.
+func TestParseSqliteDSN_MalformedQueryRecovers(t *testing.T) {
+	// %zz is invalid percent-encoding and triggers url.ParseQuery to error.
+	got := applySQLiteReaderDefaults("/db.sqlite?bad=%zz")
+	_, query := splitDSN(got)
+	values, err := url.ParseQuery(query)
+	if err != nil {
+		t.Fatalf("output query should be parseable: %v", query)
+	}
+	// The defaults should still be applied even though the input had a
+	// malformed param.
+	if values.Get("_busy_timeout") == "" {
+		t.Errorf("expected default _busy_timeout to be applied even on malformed DSN; got %q", got)
+	}
+}
+
 func splitDSN(dsn string) (base, query string) {
 	if i := strings.Index(dsn, "?"); i >= 0 {
 		return dsn[:i], dsn[i+1:]
