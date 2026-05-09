@@ -6409,6 +6409,63 @@ func (_c *MockStore_UpdateRepo_Call) RunAndReturn(run func(repo *model.Repo) err
 	return _c
 }
 
+// UpdateTaskPriority provides a mock function for the type MockStore
+func (_mock *MockStore) UpdateTaskPriority(taskID string, priority int64) error {
+	ret := _mock.Called(taskID, priority)
+
+	if len(ret) == 0 {
+		panic("no return value specified for UpdateTaskPriority")
+	}
+
+	var r0 error
+	if returnFunc, ok := ret.Get(0).(func(string, int64) error); ok {
+		r0 = returnFunc(taskID, priority)
+	} else {
+		r0 = ret.Error(0)
+	}
+	return r0
+}
+
+// MockStore_UpdateTaskPriority_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'UpdateTaskPriority'
+type MockStore_UpdateTaskPriority_Call struct {
+	*mock.Call
+}
+
+// UpdateTaskPriority is a helper method to define mock.On call
+//   - taskID string
+//   - priority int64
+func (_e *MockStore_Expecter) UpdateTaskPriority(taskID interface{}, priority interface{}) *MockStore_UpdateTaskPriority_Call {
+	return &MockStore_UpdateTaskPriority_Call{Call: _e.mock.On("UpdateTaskPriority", taskID, priority)}
+}
+
+func (_c *MockStore_UpdateTaskPriority_Call) Run(run func(taskID string, priority int64)) *MockStore_UpdateTaskPriority_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		var arg0 string
+		if args[0] != nil {
+			arg0 = args[0].(string)
+		}
+		var arg1 int64
+		if args[1] != nil {
+			arg1 = args[1].(int64)
+		}
+		run(
+			arg0,
+			arg1,
+		)
+	})
+	return _c
+}
+
+func (_c *MockStore_UpdateTaskPriority_Call) Return(err error) *MockStore_UpdateTaskPriority_Call {
+	_c.Call.Return(err)
+	return _c
+}
+
+func (_c *MockStore_UpdateTaskPriority_Call) RunAndReturn(run func(taskID string, priority int64) error) *MockStore_UpdateTaskPriority_Call {
+	_c.Call.Return(run)
+	return _c
+}
+
 // UpdateUser provides a mock function for the type MockStore
 func (_mock *MockStore) UpdateUser(user *model.User) error {
 	ret := _mock.Called(user)

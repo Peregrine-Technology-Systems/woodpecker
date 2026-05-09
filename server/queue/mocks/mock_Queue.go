@@ -619,6 +619,72 @@ func (_c *MockQueue_SetDispatchHook_Call) RunAndReturn(run func(fn queue.Dispatc
 	return _c
 }
 
+// UpdatePriority provides a mock function for the type MockQueue
+func (_mock *MockQueue) UpdatePriority(taskID string, newPriority int64) (int64, error) {
+	ret := _mock.Called(taskID, newPriority)
+
+	if len(ret) == 0 {
+		panic("no return value specified for UpdatePriority")
+	}
+
+	var r0 int64
+	var r1 error
+	if returnFunc, ok := ret.Get(0).(func(string, int64) (int64, error)); ok {
+		return returnFunc(taskID, newPriority)
+	}
+	if returnFunc, ok := ret.Get(0).(func(string, int64) int64); ok {
+		r0 = returnFunc(taskID, newPriority)
+	} else {
+		r0 = ret.Get(0).(int64)
+	}
+	if returnFunc, ok := ret.Get(1).(func(string, int64) error); ok {
+		r1 = returnFunc(taskID, newPriority)
+	} else {
+		r1 = ret.Error(1)
+	}
+	return r0, r1
+}
+
+// MockQueue_UpdatePriority_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'UpdatePriority'
+type MockQueue_UpdatePriority_Call struct {
+	*mock.Call
+}
+
+// UpdatePriority is a helper method to define mock.On call
+//   - taskID string
+//   - newPriority int64
+func (_e *MockQueue_Expecter) UpdatePriority(taskID interface{}, newPriority interface{}) *MockQueue_UpdatePriority_Call {
+	return &MockQueue_UpdatePriority_Call{Call: _e.mock.On("UpdatePriority", taskID, newPriority)}
+}
+
+func (_c *MockQueue_UpdatePriority_Call) Run(run func(taskID string, newPriority int64)) *MockQueue_UpdatePriority_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		var arg0 string
+		if args[0] != nil {
+			arg0 = args[0].(string)
+		}
+		var arg1 int64
+		if args[1] != nil {
+			arg1 = args[1].(int64)
+		}
+		run(
+			arg0,
+			arg1,
+		)
+	})
+	return _c
+}
+
+func (_c *MockQueue_UpdatePriority_Call) Return(oldPriority int64, err error) *MockQueue_UpdatePriority_Call {
+	_c.Call.Return(oldPriority, err)
+	return _c
+}
+
+func (_c *MockQueue_UpdatePriority_Call) RunAndReturn(run func(taskID string, newPriority int64) (int64, error)) *MockQueue_UpdatePriority_Call {
+	_c.Call.Return(run)
+	return _c
+}
+
 // Wait provides a mock function for the type MockQueue
 func (_mock *MockQueue) Wait(c context.Context, id string) error {
 	ret := _mock.Called(c, id)

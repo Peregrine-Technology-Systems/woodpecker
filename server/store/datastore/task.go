@@ -40,3 +40,17 @@ func (s storage) TaskDelete(id string) error {
 		return wrapDelete(s.writeEngine().Where("id = ?", id).Delete(new(model.Task)))
 	})
 }
+
+// UpdateTaskPriority sets the priority column on a single tasks row. (#47)
+// Single-column update — uses Cols("priority") to avoid touching any of
+// the other Task fields, so a stale in-memory copy from the caller can't
+// clobber AgentID/PipelineID etc. on the persistent row.
+func (s storage) UpdateTaskPriority(taskID string, priority int64) error {
+	return s.wq.serialize(func() error {
+		_, err := s.writeEngine().
+			Where("id = ?", taskID).
+			Cols("priority").
+			Update(&model.Task{Priority: priority})
+		return err
+	})
+}

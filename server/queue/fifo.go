@@ -277,6 +277,40 @@ func (q *fifo) SetDispatchHook(fn DispatchFunc) {
 	q.dispatchHook = fn
 }
 
+// UpdatePriority finds taskID in q.pending or q.waitingOnDeps, mutates its
+// Priority field, and (if it was pending) re-inserts at the correct
+// position so dispatch reflects the new priority. Returns ErrNotFound if
+// the task is currently running, completed, or absent. (#47)
+func (q *fifo) UpdatePriority(taskID string, newPriority int64) (int64, error) {
+	q.Lock()
+	defer q.Unlock()
+
+	for e := q.pending.Front(); e != nil; e = e.Next() {
+		task, _ := e.Value.(*model.Task)
+		if task.ID == taskID {
+			old := task.Priority
+			task.Priority = newPriority
+			q.pending.Remove(e)
+			q.insertByPriority(task)
+			return old, nil
+		}
+	}
+
+	for e := q.waitingOnDeps.Front(); e != nil; e = e.Next() {
+		task, _ := e.Value.(*model.Task)
+		if task.ID == taskID {
+			old := task.Priority
+			task.Priority = newPriority
+			// No re-insert here — when filterWaiting moves it back to
+			// pending it'll route through insertByPriority with the new
+			// value.
+			return old, nil
+		}
+	}
+
+	return 0, ErrNotFound
+}
+
 // helper function that loops through the queue and attempts to
 // match the item to a single subscriber until context got cancel.
 func (q *fifo) process() {

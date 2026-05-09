@@ -116,3 +116,40 @@ func TestTaskInsert_AutoFillsCreated(t *testing.T) {
 	require.Len(t, list, 1)
 	assert.NotZero(t, list[0].Created, "xorm `created` tag should fill on insert")
 }
+
+// TestUpdateTaskPriority_OnlyPriorityColumn locks in the #47 contract: the
+// UpdateTaskPriority store method must touch only the priority column,
+// never AgentID/PipelineID/etc.
+func TestUpdateTaskPriority_OnlyPriorityColumn(t *testing.T) {
+	store, closer := newTestStore(t, new(model.Task))
+	defer closer()
+
+	require.NoError(t, store.TaskInsert(&model.Task{
+		ID:         "task-uta",
+		AgentID:    42,
+		PipelineID: 99,
+		RepoID:     7,
+		Priority:   0,
+	}))
+
+	require.NoError(t, store.UpdateTaskPriority("task-uta", 10))
+
+	list, err := store.TaskList()
+	require.NoError(t, err)
+	require.Len(t, list, 1)
+	assert.EqualValues(t, 10, list[0].Priority, "priority should be updated")
+	assert.EqualValues(t, 42, list[0].AgentID, "AgentID must be untouched")
+	assert.EqualValues(t, 99, list[0].PipelineID, "PipelineID must be untouched")
+	assert.EqualValues(t, 7, list[0].RepoID, "RepoID must be untouched")
+}
+
+// TestUpdateTaskPriority_UnknownTaskNoOp — UPDATE with no matching rows
+// is not an error; the in-memory queue is the source of truth for
+// "task exists / is pending", so a stale or already-deleted DB row
+// shouldn't fail the handler path.
+func TestUpdateTaskPriority_UnknownTaskNoOp(t *testing.T) {
+	store, closer := newTestStore(t, new(model.Task))
+	defer closer()
+
+	assert.NoError(t, store.UpdateTaskPriority("does-not-exist", 5))
+}
