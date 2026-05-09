@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- test: server/queue/fifo.go to ≥95% per-file coverage — dispatch hook claim/decline, pause-skips-process, depsInQueue running branch, updateDepStatusInQueue waitingOnDeps propagation (#46 follow-up)
 - feat: dispatcher inserts pending tasks by priority — `server/queue/fifo.go` keeps `q.pending` sorted by `Priority DESC` with FIFO within each priority bucket. `PushAtOnce`, the `filterWaiting` re-queue (when deps clear), and the `resubmitExpiredPipelines` retry path all use the same `insertByPriority` helper. Pre-#46 `PushFront` on retry would have let a low-priority expired task jump ahead of high-priority pending tasks; that's gone. Default priority 0 makes existing behavior identical (regression-tested). (#46)
 - chore: pre-commit hook enforces 95% per-file coverage on changed Go files (#45 follow-up)
 - test: model/task.go to 100% — added Task.TableName, String, ShouldRun-across-all-RunOn-permutations (#45 follow-up)
