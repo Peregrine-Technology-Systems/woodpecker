@@ -144,3 +144,63 @@ func TestPatchTaskPriority_AuditFailureDoesNotFailRequest(t *testing.T) {
 	api.PatchTaskPriority(c)
 	assert.Equal(t, http.StatusOK, w.Code)
 }
+
+// TestPatchTaskPriority_MissingTaskID covers the path where the route
+// param is empty (defensive guard in the handler).
+func TestPatchTaskPriority_MissingTaskID(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Set("store", store_mocks.NewMockStore(t))
+	c.Set("user", &model.User{ID: 1, Login: "amal", Email: "amal@pobox.com"})
+	req, _ := http.NewRequest(http.MethodPatch, "/", io.NopCloser(bytes.NewBufferString(`{"priority": 5}`)))
+	req.Header.Set("Content-Type", "application/json")
+	c.Request = req
+	// note: no Params set, so c.Param("task_id") returns ""
+
+	api.PatchTaskPriority(c)
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+}
+
+// TestPatchTaskPriority_FallsBackToUserLogin covers the third-tier actor
+// attribution: oauth2-proxy header AND user.Email both empty, fall through
+// to user.Login so the audit row is never empty.
+func TestPatchTaskPriority_FallsBackToUserLogin(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	mockStore := store_mocks.NewMockStore(t)
+	mockQueue := queue_mocks.NewMockQueue(t)
+	server.Config.Services.Pubsub = pubsub.New()
+	server.Config.Services.Queue = mockQueue
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Set("store", mockStore)
+	// User has Login but no Email
+	c.Set("user", &model.User{ID: 1, Login: "amal", Email: ""})
+	req, _ := http.NewRequest(http.MethodPatch, "/", io.NopCloser(bytes.NewBufferString(`{"priority": 4}`)))
+	req.Header.Set("Content-Type", "application/json")
+	// no X-Auth-Request-Email header either
+	c.Request = req
+	c.Params = []gin.Param{{Key: "task_id", Value: "task-fallback"}}
+
+	mockQueue.On("UpdatePriority", "task-fallback", int64(4)).Return(int64(0), nil)
+	mockStore.On("PriorityAuditInsert", mock.MatchedBy(func(a *model.PriorityAudit) bool {
+		return a.ActorEmail == "amal" // fell back to Login
+	})).Return(nil)
+
+	api.PatchTaskPriority(c)
+	assert.Equal(t, http.StatusOK, w.Code)
+}
+
+// TestPatchTaskPriority_QueueErrorReturns500 covers the path where the
+// queue update fails for a reason other than ErrNotFound — must surface
+// as 500, not 409.
+func TestPatchTaskPriority_QueueErrorReturns500(t *testing.T) {
+	c, w, mockQueue, _ := setupPatchPriorityCtx(t, `{"priority": 5}`, nil)
+
+	mockQueue.On("UpdatePriority", "task-abc", int64(5)).
+		Return(int64(0), errors.New("unexpected error"))
+
+	api.PatchTaskPriority(c)
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
+}
