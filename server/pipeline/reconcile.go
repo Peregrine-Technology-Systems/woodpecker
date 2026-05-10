@@ -177,6 +177,16 @@ func (r *OrphanReconciler) Tick(_store store.Store) int {
 // pipeline transition; forge.Status failures are also logged but never
 // fail the kill — the DB transition is the durable contract.
 func killOrphan(ctx context.Context, _store store.Store, pl *model.Pipeline, repo *model.Repo) bool {
+	// #193: structured log mirrors cancel.go::Cancel — same fields so a single
+	// query catches every kill/cancel decision regardless of source.
+	log.Info().
+		Int64("pipeline_id", pl.ID).
+		Str("repo", repo.FullName).
+		Str("prior_status", string(pl.Status)).
+		Str("new_status", string(model.StatusKilled)).
+		Bool("never_dispatched", pl.Started == 0).
+		Str("reason", "reconcile_orphaned").
+		Msg("pipeline cancel: transitioning")
 	pl.Status = model.StatusKilled
 	if err := _store.UpdatePipeline(pl); err != nil {
 		log.Error().Err(err).Msgf("reconcile: failed to update pipeline %d", pl.ID)

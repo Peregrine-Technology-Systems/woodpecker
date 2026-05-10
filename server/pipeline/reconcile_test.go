@@ -15,8 +15,13 @@
 package pipeline
 
 import (
+	"bytes"
+	"encoding/json"
+	"strings"
 	"testing"
 
+	"github.com/rs/zerolog"
+	"github.com/rs/zerolog/log"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 
@@ -380,6 +385,46 @@ func TestKillOrphan_GetUserFailureLogged(t *testing.T) {
 func TestActivePipelineSet_NilQueueReturnsEmpty(t *testing.T) {
 	got := activePipelineSet(nil)
 	assert.Empty(t, got)
+}
+
+// TestKillOrphan_AuditLog covers the #193 audit fields on the reconcile
+// kill path: every reconciler-driven kill emits the same structured log
+// shape Cancel() does, with reason=reconcile_orphaned.
+func TestKillOrphan_AuditLog(t *testing.T) {
+	buf := &bytes.Buffer{}
+	prev := log.Logger
+	log.Logger = zerolog.New(buf).With().Logger()
+	defer func() { log.Logger = prev }()
+
+	mockStore := mocks.NewMockStore(t)
+	q := queueWithTasks(t) // empty queue → orphan
+	repos := []*model.Repo{{ID: 1, FullName: "org/audit"}}
+	mockStore.On("RepoListAll", true, mock.Anything).Return(repos, nil)
+	mockStore.On("GetActivePipelineList", repos[0]).Return([]*model.Pipeline{
+		{ID: 7777, Number: 5, Status: model.StatusRunning, Started: 9999, RepoID: 1},
+	}, nil)
+	mockStore.On("UpdatePipeline", mock.Anything).Return(nil)
+	mockStore.On("WorkflowGetTree", mock.Anything).Return([]*model.Workflow{}, nil)
+
+	count := ReconcileOrphanedAtStartup(mockStore, q)
+	assert.Equal(t, 1, count)
+
+	var rec map[string]interface{}
+	for _, line := range strings.Split(buf.String(), "\n") {
+		if !strings.Contains(line, "pipeline cancel: transitioning") {
+			continue
+		}
+		assert.NoError(t, json.Unmarshal([]byte(line), &rec))
+		break
+	}
+	if assert.NotNil(t, rec, "audit log expected: %q", buf.String()) {
+		assert.Equal(t, float64(7777), rec["pipeline_id"])
+		assert.Equal(t, "org/audit", rec["repo"])
+		assert.Equal(t, "running", rec["prior_status"])
+		assert.Equal(t, "killed", rec["new_status"])
+		assert.Equal(t, false, rec["never_dispatched"])
+		assert.Equal(t, "reconcile_orphaned", rec["reason"])
+	}
 }
 
 // TestActivePipelineSet_PullsFromAllThreeListsAndDedupes verifies the set
