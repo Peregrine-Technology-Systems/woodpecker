@@ -15,9 +15,14 @@
 package pipeline
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"strings"
 	"testing"
 
+	"github.com/rs/zerolog"
+	"github.com/rs/zerolog/log"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 
@@ -383,4 +388,368 @@ func TestCancel_RejectsNonRunningPipeline(t *testing.T) {
 	err := Cancel(context.Background(), nil, nil, repo, user, pipeline, nil, false)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "Cannot cancel")
+}
+
+// =============================================================================
+// #193 — kill-path audit logging
+// =============================================================================
+
+// captureLogs swaps log.Logger to a buffer-backed JSON logger for the duration
+// of one test. It returns the buffer and a restore func.
+func captureLogs(t *testing.T) (*bytes.Buffer, func()) {
+	t.Helper()
+	buf := &bytes.Buffer{}
+	prev := log.Logger
+	log.Logger = zerolog.New(buf).With().Logger()
+	return buf, func() { log.Logger = prev }
+}
+
+// findCancelLog scans captured log output for the audit line emitted by
+// Cancel/killOrphan and returns its parsed JSON.
+func findCancelLog(t *testing.T, buf *bytes.Buffer) map[string]interface{} {
+	t.Helper()
+	for _, line := range strings.Split(buf.String(), "\n") {
+		if !strings.Contains(line, "pipeline cancel: transitioning") {
+			continue
+		}
+		var rec map[string]interface{}
+		if err := json.Unmarshal([]byte(line), &rec); err != nil {
+			t.Fatalf("could not parse log line %q: %v", line, err)
+		}
+		return rec
+	}
+	return nil
+}
+
+// TestCancel_AuditLog_PendingOnly captures the mode-B case from #190: pipeline
+// canceled while still pending, never dispatched. The audit log must emit
+// reason=pending_only_canceled and never_dispatched=true (#193).
+func TestCancel_AuditLog_PendingOnly(t *testing.T) {
+	buf, restore := captureLogs(t)
+	defer restore()
+
+	mockStore, mockQueue := setupCancelTest(t)
+	pipeline := &model.Pipeline{ID: 9001, Number: 9, Status: model.StatusPending, Started: 0}
+	repo := &model.Repo{ID: 1, FullName: "org/audit"}
+	user := &model.User{ID: 1}
+	workflows := []*model.Workflow{
+		{ID: 90, Name: "ci", State: model.StatusPending, Children: []*model.Step{}},
+	}
+
+	mockStore.On("WorkflowGetTree", mock.Anything).Return(workflows, nil)
+	mockQueue.On("ErrorAtOnce", mock.Anything, []string{"90"}, mock.Anything).Return(nil)
+	mockStore.On("WorkflowUpdate", mock.Anything).Return(nil)
+	mockStore.On("UpdatePipeline", mock.MatchedBy(func(p *model.Pipeline) bool {
+		return p.Status == model.StatusCanceled
+	})).Return(nil)
+
+	err := Cancel(context.Background(), nil, mockStore, repo, user, pipeline, nil, false)
+	assert.NoError(t, err)
+
+	rec := findCancelLog(t, buf)
+	if assert.NotNil(t, rec, "expected audit log line in output: %q", buf.String()) {
+		assert.Equal(t, float64(9001), rec["pipeline_id"])
+		assert.Equal(t, "org/audit", rec["repo"])
+		assert.Equal(t, "pending", rec["prior_status"])
+		assert.Equal(t, "canceled", rec["new_status"])
+		assert.Equal(t, true, rec["never_dispatched"])
+		assert.Equal(t, "pending_only_canceled", rec["reason"])
+	}
+}
+
+// TestCancel_AuditLog_Superseded captures the cancelPreviousPipelines path:
+// SupersededBy set on cancelInfo. Audit must emit reason=superseded_by_newer_push.
+func TestCancel_AuditLog_Superseded(t *testing.T) {
+	buf, restore := captureLogs(t)
+	defer restore()
+
+	mockStore, mockQueue := setupCancelTest(t)
+	pipeline := &model.Pipeline{ID: 9002, Number: 10, Status: model.StatusRunning, Started: 12345}
+	repo := &model.Repo{ID: 1, FullName: "org/audit"}
+	user := &model.User{ID: 1}
+	workflows := []*model.Workflow{
+		{ID: 91, Name: "ci", State: model.StatusRunning, Children: []*model.Step{}},
+	}
+
+	mockStore.On("WorkflowGetTree", mock.Anything).Return(workflows, nil)
+	mockQueue.On("ErrorAtOnce", mock.Anything, []string{"91"}, mock.Anything).Return(nil)
+	mockQueue.On("Done", mock.Anything, "91", model.StatusKilled).Return(nil)
+	mockStore.On("UpdatePipeline", mock.MatchedBy(func(p *model.Pipeline) bool {
+		return p.Status == model.StatusSuperseded
+	})).Return(nil)
+
+	err := Cancel(context.Background(), nil, mockStore, repo, user, pipeline, &model.CancelInfo{SupersededBy: 11}, false)
+	assert.NoError(t, err)
+
+	rec := findCancelLog(t, buf)
+	if assert.NotNil(t, rec, "expected audit log line in output: %q", buf.String()) {
+		assert.Equal(t, "superseded", rec["new_status"])
+		assert.Equal(t, false, rec["never_dispatched"])
+		assert.Equal(t, "superseded_by_newer_push", rec["reason"])
+	}
+}
+
+// =============================================================================
+// cancelPreviousPipelines (was 0% pre-#193; touching cancel.go means owning it)
+// =============================================================================
+
+// TestCancelPreviousPipelines_EventNotIncluded — repo has cancel-previous
+// configured but for different events; this push must be a no-op.
+func TestCancelPreviousPipelines_EventNotIncluded(t *testing.T) {
+	mockStore, _ := setupCancelTest(t)
+	repo := &model.Repo{ID: 1, FullName: "org/repo", CancelPreviousPipelineEvents: []model.WebhookEvent{model.EventPull}}
+	pl := &model.Pipeline{ID: 1, Event: model.EventPush, Branch: "main"}
+	user := &model.User{ID: 1}
+
+	err := cancelPreviousPipelines(context.Background(), nil, mockStore, pl, repo, user)
+	assert.NoError(t, err)
+	mockStore.AssertNotCalled(t, "GetActivePipelineList", mock.Anything)
+}
+
+// TestCancelPreviousPipelines_SkipsSelfAndDifferentEvent — walks the active
+// list, skips the self-pipeline and any pipeline whose event differs.
+func TestCancelPreviousPipelines_SkipsSelfAndDifferentEvent(t *testing.T) {
+	mockStore, _ := setupCancelTest(t)
+	repo := &model.Repo{ID: 1, FullName: "org/repo", CancelPreviousPipelineEvents: []model.WebhookEvent{model.EventPush}}
+	newPL := &model.Pipeline{ID: 999, Number: 50, Event: model.EventPush, Branch: "main"}
+	user := &model.User{ID: 1}
+
+	mockStore.On("GetActivePipelineList", repo).Return([]*model.Pipeline{
+		{ID: 999, Event: model.EventPush, Branch: "main"}, // same → skip self
+		{ID: 998, Event: model.EventPull, Branch: "main"}, // different event → skip
+	}, nil)
+
+	err := cancelPreviousPipelines(context.Background(), nil, mockStore, newPL, repo, user)
+	assert.NoError(t, err)
+	// Cancel never invoked: no WorkflowGetTree call expected.
+	mockStore.AssertNotCalled(t, "WorkflowGetTree", mock.Anything)
+}
+
+// TestCancelPreviousPipelines_BranchMismatchSkipped — same event, same repo,
+// but different branch → not canceled.
+func TestCancelPreviousPipelines_BranchMismatchSkipped(t *testing.T) {
+	mockStore, _ := setupCancelTest(t)
+	repo := &model.Repo{ID: 1, FullName: "org/repo", CancelPreviousPipelineEvents: []model.WebhookEvent{model.EventPush}}
+	newPL := &model.Pipeline{ID: 1000, Number: 60, Event: model.EventPush, Branch: "main"}
+	user := &model.User{ID: 1}
+
+	mockStore.On("GetActivePipelineList", repo).Return([]*model.Pipeline{
+		{ID: 1001, Event: model.EventPush, Branch: "feature/x"}, // different branch
+	}, nil)
+
+	err := cancelPreviousPipelines(context.Background(), nil, mockStore, newPL, repo, user)
+	assert.NoError(t, err)
+	mockStore.AssertNotCalled(t, "WorkflowGetTree", mock.Anything)
+}
+
+// TestCancelPreviousPipelines_BranchMatchCancels — the canonical case: a new
+// push on `main` cancels the in-flight pipeline on `main`.
+func TestCancelPreviousPipelines_BranchMatchCancels(t *testing.T) {
+	mockStore, mockQueue := setupCancelTest(t)
+	repo := &model.Repo{ID: 1, FullName: "org/repo", CancelPreviousPipelineEvents: []model.WebhookEvent{model.EventPush}}
+	newPL := &model.Pipeline{ID: 2000, Number: 70, Event: model.EventPush, Branch: "main"}
+	user := &model.User{ID: 1}
+
+	priorPL := &model.Pipeline{ID: 1999, Number: 69, Event: model.EventPush, Branch: "main", Status: model.StatusRunning}
+	mockStore.On("GetActivePipelineList", repo).Return([]*model.Pipeline{priorPL}, nil)
+
+	// Cancel(prior) walks workflows; one running, one independent.
+	workflows := []*model.Workflow{
+		{ID: 700, Name: "ci", State: model.StatusRunning, DependsOn: []string{}, Children: []*model.Step{}},
+	}
+	mockStore.On("WorkflowGetTree", priorPL).Return(workflows, nil)
+	// preserveIndependent=true → DependsOn:[] keeps the deploy alive.
+	// hasPreservedRunning=true → no UpdatePipeline call expected.
+
+	err := cancelPreviousPipelines(context.Background(), nil, mockStore, newPL, repo, user)
+	assert.NoError(t, err)
+
+	// Confirm we actually entered Cancel: WorkflowGetTree was called on prior.
+	mockStore.AssertCalled(t, "WorkflowGetTree", priorPL)
+	// preserveIndependent kept the deploy: no eviction, no kill.
+	mockQueue.AssertNotCalled(t, "ErrorAtOnce", mock.Anything, mock.Anything, mock.Anything)
+	mockStore.AssertNotCalled(t, "UpdatePipeline", mock.Anything)
+}
+
+// TestCancelPreviousPipelines_StoreError surfaces the store-error early-return.
+func TestCancelPreviousPipelines_StoreError(t *testing.T) {
+	mockStore, _ := setupCancelTest(t)
+	repo := &model.Repo{ID: 1, FullName: "org/repo", CancelPreviousPipelineEvents: []model.WebhookEvent{model.EventPush}}
+	newPL := &model.Pipeline{ID: 3000, Event: model.EventPush, Branch: "main"}
+	user := &model.User{ID: 1}
+
+	mockStore.On("GetActivePipelineList", repo).Return(nil, assert.AnError)
+	err := cancelPreviousPipelines(context.Background(), nil, mockStore, newPL, repo, user)
+	assert.Error(t, err)
+}
+
+// TestCancel_WorkflowGetTreeError covers the error path on line 42.
+func TestCancel_WorkflowGetTreeError(t *testing.T) {
+	mockStore, _ := setupCancelTest(t)
+	pl := &model.Pipeline{ID: 4000, Status: model.StatusRunning}
+	repo := &model.Repo{ID: 1, FullName: "org/r"}
+	user := &model.User{ID: 1}
+
+	mockStore.On("WorkflowGetTree", pl).Return(nil, assert.AnError)
+	err := Cancel(context.Background(), nil, mockStore, repo, user, pl, nil, false)
+	assert.Error(t, err)
+	_, isNotFound := err.(*ErrNotFound)
+	assert.True(t, isNotFound, "expected ErrNotFound, got %T", err)
+}
+
+// TestCancelPreviousPipelines_RefspecMatchForPullEvent covers the default
+// (non-push) branch in pipelineNeedsCancel — a new PR push compares Refspec
+// instead of Branch.
+func TestCancelPreviousPipelines_RefspecMatchForPullEvent(t *testing.T) {
+	mockStore, _ := setupCancelTest(t)
+	repo := &model.Repo{ID: 1, FullName: "org/repo", CancelPreviousPipelineEvents: []model.WebhookEvent{model.EventPull}}
+	newPL := &model.Pipeline{ID: 5000, Number: 80, Event: model.EventPull, Refspec: "refs/pull/9/head:refs/pull/9/head"}
+	user := &model.User{ID: 1}
+	prior := &model.Pipeline{ID: 4999, Event: model.EventPull, Refspec: "refs/pull/9/head:refs/pull/9/head", Status: model.StatusRunning}
+	other := &model.Pipeline{ID: 4998, Event: model.EventPull, Refspec: "refs/pull/8/head:refs/pull/8/head"} // unrelated PR
+	mockStore.On("GetActivePipelineList", repo).Return([]*model.Pipeline{prior, other}, nil)
+	mockStore.On("WorkflowGetTree", prior).Return([]*model.Workflow{
+		{ID: 800, Name: "ci", State: model.StatusSuccess}, // already-finished, doesn't trigger queue ops
+	}, nil)
+	// hasPendingOnly=true since no Pending/Running, plState becomes Canceled.
+	mockStore.On("UpdatePipeline", mock.Anything).Return(nil)
+	mockStore.On("WorkflowGetTree", mock.AnythingOfType("*model.Pipeline")).Return([]*model.Workflow{}, nil)
+
+	err := cancelPreviousPipelines(context.Background(), nil, mockStore, newPL, repo, user)
+	assert.NoError(t, err)
+	mockStore.AssertCalled(t, "WorkflowGetTree", prior)
+	// 'other' has different Refspec → no Cancel call (no extra WorkflowGetTree).
+}
+
+// TestCancel_AllErrorPaths exercises the inner error-log branches: queue ops
+// failing, workflow update failing, step update failing, and final
+// UpdateToStatusKilled failing. Each is a logged-and-continue (or returned)
+// path that should not panic and should not corrupt state.
+func TestCancel_AllErrorPaths(t *testing.T) {
+	t.Run("ErrorAtOnce_failure_logged", func(t *testing.T) {
+		mockStore, mockQueue := setupCancelTest(t)
+		pl := &model.Pipeline{ID: 6001, Status: model.StatusRunning}
+		repo := &model.Repo{ID: 1, FullName: "org/r"}
+		user := &model.User{ID: 1}
+		mockStore.On("WorkflowGetTree", pl).Return([]*model.Workflow{
+			{ID: 600, State: model.StatusRunning, DependsOn: []string{"missing"}, Children: []*model.Step{}},
+		}, nil)
+		mockQueue.On("ErrorAtOnce", mock.Anything, mock.Anything, mock.Anything).Return(assert.AnError)
+		mockQueue.On("Done", mock.Anything, mock.Anything, mock.Anything).Return(nil)
+		mockStore.On("UpdatePipeline", mock.Anything).Return(nil)
+		mockStore.On("WorkflowGetTree", mock.AnythingOfType("*model.Pipeline")).Return([]*model.Workflow{}, nil)
+		err := Cancel(context.Background(), nil, mockStore, repo, user, pl, nil, false)
+		assert.NoError(t, err) // log.Error but don't bail
+	})
+	t.Run("Queue_Done_failure_logged", func(t *testing.T) {
+		mockStore, mockQueue := setupCancelTest(t)
+		pl := &model.Pipeline{ID: 6002, Status: model.StatusRunning}
+		repo := &model.Repo{ID: 1, FullName: "org/r"}
+		user := &model.User{ID: 1}
+		mockStore.On("WorkflowGetTree", pl).Return([]*model.Workflow{
+			{ID: 601, State: model.StatusRunning, DependsOn: []string{"missing"}, Children: []*model.Step{}},
+		}, nil)
+		mockQueue.On("ErrorAtOnce", mock.Anything, mock.Anything, mock.Anything).Return(nil)
+		mockQueue.On("Done", mock.Anything, "601", model.StatusKilled).Return(assert.AnError)
+		mockStore.On("UpdatePipeline", mock.Anything).Return(nil)
+		mockStore.On("WorkflowGetTree", mock.AnythingOfType("*model.Pipeline")).Return([]*model.Workflow{}, nil)
+		err := Cancel(context.Background(), nil, mockStore, repo, user, pl, nil, false)
+		assert.NoError(t, err)
+	})
+	t.Run("WorkflowUpdate_failure_logged", func(t *testing.T) {
+		mockStore, mockQueue := setupCancelTest(t)
+		pl := &model.Pipeline{ID: 6003, Status: model.StatusPending}
+		repo := &model.Repo{ID: 1, FullName: "org/r"}
+		user := &model.User{ID: 1}
+		mockStore.On("WorkflowGetTree", pl).Return([]*model.Workflow{
+			{ID: 602, State: model.StatusPending, DependsOn: []string{"missing"}, Children: []*model.Step{
+				{ID: 6020, State: model.StatusPending},
+			}},
+		}, nil)
+		mockQueue.On("ErrorAtOnce", mock.Anything, mock.Anything, mock.Anything).Return(nil)
+		// Both inner updates fail — Cancel logs and continues.
+		mockStore.On("WorkflowUpdate", mock.Anything).Return(assert.AnError)
+		mockStore.On("StepUpdate", mock.Anything).Return(assert.AnError)
+		mockStore.On("UpdatePipeline", mock.Anything).Return(nil)
+		mockStore.On("WorkflowGetTree", mock.AnythingOfType("*model.Pipeline")).Return([]*model.Workflow{}, nil)
+		err := Cancel(context.Background(), nil, mockStore, repo, user, pl, nil, false)
+		assert.NoError(t, err)
+	})
+	t.Run("UpdateToStatusKilled_returns_error", func(t *testing.T) {
+		mockStore, mockQueue := setupCancelTest(t)
+		pl := &model.Pipeline{ID: 6004, Status: model.StatusRunning}
+		repo := &model.Repo{ID: 1, FullName: "org/r"}
+		user := &model.User{ID: 1}
+		mockStore.On("WorkflowGetTree", pl).Return([]*model.Workflow{
+			{ID: 603, State: model.StatusRunning, DependsOn: []string{"missing"}, Children: []*model.Step{}},
+		}, nil)
+		mockQueue.On("ErrorAtOnce", mock.Anything, mock.Anything, mock.Anything).Return(nil)
+		mockQueue.On("Done", mock.Anything, mock.Anything, mock.Anything).Return(nil)
+		mockStore.On("UpdatePipeline", mock.Anything).Return(assert.AnError)
+		err := Cancel(context.Background(), nil, mockStore, repo, user, pl, nil, false)
+		assert.Error(t, err) // bubble up
+	})
+	t.Run("PostKill_WorkflowGetTree_returns_error", func(t *testing.T) {
+		mockStore, mockQueue := setupCancelTest(t)
+		pl := &model.Pipeline{ID: 6005, Status: model.StatusRunning}
+		repo := &model.Repo{ID: 1, FullName: "org/r"}
+		user := &model.User{ID: 1}
+		mockStore.On("WorkflowGetTree", pl).Return([]*model.Workflow{
+			{ID: 604, State: model.StatusRunning, DependsOn: []string{"missing"}, Children: []*model.Step{}},
+		}, nil).Once()
+		mockQueue.On("ErrorAtOnce", mock.Anything, mock.Anything, mock.Anything).Return(nil)
+		mockQueue.On("Done", mock.Anything, mock.Anything, mock.Anything).Return(nil)
+		mockStore.On("UpdatePipeline", mock.Anything).Return(nil)
+		// Second WorkflowGetTree (for publishToTopic) errors — Cancel returns it.
+		mockStore.On("WorkflowGetTree", mock.AnythingOfType("*model.Pipeline")).Return(nil, assert.AnError).Once()
+		err := Cancel(context.Background(), nil, mockStore, repo, user, pl, nil, false)
+		assert.Error(t, err)
+	})
+}
+
+// TestCancelPreviousPipelines_CancelError covers the inner Cancel-error log
+// branch in cancelPreviousPipelines (lines 228-234).
+func TestCancelPreviousPipelines_CancelError(t *testing.T) {
+	mockStore, _ := setupCancelTest(t)
+	repo := &model.Repo{ID: 1, FullName: "org/r", CancelPreviousPipelineEvents: []model.WebhookEvent{model.EventPush}}
+	newPL := &model.Pipeline{ID: 7001, Event: model.EventPush, Branch: "main"}
+	user := &model.User{ID: 1}
+	prior := &model.Pipeline{ID: 7000, Status: model.StatusRunning, Event: model.EventPush, Branch: "main"}
+	mockStore.On("GetActivePipelineList", repo).Return([]*model.Pipeline{prior}, nil)
+	// Cancel(prior) fails because WorkflowGetTree errors → log.Error but
+	// cancelPreviousPipelines does NOT bubble the failure (just logs it).
+	mockStore.On("WorkflowGetTree", prior).Return(nil, assert.AnError)
+	err := cancelPreviousPipelines(context.Background(), nil, mockStore, newPL, repo, user)
+	assert.NoError(t, err)
+}
+
+// TestCancel_AuditLog_UserInitiated covers the default branch (running pipeline,
+// no SupersededBy, has running workflows). Audit must emit reason=user_initiated.
+func TestCancel_AuditLog_UserInitiated(t *testing.T) {
+	buf, restore := captureLogs(t)
+	defer restore()
+
+	mockStore, mockQueue := setupCancelTest(t)
+	pipeline := &model.Pipeline{ID: 9003, Number: 11, Status: model.StatusRunning, Started: 67890}
+	repo := &model.Repo{ID: 1, FullName: "org/audit"}
+	user := &model.User{ID: 1}
+	workflows := []*model.Workflow{
+		{ID: 92, Name: "ci", State: model.StatusRunning, Children: []*model.Step{}},
+	}
+
+	mockStore.On("WorkflowGetTree", mock.Anything).Return(workflows, nil)
+	mockQueue.On("ErrorAtOnce", mock.Anything, []string{"92"}, mock.Anything).Return(nil)
+	mockQueue.On("Done", mock.Anything, "92", model.StatusKilled).Return(nil)
+	mockStore.On("UpdatePipeline", mock.MatchedBy(func(p *model.Pipeline) bool {
+		return p.Status == model.StatusKilled
+	})).Return(nil)
+
+	err := Cancel(context.Background(), nil, mockStore, repo, user, pipeline, &model.CancelInfo{CanceledByUser: "alice"}, false)
+	assert.NoError(t, err)
+
+	rec := findCancelLog(t, buf)
+	if assert.NotNil(t, rec, "expected audit log line in output: %q", buf.String()) {
+		assert.Equal(t, "killed", rec["new_status"])
+		assert.Equal(t, "user_initiated", rec["reason"])
+	}
 }

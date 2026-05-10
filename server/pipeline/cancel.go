@@ -119,13 +119,27 @@ func Cancel(ctx context.Context, _forge forge.Forge, _store store.Store, repo *m
 	// Use superseded status when canceled by a newer push, killed otherwise (woodpecker-server#7)
 	plState := model.StatusKilled
 	eventType := plugin.EventPipelineKilled
+	reason := "user_initiated"
 	if cancelInfo != nil && cancelInfo.SupersededBy > 0 {
 		plState = model.StatusSuperseded
 		eventType = plugin.EventPipelineSuperseded
+		reason = "superseded_by_newer_push"
 	}
 	if hasPendingOnly {
 		plState = model.StatusCanceled
+		reason = "pending_only_canceled"
 	}
+	// #193: every pipeline kill/cancel/supersede gets a structured INFO log
+	// with explicit reason + never_dispatched flag. Lets ops grep for mode-B
+	// "killed before dispatch" incidents without sampling pipelines table.
+	log.Info().
+		Int64("pipeline_id", pipeline.ID).
+		Str("repo", repo.FullName).
+		Str("prior_status", string(pipeline.Status)).
+		Str("new_status", string(plState)).
+		Bool("never_dispatched", pipeline.Started == 0).
+		Str("reason", reason).
+		Msg("pipeline cancel: transitioning")
 	killedPipeline, err := UpdateToStatusKilled(_store, *pipeline, cancelInfo, plState)
 	if err != nil {
 		log.Error().Err(err).Msgf("UpdateToStatusKilled: %v", pipeline)
