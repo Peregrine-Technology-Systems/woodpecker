@@ -161,9 +161,14 @@ func (s *wsAgentState) cleanup() {
 	rpcPeer := s.rpc
 	s.mu.Unlock()
 
-	// #3: Release running tasks immediately — don't wait 15min TaskTimeout
+	// #208: Defer ReleaseAgentTasks by wsReconnectGrace so a transient
+	// WS blip (the dominant case per #203's forensics — ~10 task-bearing
+	// disconnects/day are agents that reconnect in seconds) doesn't
+	// instantly kill the agent's in-flight workflows. If the same agent_id
+	// re-registers within the grace window, handleRegister cancels the
+	// pending release. Otherwise the release fires.
 	if agentID > 0 && rpcPeer != nil {
-		rpcPeer.ReleaseAgentTasks(context.Background(), agentID)
+		scheduleAgentRelease(agentID, rpcPeer)
 	}
 }
 
@@ -256,6 +261,11 @@ func (s *wsAgentState) handleRegister(_ context.Context, env Envelope, hostname 
 	s.mu.Lock()
 	s.agentID = agent.ID
 	s.mu.Unlock()
+
+	// #208: if this agent_id has a pending deferred-release from a
+	// recent disconnect, cancel it — the agent came back within the
+	// grace window, its in-flight workflows survive the blip.
+	cancelPendingAgentRelease(agent.ID)
 
 	log.Info().Int64("agent_id", agent.ID).Str("hostname", hostname).Msg("ws-agent: registered")
 	s.send(MsgRegistered, env.Ref, RegisteredPayload{AgentID: agent.ID})
