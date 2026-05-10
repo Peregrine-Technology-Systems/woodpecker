@@ -473,8 +473,30 @@ func (q *fifo) updateDepStatusInQueue(taskID string, status model.StatusValue) {
 		for _, dep := range waiting.Dependencies {
 			if taskID == dep {
 				waiting.DepStatus[dep] = status
+				// #192: a waiting task whose dep just transitioned to
+				// terminal failure will never dispatch successfully —
+				// surface that as a dispatch failure even though the
+				// task itself stays in the queue until ShouldRun
+				// re-evaluates and skips/cancels it.
+				if isTerminalFailure(status) {
+					recordDispatchFailure("dependency_unsatisfied_terminal")
+				}
 			}
 		}
+	}
+}
+
+// isTerminalFailure reports whether a workflow status guarantees that
+// dependents will never dispatch (regardless of run_on / when settings).
+// Mirrors the upstream model.StatusValue terminal-failure set; kept
+// small + local so the queue package doesn't reach across into pipeline
+// status logic.
+func isTerminalFailure(s model.StatusValue) bool {
+	switch s {
+	case model.StatusFailure, model.StatusError, model.StatusKilled, model.StatusCanceled:
+		return true
+	default:
+		return false
 	}
 }
 
@@ -488,6 +510,8 @@ func (q *fifo) removeFromPendingAndWaiting(taskID string) error {
 		if task.ID == taskID {
 			log.Debug().Msgf("queue: %s is removed from pending", taskID)
 			_ = q.pending.Remove(element)
+			// #192: task was in pending — never dispatched to a worker.
+			recordDispatchFailure("cancelled_before_dispatch")
 			return nil
 		}
 	}
@@ -498,6 +522,9 @@ func (q *fifo) removeFromPendingAndWaiting(taskID string) error {
 		if task.ID == taskID {
 			log.Debug().Msgf("queue: %s is removed from waitingOnDeps", taskID)
 			_ = q.waitingOnDeps.Remove(element)
+			// #192: task was waiting for deps and got pulled before they
+			// cleared — never dispatched.
+			recordDispatchFailure("cancelled_before_dispatch")
 			return nil
 		}
 	}
