@@ -34,166 +34,6 @@ import (
 	"go.woodpecker-ci.org/woodpecker/v3/shared/token"
 )
 
-// GetQueueInfo
-//
-//	@Summary		Get pipeline queue information
-//	@Description	Returns pipeline queue information with agent details
-//	@Router			/queue/info [get]
-//	@Produce		json
-//	@Success		200	{object}	QueueInfo
-//	@Tags			Pipeline queues
-//	@Param			Authorization	header	string	true	"Insert your personal access token"	default(Bearer <personal access token>)
-func GetQueueInfo(c *gin.Context) {
-	info := server.Config.Services.Queue.Info(c)
-	_store := store.FromContext(c)
-
-	// Create a map to store agent names by ID
-	agentNameMap := make(map[int64]string)
-
-	// Process tasks and add agent names
-	pendingWithAgents, err := processQueueTasks(_store, info.Pending, agentNameMap)
-	if err != nil {
-		c.String(http.StatusInternalServerError, err.Error())
-		return
-	}
-
-	waitingWithAgents, err := processQueueTasks(_store, info.WaitingOnDeps, agentNameMap)
-	if err != nil {
-		c.String(http.StatusInternalServerError, err.Error())
-		return
-	}
-
-	runningWithAgents, err := processQueueTasks(_store, info.Running, agentNameMap)
-	if err != nil {
-		c.String(http.StatusInternalServerError, err.Error())
-		return
-	}
-
-	// Create response with agent-enhanced tasks
-	response := model.QueueInfo{
-		Pending:       pendingWithAgents,
-		WaitingOnDeps: waitingWithAgents,
-		Running:       runningWithAgents,
-		Stats: struct {
-			WorkerCount        int `json:"worker_count"`
-			PendingCount       int `json:"pending_count"`
-			WaitingOnDepsCount int `json:"waiting_on_deps_count"`
-			RunningCount       int `json:"running_count"`
-		}{
-			WorkerCount:        info.Stats.Workers,
-			PendingCount:       info.Stats.Pending,
-			WaitingOnDepsCount: info.Stats.WaitingOnDeps,
-			RunningCount:       info.Stats.Running,
-		},
-		Paused: info.Paused,
-	}
-
-	c.IndentedJSON(http.StatusOK, response)
-}
-
-// getAgentName finds an agent's name, utilizing a map as a cache.
-func getAgentName(store store.Store, agentNameMap map[int64]string, agentID int64) (string, bool) {
-	// 1. Check the cache first.
-	name, exists := agentNameMap[agentID]
-	if exists {
-		return name, true
-	}
-
-	// 2. If not in cache, query the store.
-	agent, err := store.AgentFind(agentID)
-	if err != nil || agent == nil {
-		// Agent not found or an error occurred.
-		return "", false
-	}
-
-	// 3. Found the agent, update the cache and return the name.
-	if agent.Name != "" {
-		agentNameMap[agentID] = agent.Name
-		return agent.Name, true
-	}
-
-	return "", false
-}
-
-// processQueueTasks converts tasks to QueueTask structs and adds agent names.
-func processQueueTasks(store store.Store, tasks []*model.Task, agentNameMap map[int64]string) ([]model.QueueTask, error) {
-	result := make([]model.QueueTask, 0, len(tasks))
-
-	for _, task := range tasks {
-		taskResponse := model.QueueTask{
-			Task: *task,
-		}
-
-		if task.AgentID != 0 {
-			name, ok := getAgentName(store, agentNameMap, task.AgentID)
-			if !ok {
-				// Agent disappeared (server restart, pruned). Task is still
-				// valid — use placeholder name, don't error. The queue will
-				// reassign it when the deadline expires.
-				taskResponse.AgentName = fmt.Sprintf("agent-%d (disconnected)", task.AgentID)
-			} else {
-				taskResponse.AgentName = name
-			}
-		}
-
-		if task.PipelineID != 0 {
-			p, err := store.GetPipeline(task.PipelineID)
-			if err != nil {
-				return nil, fmt.Errorf("pipeline not found for task %s", task.ID)
-			}
-
-			taskResponse.PipelineNumber = p.Number
-		}
-
-		result = append(result, taskResponse)
-	}
-	return result, nil
-}
-
-// PauseQueue
-//
-//	@Summary	Pause the pipeline queue
-//	@Router		/queue/pause [post]
-//	@Produce	plain
-//	@Success	204
-//	@Tags		Pipeline queues
-//	@Param		Authorization	header	string	true	"Insert your personal access token"	default(Bearer <personal access token>)
-func PauseQueue(c *gin.Context) {
-	server.Config.Services.Queue.Pause()
-	c.Status(http.StatusNoContent)
-}
-
-// ResumeQueue
-//
-//	@Summary	Resume the pipeline queue
-//	@Router		/queue/resume [post]
-//	@Produce	plain
-//	@Success	204
-//	@Tags		Pipeline queues
-//	@Param		Authorization	header	string	true	"Insert your personal access token"	default(Bearer <personal access token>)
-func ResumeQueue(c *gin.Context) {
-	server.Config.Services.Queue.Resume()
-	c.Status(http.StatusNoContent)
-}
-
-// BlockTilQueueHasRunningItem
-//
-//	@Summary	Block til pipeline queue has a running item
-//	@Router		/queue/norunningpipelines [get]
-//	@Produce	plain
-//	@Success	204
-//	@Tags		Pipeline queues
-//	@Param		Authorization	header	string	true	"Insert your personal access token"	default(Bearer <personal access token>)
-func BlockTilQueueHasRunningItem(c *gin.Context) {
-	for {
-		info := server.Config.Services.Queue.Info(c)
-		if info.Stats.Running == 0 {
-			break
-		}
-	}
-	c.Status(http.StatusNoContent)
-}
-
 // PostHook
 //
 //	@Summary	Incoming webhook from forge
@@ -203,6 +43,13 @@ func BlockTilQueueHasRunningItem(c *gin.Context) {
 //	@Tags		System
 //	@Param		hook	body	object	true	"the webhook payload; forge is automatically detected"
 func PostHook(c *gin.Context) {
+	// #191: count every webhook receipt before any validation, so
+	// woodpecker_webhooks_received_total is comparable against the forge's
+	// outbound delivery log (e.g. GitHub's webhook page). Source label is
+	// derived from request headers each forge sends; "unknown" when no
+	// match (also useful — those rows reveal stuck integrations).
+	webhooksReceived.WithLabelValues(detectWebhookSource(c.Request)).Inc()
+
 	_store := store.FromContext(c)
 
 	//
@@ -221,21 +68,22 @@ func PostHook(c *gin.Context) {
 		return repo.Hash, nil
 	})
 	if err != nil {
+		webhooksDropped.WithLabelValues("parse_token_error").Inc()
 		msg := "failure to parse token from hook"
 		log.Error().Err(err).Msg(msg)
 		c.String(http.StatusBadRequest, msg)
 		return
 	}
 
-	if repo == nil {
-		msg := "failure to get repo from token"
-		log.Error().Msg(msg)
-		c.String(http.StatusBadRequest, msg)
-		return
-	}
+	// Note: a defensive `if repo == nil` check used to live here, but the
+	// upstream callback at line 68 (`return repo.Hash, nil`) nil-panics
+	// before this point if getRepoFromToken returns (nil, nil). The check
+	// was unreachable in current code; if the callback is ever refactored
+	// to be nil-safe, restore the guard with a webhooks_dropped reason.
 
 	_forge, err := server.Config.Services.Manager.ForgeFromRepo(repo)
 	if err != nil {
+		webhooksDropped.WithLabelValues("forge_lookup_error").Inc()
 		log.Error().Err(err).Int64("repo-id", repo.ID).Msgf("Cannot get forge with id: %d", repo.ForgeID)
 		c.AbortWithStatus(http.StatusInternalServerError)
 		return
@@ -248,12 +96,14 @@ func PostHook(c *gin.Context) {
 	repoFromForge, pipelineFromForge, err := _forge.Hook(c, c.Request)
 	if err != nil {
 		if errors.Is(err, &types.ErrIgnoreEvent{}) {
+			webhooksDropped.WithLabelValues("ignore_event").Inc()
 			msg := fmt.Sprintf("forge driver: %s", err)
 			log.Debug().Err(err).Msg(msg)
 			c.String(http.StatusOK, msg)
 			return
 		}
 
+		webhooksDropped.WithLabelValues("parse_hook_error").Inc()
 		msg := "failure to parse hook"
 		log.Debug().Err(err).Msg(msg)
 		c.String(http.StatusBadRequest, msg)
@@ -261,12 +111,14 @@ func PostHook(c *gin.Context) {
 	}
 
 	if pipelineFromForge == nil {
+		webhooksDropped.WithLabelValues("empty_pipeline").Inc()
 		msg := "ignoring hook: hook parsing resulted in empty pipeline"
 		log.Debug().Msg(msg)
 		c.String(http.StatusOK, msg)
 		return
 	}
 	if repoFromForge == nil {
+		webhooksDropped.WithLabelValues("repo_from_forge_nil").Inc()
 		msg := "failure to ascertain repo from hook"
 		log.Debug().Msg(msg)
 		c.String(http.StatusBadRequest, msg)
@@ -278,6 +130,7 @@ func PostHook(c *gin.Context) {
 	//
 
 	if repo.ForgeRemoteID != repoFromForge.ForgeRemoteID {
+		webhooksDropped.WithLabelValues("repo_id_mismatch").Inc()
 		log.Warn().Msgf("ignoring hook: repo %s does not match the repo from the token", repo.FullName)
 		c.String(http.StatusBadRequest, "failure to parse token from hook")
 		return
@@ -288,12 +141,14 @@ func PostHook(c *gin.Context) {
 	//
 
 	if !repo.IsActive {
+		webhooksDropped.WithLabelValues("repo_inactive").Inc()
 		log.Debug().Msgf("ignoring hook: repo %s is inactive", repoFromForge.FullName)
 		c.Status(http.StatusNoContent)
 		return
 	}
 
 	if repo.UserID == 0 {
+		webhooksDropped.WithLabelValues("repo_no_owner").Inc()
 		log.Warn().Msgf("ignoring hook. repo %s has no owner.", repo.FullName)
 		c.Status(http.StatusNoContent)
 		return
@@ -301,6 +156,7 @@ func PostHook(c *gin.Context) {
 
 	user, err := _store.GetUser(repo.UserID)
 	if err != nil {
+		webhooksDropped.WithLabelValues("db_user_lookup_error").Inc()
 		handleDBError(c, err)
 		return
 	}
@@ -314,6 +170,7 @@ func PostHook(c *gin.Context) {
 		// create a redirection
 		err = _store.CreateRedirection(&model.Redirection{RepoID: repo.ID, FullName: repo.FullName})
 		if err != nil {
+			webhooksDropped.WithLabelValues("db_redirection_error").Inc()
 			_ = c.AbortWithError(http.StatusInternalServerError, err)
 			return
 		}
@@ -322,6 +179,7 @@ func PostHook(c *gin.Context) {
 	repo.Update(repoFromForge)
 	err = _store.UpdateRepo(repo)
 	if err != nil {
+		webhooksDropped.WithLabelValues("db_repo_update_error").Inc()
 		c.String(http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -331,6 +189,7 @@ func PostHook(c *gin.Context) {
 	//
 
 	if pipelineFromForge.IsPullRequest() && !repo.AllowPull {
+		webhooksDropped.WithLabelValues("pull_disabled").Inc()
 		log.Debug().Str("repo", repo.FullName).Msg("ignoring hook: pull requests are disabled for this repo in woodpecker")
 		c.Status(http.StatusNoContent)
 		return
@@ -342,6 +201,7 @@ func PostHook(c *gin.Context) {
 
 	pl, err := pipeline.Create(c, _store, repo, pipelineFromForge)
 	if err != nil {
+		webhooksDropped.WithLabelValues("pipeline_create_failed").Inc()
 		handlePipelineErr(c, err)
 	} else {
 		c.JSON(http.StatusOK, pl)
