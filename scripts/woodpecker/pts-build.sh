@@ -82,20 +82,30 @@ gsutil -m -q rsync -r "${GOCACHE}/" "${BUILD_CACHE_BUCKET}/go-build/" 2>/dev/nul
     echo "    go-build saved" || echo "    ⚠️  go-build save failed (non-fatal)"
 # go-mod not saved — go mod download is faster than GCS rsync for 3.5GB (#164)
 
-# ── Upload binary to GCS for deployment ──
-# woodpecker-deploy.sh on d3ci42 polls DEPLOY_BUCKET/pending and picks this up.
+# ── Upload binaries to GCS for deployment + Packer baking ──
+# woodpecker-deploy.sh on d3ci42 polls DEPLOY_BUCKET/pending for the server binary.
+# ci-image-builder reads woodpecker-agent from GCS too (peregrine-infrastructure#1812;
+# this PR's #188 follow-up eliminates the GitHub eventual-consistency dependency on
+# the agent download path that #1813's interim 8×5s retry was working around).
 echo ""; echo "==> Uploading ${VERSION} to GCS for deployment..."
-SHA256=$(sha256sum bin/woodpecker-server | awk '{print $1}')
-echo "${SHA256}" > bin/woodpecker-server.sha256
+SERVER_SHA256=$(sha256sum bin/woodpecker-server | awk '{print $1}')
+echo "${SERVER_SHA256}" > bin/woodpecker-server.sha256
+AGENT_SHA256=$(sha256sum bin/woodpecker-agent | awk '{print $1}')
+echo "${AGENT_SHA256}" > bin/woodpecker-agent.sha256
 
 gsutil -q cp bin/woodpecker-server "${DEPLOY_BUCKET}/${VERSION}/woodpecker-server"
 gsutil -q cp bin/woodpecker-server.sha256 "${DEPLOY_BUCKET}/${VERSION}/woodpecker-server.sha256"
+gsutil -q cp bin/woodpecker-agent "${DEPLOY_BUCKET}/${VERSION}/woodpecker-agent"
+gsutil -q cp bin/woodpecker-agent.sha256 "${DEPLOY_BUCKET}/${VERSION}/woodpecker-agent.sha256"
 
 # Write pending-deploy marker last — woodpecker-deploy.sh polls for this
 printf '%s\n%s\n%s' "${VERSION}" "${COMMIT_SHA}" "${CI_PIPELINE_NUMBER:-0}" | \
     gsutil -q cp - "${DEPLOY_BUCKET}/pending"
-echo "    Binary and pending marker written: ${DEPLOY_BUCKET}/${VERSION}/"
-echo "    SHA256: ${SHA256}"
+echo "    Server + agent binaries and pending marker written: ${DEPLOY_BUCKET}/${VERSION}/"
+echo "    server SHA256: ${SERVER_SHA256}"
+echo "    agent  SHA256: ${AGENT_SHA256}"
+# Back-compat alias for downstream code that still reads SHA256 (#188):
+SHA256="${SERVER_SHA256}"
 
 # ── GitHub Release + binary assets ──
 REPO_FULL="Peregrine-Technology-Systems/woodpecker"
