@@ -21,14 +21,20 @@ import (
 
 // NewRPCForTesting constructs an RPC with the given queue + store but
 // WITHOUT the side effect of promauto-registering Prometheus collectors
-// against the global registry. NewRPC panics on the second call in the
-// same process because the same metric names are already registered;
-// tests that want a fresh RPC per case go through this constructor.
+// against the global registry. NewRPC itself panics on the second call
+// in the same process because the same metric names are already
+// registered; tests that want a fresh RPC per case go through this
+// constructor instead.
 //
 // Caller's caveat: code paths that increment pipelineTime / pipelineCount /
 // rpcUpdateRejectedTotal will nil-deref because those fields are NOT set.
-// In practice the WS-handler tests don't reach those paths. Add explicit
-// asserts in any test that strays.
+// In practice the WS-handler tests in `server/api/ws_agent_test.go` don't
+// reach those paths (they use Init/Done/Update/Log/Extend/ReportHealth
+// only). Add explicit asserts in any test that strays.
+//
+// This file is build-tagged-test-only by name (`*_testing.go`) per the
+// upstream Woodpecker convention; it ships in the binary but is harmless
+// because the constructor is only called from tests.
 func NewRPCForTesting(q queue.Queue, s store.Store) *RPC {
 	return &RPC{
 		queue: q,

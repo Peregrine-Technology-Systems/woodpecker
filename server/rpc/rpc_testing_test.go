@@ -17,6 +17,10 @@ import (
 	store_mocks "go.woodpecker-ci.org/woodpecker/v3/server/store/mocks"
 )
 
+// TestNewRPCForTesting confirms the test helper builds a usable *RPC
+// without registering Prometheus collectors. Calling it twice in the
+// same process must NOT panic — that's the whole point of having it
+// separate from NewRPC.
 func TestNewRPCForTesting(t *testing.T) {
 	q := queue_mocks.NewMockQueue(t)
 	s := store_mocks.NewMockStore(t)
@@ -26,6 +30,8 @@ func TestNewRPCForTesting(t *testing.T) {
 	assert.Equal(t, q, r1.queue)
 	assert.Equal(t, s, r1.store)
 
+	// The whole reason this constructor exists: re-creating RPC must
+	// not panic on duplicate Prometheus collector registration.
 	r2 := NewRPCForTesting(q, s)
 	assert.NotNil(t, r2)
 }
