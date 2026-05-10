@@ -101,6 +101,10 @@ func WSAgent(c *gin.Context) {
 	for {
 		_, message, err := conn.ReadMessage()
 		if err != nil {
+			// #209: count every disconnect with close-code + hostname-prefix
+			// labels so the leading indicator for #190 mode C is chartable
+			// in grafana without re-grepping journalctl.
+			recordWSClose(err, hostname)
 			if websocket.IsUnexpectedCloseError(err,
 				websocket.CloseGoingAway, websocket.CloseNormalClosure) {
 				log.Warn().Err(err).Str("hostname", hostname).Msg("ws-agent: unexpected close")
