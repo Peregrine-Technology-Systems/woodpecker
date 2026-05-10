@@ -140,7 +140,7 @@ func Cancel(ctx context.Context, _forge forge.Forge, _store store.Store, repo *m
 		Bool("never_dispatched", pipeline.Started == 0).
 		Str("reason", reason).
 		Msg("pipeline cancel: transitioning")
-	killedPipeline, err := UpdateToStatusKilled(_store, *pipeline, cancelInfo, plState)
+	killedPipeline, err := UpdateToStatusKilled(_store, *pipeline, cancelInfo, plState, reason)
 	if err != nil {
 		log.Error().Err(err).Msgf("UpdateToStatusKilled: %v", pipeline)
 		return err

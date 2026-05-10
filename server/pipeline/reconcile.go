@@ -16,6 +16,7 @@ package pipeline
 
 import (
 	"context"
+	"time"
 
 	"github.com/rs/zerolog/log"
 
@@ -188,6 +189,8 @@ func killOrphan(ctx context.Context, _store store.Store, pl *model.Pipeline, rep
 		Str("reason", "reconcile_orphaned").
 		Msg("pipeline cancel: transitioning")
 	pl.Status = model.StatusKilled
+	pl.KillReason = "reconcile_orphaned"
+	pl.KilledAt = time.Now().Unix()
 	if err := _store.UpdatePipeline(pl); err != nil {
 		log.Error().Err(err).Msgf("reconcile: failed to update pipeline %d", pl.ID)
 		return false

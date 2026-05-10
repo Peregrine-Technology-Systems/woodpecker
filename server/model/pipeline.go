@@ -56,6 +56,15 @@ type Pipeline struct {
 	PullRequestMilestone string                  `json:"pr_milestone,omitempty"  xorm:"pr_milestone"`
 	IsPrerelease         bool                    `json:"is_prerelease,omitempty" xorm:"is_prerelease"`
 	FromFork             bool                    `json:"from_fork,omitempty"     xorm:"from_fork"`
+	// KillReason attributes which code path moved this pipeline into
+	// Killed/Canceled/Superseded (#202). Stamped by every transition site:
+	// cancel.go::Cancel (user_initiated / superseded_by_newer_push /
+	// pending_only_canceled), reconcile.go::killOrphan (reconciler_orphan),
+	// rpc.go::release_agent_tasks (agent_disconnect), and external status
+	// API (external_status_api). Empty for pre-#202 rows; SOC 2 / ISO 27001
+	// attribution + #190 mode-C diagnostics surface.
+	KillReason string `json:"kill_reason,omitempty" xorm:"varchar(64) 'kill_reason'"`
+	KilledAt   int64  `json:"killed_at,omitempty"   xorm:"INDEX 'killed_at'"`
 } //	@name	Pipeline
 
 // TableName return database table name for xorm.
