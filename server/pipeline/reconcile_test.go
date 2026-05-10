@@ -92,6 +92,59 @@ func TestReconcileOrphanedAtStartup_SkipsPendingPipelines(t *testing.T) {
 	mockStore.AssertNotCalled(t, "UpdatePipeline", mock.Anything)
 }
 
+// TestReconcileOrphaned_NeverKillsNonRunningStatuses is the #201 regression.
+// The reconciler must ONLY consider Status=Running pipelines — every other
+// active status (created, pending, blocked, declined, error, killed,
+// canceled, success, etc.) is either pre-dispatch (their dispatch path
+// owns timing) or already terminal. Locks the predicate against accidental
+// loosening.
+func TestReconcileOrphaned_NeverKillsNonRunningStatuses(t *testing.T) {
+	statuses := []model.StatusValue{
+		model.StatusCreated, model.StatusPending, model.StatusBlocked,
+		model.StatusDeclined, model.StatusError, model.StatusKilled,
+		model.StatusCanceled, model.StatusSuccess, model.StatusSkipped,
+		model.StatusSuperseded, model.StatusPartial, model.StatusFailure,
+	}
+	for _, st := range statuses {
+		t.Run(string(st), func(t *testing.T) {
+			mockStore := mocks.NewMockStore(t)
+			q := queueWithTasks(t) // empty queue → empty active set
+			repos := []*model.Repo{{ID: 1, FullName: "org/r"}}
+			mockStore.On("RepoListAll", true, mock.Anything).Return(repos, nil)
+			mockStore.On("GetActivePipelineList", repos[0]).Return([]*model.Pipeline{
+				{ID: 100, Number: 1, Status: st, RepoID: 1},
+			}, nil)
+			// Same matrix on the steady-state Tick path:
+			r := NewOrphanReconciler(q)
+			assert.Equal(t, 0, r.Tick(mockStore), "Tick must not kill Status=%s", st)
+			assert.Equal(t, 0, ReconcileOrphanedAtStartup(mockStore, q), "Startup pass must not kill Status=%s", st)
+			mockStore.AssertNotCalled(t, "UpdatePipeline")
+		})
+	}
+}
+
+// TestReconcileOrphaned_StuckInCreated_ManyPipelines is the explicit
+// 100-pipelines acceptance criterion from #201: pipelines sitting in
+// Status=Created (whatever the reason) must never be touched, even at
+// scale.
+func TestReconcileOrphaned_StuckInCreated_ManyPipelines(t *testing.T) {
+	mockStore := mocks.NewMockStore(t)
+	q := queueWithTasks(t)
+	repos := []*model.Repo{{ID: 1, FullName: "org/scale"}}
+	mockStore.On("RepoListAll", true, mock.Anything).Return(repos, nil)
+
+	pls := make([]*model.Pipeline, 100)
+	for i := range pls {
+		pls[i] = &model.Pipeline{ID: int64(1000 + i), Number: int64(i), Status: model.StatusCreated, RepoID: 1}
+	}
+	mockStore.On("GetActivePipelineList", repos[0]).Return(pls, nil)
+
+	r := NewOrphanReconciler(q)
+	assert.Equal(t, 0, r.Tick(mockStore))
+	assert.Equal(t, 0, ReconcileOrphanedAtStartup(mockStore, q))
+	mockStore.AssertNotCalled(t, "UpdatePipeline")
+}
+
 func TestReconcileOrphanedAtStartup_NoActiveRepos(t *testing.T) {
 	mockStore := mocks.NewMockStore(t)
 	q := queueWithTasks(t)
