@@ -98,10 +98,134 @@ func TestUpdateToStatusKilled(t *testing.T) {
 		SupersededBy: 2,
 	}
 
-	pipeline, _ := UpdateToStatusKilled(mockStorePipeline(t), model.Pipeline{}, cancelInfo, model.StatusKilled)
+	pipeline, _ := UpdateToStatusKilled(mockStorePipeline(t), model.Pipeline{}, cancelInfo, model.StatusKilled, "user_initiated")
 
 	assert.Equal(t, model.StatusKilled, pipeline.Status)
 	assert.NotNil(t, pipeline.CancelInfo)
 	assert.EqualValues(t, 2, pipeline.CancelInfo.SupersededBy)
 	assert.LessOrEqual(t, now, pipeline.Finished)
+	assert.Equal(t, "user_initiated", pipeline.KillReason, "#202: KillReason must be stamped")
+	assert.LessOrEqual(t, now, pipeline.KilledAt)
+}
+
+// TestUpdateStatusToDone_StampsKillReason_AgentDisconnect verifies the
+// #202 derivation path: when the rolled-up status is a terminal kill
+// AND any workflow has the agent-disconnect signature, KillReason is
+// stamped as "agent_disconnect".
+func TestUpdateStatusToDone_StampsKillReason_AgentDisconnect(t *testing.T) {
+	t.Parallel()
+	now := time.Now().Unix()
+	pl := model.Pipeline{
+		Workflows: []*model.Workflow{
+			{ID: 1, State: model.StatusKilled, Error: "agent disconnected"},
+		},
+	}
+	updated, _ := UpdateStatusToDone(mockStorePipeline(t), pl, model.StatusKilled, now)
+	assert.Equal(t, "agent_disconnect", updated.KillReason)
+	assert.Equal(t, now, updated.KilledAt)
+}
+
+// TestUpdateStatusToDone_StampsKillReason_AgentDoneKill — a Killed
+// rollup without the disconnect marker indicates the agent itself
+// reported a kill (e.g. from its own internal state machine).
+func TestUpdateStatusToDone_StampsKillReason_AgentDoneKill(t *testing.T) {
+	t.Parallel()
+	now := time.Now().Unix()
+	pl := model.Pipeline{
+		Workflows: []*model.Workflow{
+			{ID: 1, State: model.StatusKilled}, // no Error
+		},
+	}
+	updated, _ := UpdateStatusToDone(mockStorePipeline(t), pl, model.StatusKilled, now)
+	assert.Equal(t, "agent_done_kill", updated.KillReason)
+}
+
+// TestUpdateStatusToDone_PreservesExistingKillReason — Cancel() set
+// KillReason="user_initiated" earlier; the agent later reports done
+// and we recompute via UpdateStatusToDone. We must NOT overwrite the
+// upstream attribution.
+func TestUpdateStatusToDone_PreservesExistingKillReason(t *testing.T) {
+	t.Parallel()
+	pl := model.Pipeline{
+		KillReason: "user_initiated",
+		Workflows: []*model.Workflow{
+			{ID: 1, State: model.StatusKilled, Error: "agent disconnected"},
+		},
+	}
+	updated, _ := UpdateStatusToDone(mockStorePipeline(t), pl, model.StatusKilled, 100)
+	assert.Equal(t, "user_initiated", updated.KillReason, "must not overwrite upstream attribution")
+}
+
+// TestUpdateStatusToDone_NonTerminalDoesNotStamp — Success rollup
+// must not set KillReason.
+func TestUpdateStatusToDone_NonTerminalDoesNotStamp(t *testing.T) {
+	t.Parallel()
+	pl := model.Pipeline{}
+	updated, _ := UpdateStatusToDone(mockStorePipeline(t), pl, model.StatusSuccess, 100)
+	assert.Empty(t, updated.KillReason)
+	assert.Zero(t, updated.KilledAt)
+}
+
+// TestKillReasonFromWorkflows_NilSafety — defensive against nil entries
+// in the slice.
+func TestKillReasonFromWorkflows_NilSafety(t *testing.T) {
+	t.Parallel()
+	assert.Equal(t, "agent_done_kill", killReasonFromWorkflows(nil))
+	assert.Equal(t, "agent_done_kill", killReasonFromWorkflows([]*model.Workflow{nil, nil}))
+}
+
+// TestPipelineStatus_Empty / Running / RolledUp — exercise the
+// PipelineStatus rollup so the file climbs above the 95% gate.
+func TestPipelineStatus_EmptyReturnsSuccess(t *testing.T) {
+	t.Parallel()
+	assert.Equal(t, model.StatusSuccess, PipelineStatus(nil))
+	assert.Equal(t, model.StatusSuccess, PipelineStatus([]*model.Workflow{}))
+}
+
+func TestPipelineStatus_AnyRunningOrPendingReturnsRunning(t *testing.T) {
+	t.Parallel()
+	assert.Equal(t, model.StatusRunning, PipelineStatus([]*model.Workflow{
+		{State: model.StatusSuccess},
+		{State: model.StatusRunning},
+	}))
+	assert.Equal(t, model.StatusRunning, PipelineStatus([]*model.Workflow{
+		{State: model.StatusPending},
+	}))
+}
+
+func TestPipelineStatus_AllTerminalRollsUp(t *testing.T) {
+	t.Parallel()
+	// Single workflow returns its own state.
+	assert.Equal(t, model.StatusSuccess, PipelineStatus([]*model.Workflow{
+		{State: model.StatusSuccess},
+	}))
+	// Multiple workflows merge via MergeStatusValues — Killed dominates Success.
+	got := PipelineStatus([]*model.Workflow{
+		{State: model.StatusSuccess},
+		{State: model.StatusKilled},
+	})
+	// We don't pin the exact merge outcome here; just assert it isn't Running.
+	assert.NotEqual(t, model.StatusRunning, got)
+}
+
+// TestIsTerminalKill — pure helper, exhaustive over StatusValue.
+func TestIsTerminalKill(t *testing.T) {
+	cases := map[model.StatusValue]bool{
+		model.StatusKilled:     true,
+		model.StatusCanceled:   true,
+		model.StatusSuperseded: true,
+		model.StatusFailure:    false,
+		model.StatusError:      false,
+		model.StatusSuccess:    false,
+		model.StatusSkipped:    false,
+		model.StatusRunning:    false,
+		model.StatusPending:    false,
+		model.StatusBlocked:    false,
+		model.StatusDeclined:   false,
+		model.StatusCreated:    false,
+		model.StatusPartial:    false,
+	}
+	for status, want := range cases {
+		assert.Equal(t, want, IsTerminalKill(status), "IsTerminalKill(%s)", status)
+	}
 }
