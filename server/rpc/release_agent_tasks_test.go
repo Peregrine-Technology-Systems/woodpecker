@@ -99,10 +99,14 @@ func TestReleaseAgentTasks_KillsWorkflowAndPipeline(t *testing.T) {
 	})).Return(nil)
 	s.On("GetPipeline", int64(200)).Return(pipelineModel, nil)
 	s.On("WorkflowGetTree", pipelineModel).Return([]*model.Workflow{
-		{ID: 100, State: model.StatusKilled, Finished: 1},
+		// Error="agent disconnected" matches Workflow.KilledByAgentDisconnect()
+		// which UpdateStatusToDone uses to derive KillReason="agent_disconnect".
+		{ID: 100, State: model.StatusKilled, Finished: 1, Error: "agent disconnected"},
 	}, nil)
 	s.On("UpdatePipeline", mock.MatchedBy(func(p *model.Pipeline) bool {
-		return p.Status == model.StatusKilled && p.Finished > 0
+		// #202: agent-disconnect kills are stamped with reason + killed_at
+		return p.Status == model.StatusKilled && p.Finished > 0 &&
+			p.KillReason == "agent_disconnect" && p.KilledAt > 0
 	})).Return(nil)
 	s.On("GetRepo", int64(300)).Return(repo, nil)
 	// fork#44: updateForgeStatus now early-returns BEFORE GetUser when the

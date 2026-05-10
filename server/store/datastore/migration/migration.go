@@ -57,6 +57,7 @@ var migrationTasks = []*xormigrate.Migration{
 	&fixForgeColumns,
 	&addTaskPriority,
 	&addPriorityAudit,
+	&addPipelineKillReason,
 }
 
 var allBeans = []any{
