@@ -1,8 +1,14 @@
 #!/usr/bin/env bash
-# pts-build.sh — compile woodpecker and publish to GCS for deployment.
+# pts-build.sh — compile woodpecker and stage binaries in GCS for deployment.
 # Runs natively on pts-build-vm via the pts-build Woodpecker agent (#140).
-# Does NOT touch d3ci42 directly — binary is placed in GCS and a pending-deploy
-# marker is written. woodpecker-deploy.sh on d3ci42 picks it up via systemd timer.
+#
+# (#217) Cache restore/save uses streaming zstd tarballs instead of gsutil
+# rsync — eliminates 258 per-object HEAD round-trips, cuts restore from
+# ~5-6min to ~1-2min. Persistent data disk dependency removed.
+#
+# (#219) Does NOT write the pending-deploy marker — that is pts-promote.sh's
+# job (runs after pts-build-cleanup). Server restart happens only after the
+# full pipeline is done, not mid-cleanup.
 #
 # Secrets: GH_TOKEN (tagging + release)
 set -euo pipefail
@@ -15,48 +21,44 @@ DEPLOY_BUCKET="${BUILD_CACHE_BUCKET}/woodpecker-deploy"
 
 echo "==> pts-build: ${VERSION} (${SHA_SHORT})"
 
-# ── GCS build cache ──
+# ── Go toolchain + cache paths ──
 export PATH="/usr/local/go/bin:$PATH"
-# Use the persistent 200GB data disk for build caches — the 30GB root
-# partition fills up when the agent's HOME is a temp workspace directory.
-DATA_DISK="/mnt/pts-build-data"
-if [ -d "${DATA_DISK}" ] && [ "$(df -P "${DATA_DISK}" | awk 'NR==2{print $4}')" -gt 5000000 ]; then
-    GOCACHE="${DATA_DISK}/go-build-cache"
-    GOMODCACHE="${DATA_DISK}/go-mod-cache"
-    export GOTELEMETRY=off
-else
-    GOCACHE="${HOME}/.cache/go-build"
-    GOMODCACHE="${HOME}/go/pkg/mod"
-fi
+export GOCACHE="${HOME}/.cache/go-build"
+export GOMODCACHE="${HOME}/go/pkg/mod"
+export GOTELEMETRY=off
 mkdir -p "${GOCACHE}" "${GOMODCACHE}"
 
-echo "==> Restoring GCS build cache (go-build only)..."
-gsutil -m -q rsync -r "${BUILD_CACHE_BUCKET}/go-build/" "${GOCACHE}/" 2>/dev/null && \
-    echo "    go-build: $(du -sh "${GOCACHE}" | cut -f1)" || echo "    go-build: cold"
+# (#217) Single-object tarball restore: one GCS GET, no per-object round-trips.
+# zstd -d is ~3-4x faster than gzip on Go build artifacts.
+echo "==> Restoring go-build cache..."
+if gsutil -q cp "${BUILD_CACHE_BUCKET}/go-build-cache.tar.zst" - 2>/dev/null \
+    | zstd -d | tar -x -C "${HOME}"; then
+    echo "    go-build: $(du -sh "${GOCACHE}" | cut -f1)"
+else
+    echo "    go-build: cold start"
+fi
 
-# go-mod: download only what go.sum requires — faster and never accumulates stale
-# modules. GCS go-mod/ is intentionally NOT restored (#164).
-echo "==> Downloading Go modules (go mod download)..."
-export GOMODCACHE
-go mod download 2>/dev/null && echo "    modules ready" || echo "    ⚠️  go mod download had warnings (non-fatal)"
+# go-mod: download only — GCS rsync is slower than network fetch for 3.5GB (#164)
+echo "==> Downloading Go modules..."
+go mod download 2>/dev/null && echo "    modules ready" || \
+    echo "    ⚠️  go mod download had warnings (non-fatal)"
 
 # ── Web UI ──
-# We never change the UI — restore the pre-built dist/ from GCS instead of
-# running pnpm on every compile. Only falls back to pnpm if GCS cache is empty.
-echo ""; echo "==> Restoring web UI dist/ from GCS cache..."
+# (#217) Tarball covers both dist/ and node_modules/ — eliminates the
+# pnpm install fallback that fires on every cold start with no cached
+# node_modules.
+echo ""; echo "==> Restoring web cache (dist + node_modules)..."
 mkdir -p web/dist
-gsutil -m -q rsync -r "${BUILD_CACHE_BUCKET}/woodpecker-web-dist/" web/dist/ 2>/dev/null
-DIST_COUNT=$(ls web/dist/ 2>/dev/null | wc -l)
-if [ "${DIST_COUNT}" -gt 10 ]; then
-    echo "    dist/: ${DIST_COUNT} files (from GCS cache)"
+if gsutil -q cp "${BUILD_CACHE_BUCKET}/web-cache.tar.zst" - 2>/dev/null \
+    | zstd -d | tar -x -C web; then
+    echo "    dist/: $(ls web/dist/ | wc -l) files (from cache)"
 else
-    echo "    GCS cache empty or stale — running pnpm build..."
-    cd web && pnpm install --no-frozen-lockfile >/dev/null 2>&1 && \
-        node_modules/.bin/vite build --base=/BASE_PATH >/dev/null 2>&1
-    echo "    dist/: $(ls dist/ | wc -l) files (freshly built)"
+    echo "    cache miss — running pnpm build..."
+    cd web
+    pnpm install --no-frozen-lockfile >/dev/null 2>&1
+    node_modules/.bin/vite build --base=/BASE_PATH >/dev/null 2>&1
     cd ..
-    gsutil -m -q rsync -r web/dist/ "${BUILD_CACHE_BUCKET}/woodpecker-web-dist/" 2>/dev/null && \
-        echo "    dist/ saved to GCS cache"
+    echo "    dist/: $(ls web/dist/ | wc -l) files (freshly built)"
 fi
 
 # ── Compile ──
@@ -74,20 +76,20 @@ CGO_ENABLED=0 nice -n 10 go build \
     -ldflags "-s -w -X go.woodpecker-ci.org/woodpecker/v3/version.Version=${VERSION}" \
     -o bin/woodpecker-agent ./cmd/agent
 echo "    $(du -h bin/woodpecker-agent | cut -f1)"
-# Ephemeral VM (#1669): no local agent binary caching — VM is deleted after compile.
-# Agent binary is published via GitHub Release (Phase 3b) for Packer image baking.
 
-echo ""; echo "==> Saving GCS build cache (go-build only)..."
-gsutil -m -q rsync -r "${GOCACHE}/" "${BUILD_CACHE_BUCKET}/go-build/" 2>/dev/null && \
-    echo "    go-build saved" || echo "    ⚠️  go-build save failed (non-fatal)"
-# go-mod not saved — go mod download is faster than GCS rsync for 3.5GB (#164)
+# ── Save caches ──
+echo ""; echo "==> Saving go-build cache..."
+tar -c -C "${HOME}" .cache/go-build \
+    | zstd -3 -T0 | gsutil -q cp - "${BUILD_CACHE_BUCKET}/go-build-cache.tar.zst" && \
+    echo "    go-build cache saved" || echo "    ⚠️  go-build cache save failed (non-fatal)"
 
-# ── Upload binaries to GCS for deployment + Packer baking ──
-# woodpecker-deploy.sh on d3ci42 polls DEPLOY_BUCKET/pending for the server binary.
-# ci-image-builder reads woodpecker-agent from GCS too (peregrine-infrastructure#1812;
-# this PR's #188 follow-up eliminates the GitHub eventual-consistency dependency on
-# the agent download path that #1813's interim 8×5s retry was working around).
-echo ""; echo "==> Uploading ${VERSION} to GCS for deployment..."
+echo "==> Saving web cache (dist + node_modules)..."
+tar -c -C web dist node_modules \
+    | zstd -3 -T0 | gsutil -q cp - "${BUILD_CACHE_BUCKET}/web-cache.tar.zst" && \
+    echo "    web cache saved" || echo "    ⚠️  web cache save failed (non-fatal)"
+
+# ── Upload binaries to GCS ──
+echo ""; echo "==> Uploading ${VERSION} to GCS..."
 SERVER_SHA256=$(sha256sum bin/woodpecker-server | awk '{print $1}')
 echo "${SERVER_SHA256}" > bin/woodpecker-server.sha256
 AGENT_SHA256=$(sha256sum bin/woodpecker-agent | awk '{print $1}')
@@ -98,13 +100,11 @@ gsutil -q cp bin/woodpecker-server.sha256 "${DEPLOY_BUCKET}/${VERSION}/woodpecke
 gsutil -q cp bin/woodpecker-agent "${DEPLOY_BUCKET}/${VERSION}/woodpecker-agent"
 gsutil -q cp bin/woodpecker-agent.sha256 "${DEPLOY_BUCKET}/${VERSION}/woodpecker-agent.sha256"
 
-# Write pending-deploy marker last — woodpecker-deploy.sh polls for this
-printf '%s\n%s\n%s' "${VERSION}" "${COMMIT_SHA}" "${CI_PIPELINE_NUMBER:-0}" | \
-    gsutil -q cp - "${DEPLOY_BUCKET}/pending"
-echo "    Server + agent binaries and pending marker written: ${DEPLOY_BUCKET}/${VERSION}/"
+echo "    Server + agent uploaded: ${DEPLOY_BUCKET}/${VERSION}/"
 echo "    server SHA256: ${SERVER_SHA256}"
 echo "    agent  SHA256: ${AGENT_SHA256}"
-# Back-compat alias for downstream code that still reads SHA256 (#188):
+
+# Back-compat alias for downstream code that still reads SHA256 (#188)
 SHA256="${SERVER_SHA256}"
 
 # ── GitHub Release + binary assets ──
@@ -181,8 +181,6 @@ fi
 rm -f "${JOB_FILE}"
 
 # ── Create infra tracking issue (SOC 2 CC7.2 traceability) ──
-# The ci-image-builder auto-PR (chore/agent-image-bump) must be linked to
-# an issue for our standard PR→issue audit trail.
 echo ""; echo "==> Phase 3d: create infra tracking issue"
 if [ -n "${GH_TOKEN:-}" ]; then
     INFRA_REPO="Peregrine-Technology-Systems/peregrine-infrastructure"
@@ -198,5 +196,5 @@ else
     echo "    Skipping: GH_TOKEN not set"
 fi
 
-echo ""; echo "==> pts-build complete: ${VERSION}"
-echo "    Deployment will complete within 2 minutes via woodpecker-deploy.sh on d3ci42."
+echo ""; echo "==> pts-build compile complete: ${VERSION}"
+echo "    Pending marker will be written by pts-promote.sh after cleanup (#219)."
