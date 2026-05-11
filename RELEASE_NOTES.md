@@ -3,6 +3,7 @@
 ## Unreleased
 
 - fix: install zstd at runtime if missing on pts-build-vm (#217 follow-up). pts-build-vm doesn't have zstd pre-installed; pl403 failed after 79s with command not found. Adds runtime apt-get install guard at script start.
+- fix: migration bridge for web cache — fall back to legacy rsync on first tarball run (#217 follow-up). web-cache.tar.zst doesn't exist yet; cold-start else branch ran pnpm install which isn't on fresh pts-build-vm images; set -e exits the script. Adds elif that uses the still-valid woodpecker-web-dist/ legacy path. First run primes the tarball; subsequent runs use it directly.
 
 - fix: cleanup workflow runs on `killed` pipelines (#218). pts-build-cleanup.yaml top-level `when.status` and notify step's inner `when` now include `killed` alongside `success` and `failure`. Without this, a scaler-killed pipeline leaks the pts-build-vm and never writes the pending marker.
 - perf: replace go-build + web GCS rsync with streaming zstd tarballs in pts-build (#217). go-build rsync was issuing 258 per-object HEAD round-trips before transferring data, taking 5-6min on a 12GB cache. Replaced with `gsutil cp | zstd -d | tar -x` pipeline: one GCS GET, no round-trips, ~1-2min restore. Web cache tarball now covers both `dist/` and `node_modules/`, eliminating the `pnpm install` cold-start fallback. Persistent data disk dependency removed — boot disk is sufficient. Cache save uses `tar | zstd -3 -T0 | gsutil cp` (all cores, streaming, no intermediate write).
