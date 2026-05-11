@@ -1,7 +1,7 @@
 when:
   - event: [push, manual]
     branch: main
-    status: [success, failure]
+    status: [success, failure, killed]
 
 labels:
   backend: local
@@ -33,5 +33,5 @@ steps:
     commands:
       - scripts/woodpecker/pts-notify.sh
     when:
-      - status: [success, failure]
+      - status: [success, failure, killed]
     depends_on: [promote]

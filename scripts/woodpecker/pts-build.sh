@@ -79,9 +79,20 @@ echo "    $(du -h bin/woodpecker-agent | cut -f1)"
 
 # ── Save caches ──
 echo ""; echo "==> Saving go-build cache..."
-tar -c -C "${HOME}" .cache/go-build \
-    | zstd -3 -T0 | gsutil -q cp - "${BUILD_CACHE_BUCKET}/go-build-cache.tar.zst" && \
-    echo "    go-build cache saved" || echo "    ⚠️  go-build cache save failed (non-fatal)"
+if tar -c -C "${HOME}" .cache/go-build \
+    | zstd -3 -T0 | gsutil -q cp - "${BUILD_CACHE_BUCKET}/go-build-cache.tar.zst"; then
+    echo "    go-build cache saved"
+    # One-time migration: remove legacy rsync tree now that tarball is in place (#217).
+    # Idempotent — silently skips if already removed.
+    if gsutil ls "${BUILD_CACHE_BUCKET}/go-build/" 2>/dev/null | grep -q .; then
+        echo "    Removing legacy go-build/ (migrated to tarball)..."
+        gsutil -m -q rm -r "${BUILD_CACHE_BUCKET}/go-build/" 2>/dev/null && \
+            echo "    Legacy go-build/ removed (12 GiB freed)" || \
+            echo "    ⚠️  Legacy go-build/ removal failed (non-fatal)"
+    fi
+else
+    echo "    ⚠️  go-build cache save failed (non-fatal)"
+fi
 
 echo "==> Saving web cache (dist + node_modules)..."
 tar -c -C web dist node_modules \
