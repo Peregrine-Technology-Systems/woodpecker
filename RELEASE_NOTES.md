@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- perf: cache go-mod via zstd tarball (#221). `go mod download` was taking 8-9min on every build fetching 3.5GB over the network. Same tarball approach as go-build: restore from `go-mod-cache.tar.zst` before download (near-zero on warm cache), save after compile. `go mod download` still runs to verify checksums and fetch any new deps added since last build.
+
 - fix: pts-cleanup.sh gcloud list inside DESCRIBE=$(...) can exit non-zero on transient API error; set -e exits before zone check runs. Add || true inside the substitution so the script always reaches the zone-empty guard.
 
 - fix: install zstd at runtime if missing on pts-build-vm (#217 follow-up). pts-build-vm doesn't have zstd pre-installed; pl403 failed after 79s with command not found. Adds runtime apt-get install guard at script start.

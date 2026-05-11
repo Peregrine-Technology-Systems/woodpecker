@@ -44,8 +44,17 @@ else
     echo "    go-build: cold start"
 fi
 
-# go-mod: download only — GCS rsync is slower than network fetch for 3.5GB (#164)
-echo "==> Downloading Go modules..."
+# (#221) go-mod tarball restore — same approach as go-build. A warm cache
+# reduces go mod download from ~8-9min (network fetch) to near-zero (local verify).
+echo "==> Restoring go-mod cache..."
+if gsutil -q cp "${BUILD_CACHE_BUCKET}/go-mod-cache.tar.zst" - 2>/dev/null \
+    | zstd -d | tar -x -C "${HOME}"; then
+    echo "    go-mod: $(du -sh "${GOMODCACHE}" | cut -f1)"
+else
+    echo "    go-mod: cold start"
+fi
+
+echo "==> Downloading Go modules (verify + fetch any new deps)..."
 go mod download 2>/dev/null && echo "    modules ready" || \
     echo "    ⚠️  go mod download had warnings (non-fatal)"
 
@@ -105,6 +114,11 @@ if tar -c -C "${HOME}" .cache/go-build \
 else
     echo "    ⚠️  go-build cache save failed (non-fatal)"
 fi
+
+echo "==> Saving go-mod cache..."
+tar -c -C "${HOME}" go/pkg/mod \
+    | zstd -3 -T0 | gsutil -q cp - "${BUILD_CACHE_BUCKET}/go-mod-cache.tar.zst" && \
+    echo "    go-mod cache saved" || echo "    ⚠️  go-mod cache save failed (non-fatal)"
 
 echo "==> Saving web cache (dist + node_modules)..."
 tar -c -C web dist node_modules \
