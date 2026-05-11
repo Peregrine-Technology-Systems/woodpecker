@@ -201,7 +201,11 @@ func PostHook(c *gin.Context) {
 
 	pl, err := pipeline.Create(c, _store, repo, pipelineFromForge)
 	if err != nil {
-		webhooksDropped.WithLabelValues("pipeline_create_failed").Inc()
+		if errors.Is(err, pipeline.ErrFiltered) {
+			webhooksDropped.WithLabelValues("filtered").Inc()
+		} else {
+			webhooksDropped.WithLabelValues("pipeline_create_failed").Inc()
+		}
 		handlePipelineErr(c, err)
 	} else {
 		c.JSON(http.StatusOK, pl)

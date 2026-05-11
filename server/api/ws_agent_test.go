@@ -197,7 +197,7 @@ func TestWSAgent_HandlerSubtests(t *testing.T) {
 	}
 
 	t.Run("DisconnectIncrementsCloseCounter_1006", func(t *testing.T) {
-		hostname := "ci-spot-us-eas-test1.us-east1-d.c.ci-runners-de.internal"
+		hostname := "ci-spot-us-eas-xyzq.us-east1-d.c.ci-runners-de.internal"
 		conn := dial(t, hostname)
 		before := testutil.ToFloat64(wsCloseTotal.WithLabelValues("1006", "ci-spot-us-eas"))
 		_ = conn.UnderlyingConn().Close()
@@ -212,7 +212,7 @@ func TestWSAgent_HandlerSubtests(t *testing.T) {
 	})
 
 	t.Run("NormalCloseIncrementsCounter_1001", func(t *testing.T) {
-		hostname := "ci-od-us-cen-clean1"
+		hostname := "ci-od-us-cen-clnz"
 		conn := dial(t, hostname)
 		before := testutil.ToFloat64(wsCloseTotal.WithLabelValues("1001", "ci-od-us-cen"))
 		_ = conn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseGoingAway, "shutdown"))

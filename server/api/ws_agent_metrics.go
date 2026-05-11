@@ -58,18 +58,14 @@ func recordWSClose(err error, hostname string) {
 // extractCloseCode returns the WebSocket close code as a string (e.g.
 // "1006") when the error is a *websocket.CloseError, else "unknown" for
 // plain network errors that arrive without a close frame.
+// errors.As handles both direct and wrapped *websocket.CloseError, so no
+// separate type-assertion fallback is needed.
 func extractCloseCode(err error) string {
 	if err == nil {
 		return "unknown"
 	}
 	var ce *websocket.CloseError
 	if errors.As(err, &ce) {
-		return wsCloseCodeString(ce.Code)
-	}
-	// Some close errors arrive as websocket.CloseError by value (the
-	// gorilla library surfaces both forms). Probe via type-switch as a
-	// fallback.
-	if ce, ok := err.(*websocket.CloseError); ok {
 		return wsCloseCodeString(ce.Code)
 	}
 	return "unknown"
@@ -115,15 +111,18 @@ func wsCloseCodeString(code int) string {
 //  1. Take the host part (everything before the first `.`) so FQDN
 //     suffixes like `.us-east1-d.c.ci-runners-de.internal` don't bloat
 //     cardinality.
-//  2. Split on `-`. If the last segment contains a digit AND the host
-//     has more than one segment, treat it as an instance ID (e.g. the
-//     `c9mp` in `ci-spot-us-eas-c9mp`) and drop it.
+//  2. Split on `-`. If the last segment is exactly 4 lowercase-alphanumeric
+//     characters, treat it as a GCP random instance ID (e.g. `c9mp`, `lcfl`,
+//     `wmmb` in `ci-spot-us-eas-c9mp`) and drop it. GCP's random suffix is
+//     base-32 encoded and can be all-letters — the previous digit-check
+//     silently leaked all-letter suffixes as per-instance label values (#214).
 //  3. Rejoin and cap at 32 chars to prevent pathological inputs from
 //     blowing the cardinality budget.
 //
 // Examples:
 //
-//	ci-spot-us-eas-c9mp.us-east1-d…internal → ci-spot-us-eas
+//	ci-spot-us-eas-c9mp.us-east1-d…internal → ci-spot-us-eas  (digit suffix)
+//	ci-od-us-eas-lcfl.us-east1-b…internal   → ci-od-us-eas    (all-letter suffix, #214)
 //	ci-od-us-cen-7zkl.us-central1-a…internal → ci-od-us-cen
 //	integration-test-vm                      → integration-test-vm
 //	some.fully.qualified.domain              → some
@@ -137,7 +136,7 @@ func normalizeHostnamePrefix(hostname string) string {
 		host = host[:i]
 	}
 	parts := strings.Split(host, "-")
-	if len(parts) > 1 && containsDigit(parts[len(parts)-1]) {
+	if len(parts) > 1 && isGCPInstanceSuffix(parts[len(parts)-1]) {
 		parts = parts[:len(parts)-1]
 	}
 	out := strings.Join(parts, "-")
@@ -147,11 +146,16 @@ func normalizeHostnamePrefix(hostname string) string {
 	return out
 }
 
-func containsDigit(s string) bool {
+// isGCPInstanceSuffix returns true for exactly-4-char lowercase-alphanumeric
+// strings — the format GCP uses for its random VM name suffix.
+func isGCPInstanceSuffix(s string) bool {
+	if len(s) != 4 {
+		return false
+	}
 	for _, r := range s {
-		if r >= '0' && r <= '9' {
-			return true
+		if !((r >= 'a' && r <= 'z') || (r >= '0' && r <= '9')) {
+			return false
 		}
 	}
-	return false
+	return true
 }
