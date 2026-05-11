@@ -59,11 +59,11 @@ if gsutil -q cp "${BUILD_CACHE_BUCKET}/web-cache.tar.zst" - 2>/dev/null \
     | zstd -d | tar -x -C web; then
     echo "    dist/: $(ls web/dist/ | wc -l) files (from tarball)"
 elif gsutil -m -q rsync -r "${BUILD_CACHE_BUCKET}/woodpecker-web-dist/" web/dist/ 2>/dev/null \
-    && [ "$(ls web/dist/ 2>/dev/null | wc -l)" -gt 10 ]; then
+    && [ -f web/dist/index.html ]; then
     # Migration bridge: tarball not yet primed — fall back to legacy rsync path.
     # woodpecker-web-dist/ is still valid; tarball will be saved at end of this
     # run and future builds will use it. Eliminates pnpm on first migration run.
-    echo "    dist/: $(ls web/dist/ | wc -l) files (legacy GCS — priming tarball this run)"
+    echo "    dist/: $(find web/dist/ -type f | wc -l) files (legacy GCS — priming tarball this run)"
 else
     echo "    cache miss — running pnpm build..."
     cd web
