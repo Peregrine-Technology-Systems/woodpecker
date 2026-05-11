@@ -1,7 +1,7 @@
 when:
   - event: [push, manual]
     branch: main
-    status: [success, failure]
+    status: [success, failure, killed]
 
 labels:
   backend: local
@@ -17,6 +17,14 @@ steps:
     commands:
       - scripts/woodpecker/pts-cleanup.sh
 
+  - name: promote
+    image: bash
+    commands:
+      - scripts/woodpecker/pts-promote.sh
+    when:
+      - status: [success]
+    depends_on: [delete-vm]
+
   - name: notify
     image: bash
     environment:
@@ -25,5 +33,5 @@ steps:
     commands:
       - scripts/woodpecker/pts-notify.sh
     when:
-      - status: [success, failure]
-    depends_on: [delete-vm]
+      - status: [success, failure, killed]
+    depends_on: [promote]
