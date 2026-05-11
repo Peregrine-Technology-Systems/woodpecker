@@ -82,6 +82,20 @@ func TestExtractCloseCode_WrappedError(t *testing.T) {
 // normalizeHostnamePrefix — bounds cardinality across known fleets
 // =============================================================================
 
+func TestIsGCPInstanceSuffix(t *testing.T) {
+	// valid GCP suffixes: exactly 4 lowercase alphanumeric chars
+	assert.True(t, isGCPInstanceSuffix("lcfl"))
+	assert.True(t, isGCPInstanceSuffix("3lxd"))
+	assert.True(t, isGCPInstanceSuffix("0000"))
+	// invalid: wrong length
+	assert.False(t, isGCPInstanceSuffix("abc"))
+	assert.False(t, isGCPInstanceSuffix("abcde"))
+	assert.False(t, isGCPInstanceSuffix(""))
+	// invalid: non-alphanumeric char in a 4-char string
+	assert.False(t, isGCPInstanceSuffix("ab-c"))
+	assert.False(t, isGCPInstanceSuffix("AB12"))
+}
+
 func TestNormalizeHostnamePrefix(t *testing.T) {
 	cases := map[string]string{
 		// Real journalctl samples (2026-05-10):
@@ -90,6 +104,11 @@ func TestNormalizeHostnamePrefix(t *testing.T) {
 		"ci-spot-us-cen-xdm8.us-central1-b.c.ci-runners-de.internal": "ci-spot-us-cen",
 		"ci-od-us-cen-7zkl.us-central1-a.c.ci-runners-de.internal":   "ci-od-us-cen",
 		"ci-spot-us-wes-2abc.us-west1-b.c.ci-runners-de.internal":    "ci-spot-us-wes",
+		// All-letter GCP suffixes — previous digit-check leaked these (#214):
+		"ci-od-us-eas-lcfl.us-east1-b.c.ci-runners-de.internal":   "ci-od-us-eas",
+		"ci-od-us-wes-wmmb.us-west1-a.c.ci-runners-de.internal":   "ci-od-us-wes",
+		"ci-od-us-wes-rvcr.us-west1-b.c.ci-runners-de.internal":   "ci-od-us-wes",
+		"ci-spot-us-eas-rbdg.us-east1-c.c.ci-runners-de.internal": "ci-spot-us-eas",
 		// No region segment — surface what we have, capped.
 		"integration-test-vm":         "integration-test-vm",
 		"d3ci42":                      "d3ci42",
@@ -117,7 +136,7 @@ func TestNormalizeHostnamePrefix_LongHostnameTruncated(t *testing.T) {
 // =============================================================================
 
 func TestRecordWSClose_IncrementsByLabel(t *testing.T) {
-	hostname := "ci-spot-us-eas-test1.us-east1-d.c.ci-runners-de.internal"
+	hostname := "ci-spot-us-eas-xyzq.us-east1-d.c.ci-runners-de.internal"
 	before := testutil.ToFloat64(wsCloseTotal.WithLabelValues("1006", "ci-spot-us-eas"))
 	recordWSClose(&websocket.CloseError{Code: websocket.CloseAbnormalClosure}, hostname)
 	after := testutil.ToFloat64(wsCloseTotal.WithLabelValues("1006", "ci-spot-us-eas"))

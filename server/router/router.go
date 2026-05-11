@@ -28,6 +28,7 @@ import (
 	"go.woodpecker-ci.org/woodpecker/v3/server"
 	"go.woodpecker-ci.org/woodpecker/v3/server/api"
 	"go.woodpecker-ci.org/woodpecker/v3/server/api/metrics"
+	"go.woodpecker-ci.org/woodpecker/v3/server/router/middleware/accesslog"
 	"go.woodpecker-ci.org/woodpecker/v3/server/router/middleware/header"
 	"go.woodpecker-ci.org/woodpecker/v3/server/router/middleware/session"
 	"go.woodpecker-ci.org/woodpecker/v3/server/router/middleware/token"
@@ -39,6 +40,7 @@ func Load(noRouteHandler http.HandlerFunc, middleware ...gin.HandlerFunc) http.H
 	e := gin.New()
 	e.UseRawPath = true
 	e.Use(gin.Recovery())
+	e.Use(accesslog.Middleware())
 
 	e.Use(func(c *gin.Context) {
 		log.Trace().Msgf("[%s] %s", c.Request.Method, c.Request.URL.String())

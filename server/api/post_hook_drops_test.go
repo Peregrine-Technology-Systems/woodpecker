@@ -17,6 +17,7 @@ import (
 	"testing"
 
 	"github.com/gin-gonic/gin"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 
@@ -335,4 +336,31 @@ func TestGetRepoFromToken_BadRepoID(t *testing.T) {
 	tk.Set("repo-id", "not-a-number")
 	_, err := getRepoFromToken(nil, tk)
 	assert.Error(t, err)
+}
+
+// TestPostHook_FilteredCounterNotCreateFailed asserts that a webhook whose
+// pipeline is filtered by ErrFiltered (skip-ci commit message) increments
+// webhooksDropped{reason="filtered"} — NOT "pipeline_create_failed" (#213).
+// The distinction matters for alerting: filtered is normal operation (204);
+// pipeline_create_failed is a real server error (500).
+func TestPostHook_FilteredCounterNotCreateFailed(t *testing.T) {
+	f := newHookFixture(t)
+	// Pipeline with [skip ci] in the message — pipeline.Create returns
+	// ErrFiltered before touching the config service or store beyond GetUser.
+	pl := &model.Pipeline{Event: model.EventPush, Message: "[skip ci] automated commit"}
+	f.manager.On("ForgeFromRepo", f.repo).Return(f.forge, nil)
+	f.forge.On("Hook", mock.Anything, mock.Anything).Return(f.repo, pl, nil)
+	f.store.On("GetUser", f.user.ID).Return(f.user, nil)
+	f.forge.On("Refresh", mock.Anything, mock.Anything, mock.Anything).Return(false, nil).Maybe()
+	f.store.On("UpdateRepo", f.repo).Return(nil)
+
+	beforeFiltered := testutil.ToFloat64(webhooksDropped.WithLabelValues("filtered"))
+	beforeFailed := testutil.ToFloat64(webhooksDropped.WithLabelValues("pipeline_create_failed"))
+
+	PostHook(f.c)
+
+	assert.Equal(t, http.StatusNoContent, f.c.Writer.Status())
+	assert.Equal(t, "true", f.w.Header().Get("Pipeline-Filtered"))
+	assert.InDelta(t, beforeFiltered+1, testutil.ToFloat64(webhooksDropped.WithLabelValues("filtered")), 0.001)
+	assert.InDelta(t, beforeFailed, testutil.ToFloat64(webhooksDropped.WithLabelValues("pipeline_create_failed")), 0.001)
 }
