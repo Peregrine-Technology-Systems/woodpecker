@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- fix: pts-cleanup.sh gcloud list inside DESCRIBE=$(...) can exit non-zero on transient API error; set -e exits before zone check runs. Add || true inside the substitution so the script always reaches the zone-empty guard.
+
 - fix: install zstd at runtime if missing on pts-build-vm (#217 follow-up). pts-build-vm doesn't have zstd pre-installed; pl403 failed after 79s with command not found. Adds runtime apt-get install guard at script start.
 - fix: migration bridge for web cache — fall back to legacy rsync on first tarball run (#217 follow-up). web-cache.tar.zst doesn't exist yet; cold-start else branch ran pnpm install which isn't on fresh pts-build-vm images; set -e exits the script. Adds elif that uses the still-valid woodpecker-web-dist/ legacy path. First run primes the tarball; subsequent runs use it directly. Fixed elif threshold: was checking `ls | wc -l > 10` (always 3 top-level entries — always false), now checks `[ -f web/dist/index.html ]`.
 

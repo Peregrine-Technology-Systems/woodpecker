@@ -10,11 +10,13 @@ PTS_BUILD_PROJECT="ci-runners-de"
 PTS_BUILD_VM="pts-build-vm"
 MY_PIPELINE="${CI_PIPELINE_NUMBER:-0}"
 
-# Find VM and its zone regardless of which zone it landed in
+# Find VM and its zone regardless of which zone it landed in.
+# || true inside the substitution so a transient gcloud API error (non-zero
+# exit) doesn't cause set -e to exit the script before the zone check runs.
 DESCRIBE=$(gcloud compute instances list \
     --project="${PTS_BUILD_PROJECT}" \
     --filter="name=${PTS_BUILD_VM}" \
-    --format="value(zone,metadata.items[pts-build-pipeline])" 2>/dev/null | head -1)
+    --format="value(zone,metadata.items[pts-build-pipeline])" 2>/dev/null | head -1 || true)
 PTS_BUILD_ZONE=$(echo "${DESCRIBE}" | awk '{print $1}' | awk -F/ '{print $NF}')
 OWNER=$(echo "${DESCRIBE}" | awk '{print $2}')
 
