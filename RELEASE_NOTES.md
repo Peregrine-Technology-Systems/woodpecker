@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- fix: install zstd at runtime if missing on pts-build-vm (#217 follow-up). pts-build-vm doesn't have zstd pre-installed; pl403 failed after 79s with command not found. Adds runtime apt-get install guard at script start.
+
 - fix: cleanup workflow runs on `killed` pipelines (#218). pts-build-cleanup.yaml top-level `when.status` and notify step's inner `when` now include `killed` alongside `success` and `failure`. Without this, a scaler-killed pipeline leaks the pts-build-vm and never writes the pending marker.
 - perf: replace go-build + web GCS rsync with streaming zstd tarballs in pts-build (#217). go-build rsync was issuing 258 per-object HEAD round-trips before transferring data, taking 5-6min on a 12GB cache. Replaced with `gsutil cp | zstd -d | tar -x` pipeline: one GCS GET, no round-trips, ~1-2min restore. Web cache tarball now covers both `dist/` and `node_modules/`, eliminating the `pnpm install` cold-start fallback. Persistent data disk dependency removed — boot disk is sufficient. Cache save uses `tar | zstd -3 -T0 | gsutil cp` (all cores, streaming, no intermediate write).
 - fix: two-phase GCS deploy — server restart happens after cleanup, not mid-cleanup (#219). pts-build.sh no longer writes the `pending` deploy marker. New `pts-promote.sh` runs as a final local step in pts-build-cleanup.yaml (after delete-vm, before notify, success-only). Deploy marker is written only after the full pipeline is done, so woodpecker-deploy.sh fires after cleanup completes rather than killing it. Includes a binary-exists guard in pts-promote.sh to prevent promoting a failed compile.

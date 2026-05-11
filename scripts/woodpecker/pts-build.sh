@@ -21,6 +21,12 @@ DEPLOY_BUCKET="${BUILD_CACHE_BUCKET}/woodpecker-deploy"
 
 echo "==> pts-build: ${VERSION} (${SHA_SHORT})"
 
+# Ensure zstd is available — not always pre-installed on pts-build-vm (#217)
+if ! command -v zstd >/dev/null 2>&1; then
+    echo "==> Installing zstd..."
+    sudo apt-get install -y -q zstd >/dev/null 2>&1 || true
+fi
+
 # ── Go toolchain + cache paths ──
 export PATH="/usr/local/go/bin:$PATH"
 export GOCACHE="${HOME}/.cache/go-build"
