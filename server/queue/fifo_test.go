@@ -1498,3 +1498,56 @@ func TestFifoUpdateDepStatus_PropagatesToWaitingOnDeps(t *testing.T) {
 			"consumer's dep status should reflect the finished dep")
 	}
 }
+
+// TestFifoRequeue_MovesFromRunning verifies that Requeue atomically removes a
+// task from q.running and inserts it into q.pending without dep-status side
+// effects (#225).
+func TestFifoRequeue_MovesFromRunning(t *testing.T) {
+	ctx := context.Background()
+	q := NewMemoryQueue(ctx).(*fifo)
+
+	task := &model.Task{ID: "requeue-me"}
+	assert.NoError(t, q.PushAtOnce(ctx, []*model.Task{task}))
+
+	// Simulate an agent claiming the task by moving it to running manually.
+	q.Lock()
+	q.pending.Remove(q.pending.Front())
+	done := make(chan bool)
+	q.running[task.ID] = &entry{item: task, done: done, deadline: time.Now().Add(time.Minute)}
+	q.Unlock()
+
+	assert.NoError(t, q.Requeue(ctx, task))
+
+	q.Lock()
+	_, stillRunning := q.running[task.ID]
+	pendingLen := q.pending.Len()
+	q.Unlock()
+
+	assert.False(t, stillRunning, "task must be removed from running after Requeue")
+	assert.Equal(t, 1, pendingLen, "task must be in pending after Requeue")
+
+	// done channel must be closed (unblocks any Waiter)
+	select {
+	case _, open := <-done:
+		assert.False(t, open, "done channel must be closed")
+	default:
+		t.Error("done channel was not closed by Requeue")
+	}
+}
+
+// TestFifoRequeue_NotInRunning verifies that Requeue inserts into pending
+// directly when the task is no longer in q.running (e.g. already resubmitted
+// by the expiry timer) — avoiding a lost task (#225).
+func TestFifoRequeue_NotInRunning(t *testing.T) {
+	ctx := context.Background()
+	q := NewMemoryQueue(ctx).(*fifo)
+
+	task := &model.Task{ID: "already-gone"}
+	assert.NoError(t, q.Requeue(ctx, task))
+
+	q.Lock()
+	pendingLen := q.pending.Len()
+	q.Unlock()
+
+	assert.Equal(t, 1, pendingLen, "task must be inserted into pending even when not in running")
+}

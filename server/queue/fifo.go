@@ -277,6 +277,26 @@ func (q *fifo) SetDispatchHook(fn DispatchFunc) {
 	q.dispatchHook = fn
 }
 
+// Requeue atomically moves a running task back to pending without propagating
+// dep-status updates to dependent tasks (#225). If the task is no longer in
+// q.running (e.g. resubmitExpiredPipelines already moved it), the provided
+// task is inserted into pending directly to avoid losing it.
+func (q *fifo) Requeue(_ context.Context, task *model.Task) error {
+	q.Lock()
+	defer q.Unlock()
+
+	if state, ok := q.running[task.ID]; ok {
+		q.insertByPriority(state.item)
+		delete(q.running, task.ID)
+		close(state.done)
+		return nil
+	}
+	// Not in running — insert directly (resubmit already moved it, or it was
+	// never recorded as running due to a race).
+	q.insertByPriority(task)
+	return nil
+}
+
 // UpdatePriority finds taskID in q.pending or q.waitingOnDeps, mutates its
 // Priority field, and (if it was pending) re-inserts at the correct
 // position so dispatch reflects the new priority. Returns ErrNotFound if

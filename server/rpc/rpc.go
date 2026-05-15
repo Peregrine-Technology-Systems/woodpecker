@@ -192,10 +192,12 @@ func (s *RPC) ReleaseAgentTasks(c context.Context, agentID int64) {
 	log.Warn().Int64("agent_id", agentID).Int("tasks", len(orphaned)).
 		Msg("releasing tasks from disconnecting agent")
 
-	// Partition into claimed-but-not-started (re-queue) vs started (kill). (#72)
-	// Cache loaded workflows so the kill loop below doesn't load them a second time.
+	// Partition into re-queue vs kill using step execution as the signal. (#72,#224,#225)
+	// wf.Started > 0 is insufficient — Init sets Started before any step runs.
+	// A workflow with all steps pending (even after Init) is safe to re-queue.
 	var toKill []string
 	var toRequeue []*model.Task
+	requeueWF := make(map[string]*model.Workflow) // workflowIDStr → wf for Init-called workflows
 	workflowCache := make(map[string]*model.Workflow, len(orphaned))
 	for _, workflowIDStr := range orphaned {
 		workflowID, err := strconv.ParseInt(workflowIDStr, 10, 64)
@@ -204,25 +206,68 @@ func (s *RPC) ReleaseAgentTasks(c context.Context, agentID int64) {
 			continue
 		}
 		wf, err := s.store.WorkflowLoad(workflowID)
-		if err != nil || wf.Started > 0 {
+		if err != nil {
 			toKill = append(toKill, workflowIDStr)
-			if wf != nil {
-				workflowCache[workflowIDStr] = wf
+			continue
+		}
+
+		steps, _ := s.store.StepListFromWorkflowFind(wf)
+		hasStartedStep := false
+		for _, step := range steps {
+			if step.Started > 0 || step.State == model.StatusRunning {
+				hasStartedStep = true
+				break
 			}
-		} else {
-			toRequeue = append(toRequeue, taskByID[workflowIDStr])
-			log.Info().Int64("agent_id", agentID).Int64("workflow_id", workflowID).
-				Msg("release: re-queuing claimed-but-not-started task (#72)")
+		}
+
+		if hasStartedStep {
+			wf.Children = steps // cache so kill loop skips a second load
+			workflowCache[workflowIDStr] = wf
+			toKill = append(toKill, workflowIDStr)
+			continue
+		}
+
+		// No step has executed — safe to re-queue.
+		task := taskByID[workflowIDStr]
+		if task == nil {
+			// Task not in running map for this agent — fall back to kill (#225).
+			log.Warn().Int64("agent_id", agentID).Int64("workflow_id", workflowID).
+				Msg("release: task not in running map — falling back to kill")
+			wf.Children = steps
+			workflowCache[workflowIDStr] = wf
+			toKill = append(toKill, workflowIDStr)
+			continue
+		}
+
+		log.Info().Int64("agent_id", agentID).Int64("workflow_id", workflowID).
+			Bool("had_init", wf.Started > 0).
+			Msg("release: re-queuing claimed-but-not-started task (#224)")
+		toRequeue = append(toRequeue, task)
+		if wf.Started > 0 {
+			requeueWF[workflowIDStr] = wf
 		}
 	}
 
-	// Re-queue claimed-but-not-started tasks so another agent can pick them up.
-	if len(toRequeue) > 0 {
-		if err := s.queue.PushAtOnce(c, toRequeue); err != nil {
-			log.Error().Err(err).Msg("release: failed to re-queue claimed tasks — falling back to kill")
-			for _, t := range toRequeue {
-				toKill = append(toKill, t.ID)
+	// Re-queue tasks that had no step execute. For any that called Init
+	// (wf.Started > 0), reset DB state to pending first so the UI is accurate
+	// while the task waits for a new agent. Use Requeue (not PushAtOnce) to
+	// atomically remove from q.running and insert into q.pending (#225).
+	for _, task := range toRequeue {
+		if wf := requeueWF[task.ID]; wf != nil {
+			wf.State = model.StatusPending
+			wf.AgentID = 0
+			wf.Started = 0
+			if err := s.store.WorkflowUpdate(wf); err != nil {
+				log.Error().Err(err).Int64("workflow_id", wf.ID).
+					Msg("release: failed to reset workflow state for re-queue — killing instead")
+				toKill = append(toKill, task.ID)
+				continue
 			}
+		}
+		if err := s.queue.Requeue(c, task); err != nil {
+			log.Error().Err(err).Str("task_id", task.ID).
+				Msg("release: Requeue failed — killing instead")
+			toKill = append(toKill, task.ID)
 		}
 	}
 
@@ -251,11 +296,14 @@ func (s *RPC) ReleaseAgentTasks(c context.Context, agentID int64) {
 			}
 		}
 
-		// Load children (steps) so WorkflowStatus can evaluate them
-		workflow.Children, err = s.store.StepListFromWorkflowFind(workflow)
-		if err != nil {
-			log.Error().Err(err).Int64("workflow_id", workflowID).
-				Msg("release: failed to load workflow steps")
+		// Load children (steps) so WorkflowStatus can evaluate them.
+		// Skip if already cached from the partition step (avoids a second DB hit).
+		if workflow.Children == nil {
+			workflow.Children, err = s.store.StepListFromWorkflowFind(workflow)
+			if err != nil {
+				log.Error().Err(err).Int64("workflow_id", workflowID).
+					Msg("release: failed to load workflow steps")
+			}
 		}
 
 		now := time.Now().Unix()

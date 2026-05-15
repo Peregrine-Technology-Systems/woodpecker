@@ -155,6 +155,13 @@ type Queue interface {
 	// Running tasks return ErrNotFound — priority is a dispatch-time
 	// concept and a task that already started cannot be reordered. (#47)
 	UpdatePriority(taskID string, newPriority int64) (oldPriority int64, err error)
+
+	// Requeue atomically moves a running task back to pending without
+	// propagating dep-status updates to dependent tasks (#225). The task is
+	// simply unclaimed — it will be dispatched to the next available agent.
+	// If the task is no longer in the running set (e.g. resubmitExpiredPipelines
+	// already moved it), the provided task is inserted into pending directly.
+	Requeue(c context.Context, task *model.Task) error
 }
 
 // DispatchFunc is called for each pending task before worker assignment.

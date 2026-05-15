@@ -454,3 +454,44 @@ func (q *failingPushQueue) SetDispatchHook(DispatchFunc)                        
 func (q *failingPushQueue) UpdatePriority(string, int64) (int64, error) {
 	return 0, ErrNotFound
 }
+func (q *failingPushQueue) Requeue(context.Context, *model.Task) error { return nil }
+
+// TestPersistentQueue_Requeue_PersistsThenDelegates verifies that the
+// persistent wrapper re-inserts the task into the task store (so it survives
+// a restart) before delegating to the in-memory queue (#225).
+func TestPersistentQueue_Requeue_PersistsThenDelegates(t *testing.T) {
+	pq, s, ctx, cancel := freshPersistentQueue(t)
+	defer cancel()
+
+	task := &model.Task{ID: "requeue-persist"}
+	s.On("TaskInsert", task).Return(nil)
+
+	assert.NoError(t, pq.Requeue(ctx, task))
+	s.AssertCalled(t, "TaskInsert", task)
+
+	// Task must appear in pending (delegate to inner queue succeeded)
+	info := pq.Info(ctx)
+	var found bool
+	for _, pt := range info.Pending {
+		if pt.ID == task.ID {
+			found = true
+		}
+	}
+	assert.True(t, found, "re-queued task must be in pending after Requeue")
+}
+
+// TestPersistentQueue_Requeue_StoreErrorAborts verifies that a TaskInsert
+// failure prevents the task from being re-queued in the in-memory queue (#225).
+func TestPersistentQueue_Requeue_StoreErrorAborts(t *testing.T) {
+	pq, s, ctx, cancel := freshPersistentQueue(t)
+	defer cancel()
+
+	task := &model.Task{ID: "requeue-fail"}
+	s.On("TaskInsert", task).Return(fmt.Errorf("disk full"))
+
+	err := pq.Requeue(ctx, task)
+	assert.Error(t, err, "store insert failure must be returned")
+
+	info := pq.Info(ctx)
+	assert.Empty(t, info.Pending, "task must not appear in pending when store insert fails")
+}

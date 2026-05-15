@@ -153,6 +153,16 @@ func (q *persistentQueue) ErrorAtOnce(c context.Context, ids []string, err error
 	return nil
 }
 
+// Requeue re-inserts the task into the persistent task store before delegating
+// to the in-memory queue. The task was removed from the store on Poll (#107);
+// without re-inserting here it would be lost on server restart (#225).
+func (q *persistentQueue) Requeue(c context.Context, task *model.Task) error {
+	if err := q.store.TaskInsert(task); err != nil {
+		return err
+	}
+	return q.Queue.Requeue(c, task)
+}
+
 // UpdatePriority mutates both the in-memory queue position and the
 // persisted DB row so the priority survives a server restart. The
 // in-memory mutation must succeed first — if it fails (task not pending)

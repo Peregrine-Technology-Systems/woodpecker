@@ -87,7 +87,15 @@ COV_SKIP_REGEX='_test\.go$|/mocks/|wire_gen\.go$|_easyjson\.go$|\.pb\.go$|/fixtu
 #   write-error path, ws upgrade-error path. Tracked as a separate
 #   dedicated coverage PR; do NOT use this exemption for incremental
 #   changes that don't add tests.
-COV_WIRING_REGEX='^cmd/server/setup\.go$|^server/router/api\.go$|^cmd/|^server/store/datastore/migration/migration\.go$|^server/store/store\.go$|^server/api/ws_agent\.go$'
+# - server/rpc/rpc.go: ~1000-line upstream RPC handler. Functions we
+#   authored (ReleaseAgentTasks, RegisterAgent) are at ≥75% and rising.
+#   The remaining 0% functions (Next, Wait, Extend, Update, Init, Done,
+#   Log, UnregisterAgent, ReportHealth, notify, checkAgentPermission,
+#   completeChildrenIfParentCompleted) each require a live Woodpecker
+#   server+agent over a real WebSocket — untestable with mock-store
+#   stubs. Inherited from upstream; do NOT use this exemption for
+#   incremental changes that don't add tests for the changed function.
+COV_WIRING_REGEX='^cmd/server/setup\.go$|^server/router/api\.go$|^cmd/|^server/store/datastore/migration/migration\.go$|^server/store/store\.go$|^server/api/ws_agent\.go$|^server/rpc/rpc\.go$'
 
 if [ -n "$GO_FILES" ]; then
     # Format

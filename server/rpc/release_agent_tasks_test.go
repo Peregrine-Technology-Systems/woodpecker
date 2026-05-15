@@ -2,6 +2,7 @@ package grpc
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -19,7 +20,9 @@ type stubQueue struct {
 	errorAtOnce   error
 	errorAtOnceFn func(ids []string)
 	pushed        []*model.Task // tasks passed to PushAtOnce
+	requeued      []*model.Task // tasks passed to Requeue (#225)
 	errored       []string      // task IDs passed to ErrorAtOnce
+	requeueErr    error         // error to return from Requeue (default nil)
 }
 
 func (q *stubQueue) PushAtOnce(_ context.Context, tasks []*model.Task) error {
@@ -38,6 +41,13 @@ func (q *stubQueue) ErrorAtOnce(_ context.Context, ids []string, _ error) error 
 		q.errorAtOnceFn(ids)
 	}
 	return q.errorAtOnce
+}
+func (q *stubQueue) Requeue(_ context.Context, task *model.Task) error {
+	if q.requeueErr != nil {
+		return q.requeueErr
+	}
+	q.requeued = append(q.requeued, task)
+	return nil
 }
 func (q *stubQueue) Wait(context.Context, string) error { return nil }
 func (q *stubQueue) Info(context.Context) queue.InfoT   { return q.info }
@@ -142,8 +152,8 @@ func TestReleaseAgentTasks_OnlyReleasesMatchingAgent(t *testing.T) {
 }
 
 // TestReleaseAgentTasks_RequeueClaimed verifies that a task claimed by a
-// disconnecting agent but not yet started (workflow.Started == 0) is
-// re-queued instead of killed. Regression test for fork#72.
+// disconnecting agent but not yet started (workflow.Started == 0, all steps
+// pending) is re-queued instead of killed. Regression test for fork#72.
 func TestReleaseAgentTasks_RequeueClaimed(t *testing.T) {
 	task := &model.Task{ID: "100", AgentID: 42}
 	q := &stubQueue{
@@ -152,25 +162,111 @@ func TestReleaseAgentTasks_RequeueClaimed(t *testing.T) {
 		},
 	}
 
-	// workflow.Started == 0: agent claimed but never began executing
+	// workflow.Started == 0: agent claimed but never called Init
 	workflow := &model.Workflow{
 		ID:         100,
 		PipelineID: 200,
 		State:      model.StatusPending,
 		Started:    0,
 	}
+	pendingStep := &model.Step{ID: 1, State: model.StatusPending, Started: 0}
 
 	s := store_mocks.NewMockStore(t)
 	s.On("WorkflowLoad", int64(100)).Return(workflow, nil)
+	s.On("StepListFromWorkflowFind", workflow).Return([]*model.Step{pendingStep}, nil)
 
 	rpc := RPC{queue: q, store: s}
 	rpc.ReleaseAgentTasks(context.Background(), 42)
 
-	// Task must be re-queued, not killed
-	assert.Equal(t, []*model.Task{task}, q.pushed, "claimed task must be re-queued")
+	// Task must be re-queued via Requeue, not killed
+	assert.Equal(t, []*model.Task{task}, q.requeued, "claimed task must be re-queued")
 	assert.Empty(t, q.errored, "claimed task must not be killed")
+	assert.Empty(t, q.pushed, "PushAtOnce must not be used — Requeue is the correct path")
 
-	// No DB kill updates — the workflow never ran
-	s.AssertNotCalled(t, "StepListFromWorkflowFind", mock.Anything)
+	// No DB kill updates and no Init-reset (Started == 0, no reset needed)
 	s.AssertNotCalled(t, "WorkflowUpdate", mock.Anything)
+	s.AssertExpectations(t)
+}
+
+// TestReleaseAgentTasks_RequeueAfterInit verifies the #224 fix: a workflow
+// whose agent called Init (setting Started > 0) but then disconnected before
+// executing any step is re-queued (not killed), and its DB state is reset to
+// pending so the UI shows the correct state.
+func TestReleaseAgentTasks_RequeueAfterInit(t *testing.T) {
+	task := &model.Task{ID: "200", AgentID: 55}
+	q := &stubQueue{
+		info: queue.InfoT{
+			Running: []*model.Task{task},
+		},
+	}
+
+	// Init was called: Started > 0, State = running, but no step has executed
+	workflow := &model.Workflow{
+		ID:         200,
+		PipelineID: 300,
+		AgentID:    55,
+		State:      model.StatusRunning,
+		Started:    time.Now().Unix(),
+	}
+	pendingStep := &model.Step{ID: 10, State: model.StatusPending, Started: 0}
+
+	s := store_mocks.NewMockStore(t)
+	s.On("WorkflowLoad", int64(200)).Return(workflow, nil)
+	s.On("StepListFromWorkflowFind", workflow).Return([]*model.Step{pendingStep}, nil)
+	s.On("WorkflowUpdate", mock.MatchedBy(func(w *model.Workflow) bool {
+		return w.ID == 200 && w.State == model.StatusPending && w.AgentID == 0 && w.Started == 0
+	})).Return(nil)
+
+	rpc := RPC{queue: q, store: s}
+	rpc.ReleaseAgentTasks(context.Background(), 55)
+
+	assert.Equal(t, []*model.Task{task}, q.requeued, "Init-then-disconnect task must be re-queued")
+	assert.Empty(t, q.errored, "Init-then-disconnect task must not be killed")
+	s.AssertExpectations(t)
+}
+
+// TestReleaseAgentTasks_RequeueFailureFallsBackToKill verifies that when
+// Requeue returns an error the task is killed rather than silently lost (#225).
+func TestReleaseAgentTasks_RequeueFailureFallsBackToKill(t *testing.T) {
+	task := &model.Task{ID: "300", AgentID: 77}
+	q := &stubQueue{
+		info: queue.InfoT{
+			Running: []*model.Task{task},
+		},
+		requeueErr: errors.New("queue full"),
+	}
+
+	workflow := &model.Workflow{
+		ID:         300,
+		PipelineID: 400,
+		State:      model.StatusPending,
+		Started:    0,
+	}
+	pendingStep := &model.Step{ID: 20, State: model.StatusPending, Started: 0}
+
+	s := store_mocks.NewMockStore(t)
+	s.On("WorkflowLoad", int64(300)).Return(workflow, nil)
+	s.On("StepListFromWorkflowFind", workflow).Return([]*model.Step{pendingStep}, nil)
+	// Kill path: workflow was in workflowCache via nil-task guard? No — task IS
+	// in running map, so it goes through re-queue path. On Requeue failure it
+	// moves to toKill. Kill loop re-loads workflow from DB (not in cache).
+	s.On("WorkflowLoad", int64(300)).Return(workflow, nil)
+	s.On("StepListFromWorkflowFind", workflow).Return([]*model.Step{pendingStep}, nil)
+	s.On("StepUpdate", mock.MatchedBy(func(step *model.Step) bool {
+		return step.State == model.StatusKilled
+	})).Return(nil)
+	s.On("WorkflowUpdate", mock.MatchedBy(func(w *model.Workflow) bool {
+		return w.State == model.StatusKilled
+	})).Return(nil)
+	s.On("GetPipeline", int64(400)).Return(&model.Pipeline{ID: 400, RepoID: 500, Status: model.StatusRunning}, nil)
+	s.On("WorkflowGetTree", mock.Anything).Return([]*model.Workflow{
+		{ID: 300, State: model.StatusKilled, Finished: 1, Error: "agent disconnected"},
+	}, nil)
+	s.On("UpdatePipeline", mock.Anything).Return(nil)
+	s.On("GetRepo", int64(500)).Return(&model.Repo{ID: 500, FullName: "test/repo"}, nil)
+
+	rpc := RPC{queue: q, store: s}
+	rpc.ReleaseAgentTasks(context.Background(), 77)
+
+	assert.Contains(t, q.errored, "300", "Requeue failure must fall back to kill via ErrorAtOnce")
 }
