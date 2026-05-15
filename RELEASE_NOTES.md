@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- fix: pts-ci.yaml tier: ondemand → tier: spot so scaler provisions correct agent class (#229). With ondemand required, tasks sat in pending indefinitely — scaler only provisions spot agents for CI pushes. Subsequent push triggers cancelPreviousPipelines, making every pipeline appear immediately canceled (state: skipped, status: canceled). Spot is correct for CI: preemption is acceptable, agents scale from zero in response to queue pressure. On-demand reserved for deploy/build workflows. Also adds filter tests documenting tier label dispatch semantics.
+
 - fix: add TTL label (ttl-override-min=120) to pts-build-vm immediately after creation (#228). Reaper on d3ci42 stops the VM within 2h if the pipeline fails to self-stop — backstop against idle VMs accumulating cost at ~$0.27/hr.
 - fix: add tier: ondemand label to pts-ci.yaml (#222). Without an explicit tier label, CI steps could land on spot agents (preemptible) or d3ci42-local (no toolchains), causing kills and toolchain-not-found failures.
 

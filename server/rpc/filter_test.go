@@ -131,6 +131,41 @@ func TestCreateFilterFunc(t *testing.T) {
 			wantMatched: true,
 			wantScore:   20,
 		},
+		{
+			// tier: spot task matches spot agent, not ondemand or unlabeled (#229)
+			name: "Tier spot task matches spot agent",
+			agentFilter: rpc.Filter{
+				Labels: map[string]string{"platform": "linux", "tier": "spot"},
+			},
+			task: &model.Task{
+				Labels: map[string]string{"platform": "linux", "tier": "spot"},
+			},
+			wantMatched: true,
+			wantScore:   20,
+		},
+		{
+			name: "Tier spot task does not match ondemand agent",
+			agentFilter: rpc.Filter{
+				Labels: map[string]string{"platform": "linux", "tier": "ondemand"},
+			},
+			task: &model.Task{
+				Labels: map[string]string{"platform": "linux", "tier": "spot"},
+			},
+			wantMatched: false,
+			wantScore:   0,
+		},
+		{
+			// Agent without tier label cannot run tier-specific tasks (#229)
+			name: "Tier spot task does not match agent without tier label",
+			agentFilter: rpc.Filter{
+				Labels: map[string]string{"platform": "linux"},
+			},
+			task: &model.Task{
+				Labels: map[string]string{"platform": "linux", "tier": "spot"},
+			},
+			wantMatched: false,
+			wantScore:   0,
+		},
 	}
 
 	for _, tt := range tests {
