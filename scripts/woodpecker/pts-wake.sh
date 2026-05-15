@@ -76,6 +76,12 @@ for ZONE in ${ZONE_LIST}; do
             --quiet 2>&1; then
         CREATED_ZONE="${ZONE}"
         echo "    VM created in ${CREATED_ZONE} from latest ci-agent image"
+        # TTL backstop — reaper stops the VM within 2h if the pipeline
+        # doesn't delete it first (#228).
+        gcloud compute instances add-labels "${PTS_BUILD_VM}" \
+            --zone="${CREATED_ZONE}" --project="${PTS_BUILD_PROJECT}" \
+            --labels="ttl-override-min=120" 2>/dev/null || true
+        echo "    TTL label set (120 min backstop)"
         break
     fi
     echo "    WARN: ${ZONE} capacity unavailable — trying next zone"

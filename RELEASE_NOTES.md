@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- fix: add TTL label (ttl-override-min=120) to pts-build-vm immediately after creation (#228). Reaper on d3ci42 stops the VM within 2h if the pipeline fails to self-stop — backstop against idle VMs accumulating cost at ~$0.27/hr.
+- fix: add tier: ondemand label to pts-ci.yaml (#222). Without an explicit tier label, CI steps could land on spot agents (preemptible) or d3ci42-local (no toolchains), causing kills and toolchain-not-found failures.
+
 - fix: add ci_* aliases for pipeline_count, pipeline_time, and rpc_update_to_terminal_step_total (#226). peregrine-grafana#8 audit found these three woodpecker_* metrics had no ci_* counterpart despite #174 being deployed. Dual-emit added in NewRPC() and at both usage sites in Done(). Note: woodpecker_workflow_overrun_seconds referenced in #226 does not exist in the codebase and was not added.
 
 - fix: write pending-deploy marker from pts-build-vm, not d3ci42-local cleanup (#227). pts-promote.sh ran after delete-vm in pts-build-cleanup.yaml; a stale pending marker from a previous build could trigger a server restart mid-cleanup, killing the local workflow before the new marker was written. Moving the marker write to the end of pts-build.sh (on the pts-build-vm, after binary upload is confirmed) makes the d3ci42-local cleanup non-critical — a server restart during notify is acceptable. pts-promote.sh deleted; pts-build-cleanup.yaml simplified to delete-vm → notify.

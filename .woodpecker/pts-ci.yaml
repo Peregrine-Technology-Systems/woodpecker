@@ -5,6 +5,7 @@ when:
 
 labels:
   platform: linux
+  tier: ondemand
 
 steps:
   - name: test
