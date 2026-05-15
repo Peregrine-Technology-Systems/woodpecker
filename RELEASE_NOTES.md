@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- fix: write pending-deploy marker from pts-build-vm, not d3ci42-local cleanup (#227). pts-promote.sh ran after delete-vm in pts-build-cleanup.yaml; a stale pending marker from a previous build could trigger a server restart mid-cleanup, killing the local workflow before the new marker was written. Moving the marker write to the end of pts-build.sh (on the pts-build-vm, after binary upload is confirmed) makes the d3ci42-local cleanup non-critical — a server restart during notify is acceptable. pts-promote.sh deleted; pts-build-cleanup.yaml simplified to delete-vm → notify.
+
 - fix: re-queue workflows where agent called Init but no step executed (#224/#225). `Init` sets `workflow.Started` before any step runs — so a disconnect after Init but before step execution landed in the kill path (`wf.Started > 0`). Now partitions on `hasStartedStep` (any step with `Started>0` or `State=running`). Also fixes three `ReleaseAgentTasks` side-effects: (1) `PushAtOnce` left task in `q.running` risking double-dispatch after 15-min TaskTimeout — replaced with new `queue.Requeue` that atomically removes from running and inserts into pending; (2) nil task guard prevents panic in `insertByPriority`; (3) `persistentQueue.Requeue` re-inserts task into task store so it survives server restart.
 
 - perf: cache go-mod via zstd tarball (#221). `go mod download` was taking 8-9min on every build fetching 3.5GB over the network. Same tarball approach as go-build: restore from `go-mod-cache.tar.zst` before download (near-zero on warm cache), save after compile. `go mod download` still runs to verify checksums and fetch any new deps added since last build.

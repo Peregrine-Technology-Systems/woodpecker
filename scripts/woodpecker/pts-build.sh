@@ -6,9 +6,11 @@
 # rsync — eliminates 258 per-object HEAD round-trips, cuts restore from
 # ~5-6min to ~1-2min. Persistent data disk dependency removed.
 #
-# (#219) Does NOT write the pending-deploy marker — that is pts-promote.sh's
-# job (runs after pts-build-cleanup). Server restart happens only after the
-# full pipeline is done, not mid-cleanup.
+# (#227) Pending-deploy marker is written here on the pts-build-vm, after
+# binary upload succeeds. Previously written by pts-promote.sh on d3ci42-local
+# (pts-build-cleanup.yaml), which was killed if a stale marker triggered a
+# server restart during cleanup — a race that stranded compiled binaries.
+# Writing the marker from the VM makes the d3ci42-local cleanup non-critical.
 #
 # Secrets: GH_TOKEN (tagging + release)
 set -euo pipefail
@@ -233,5 +235,19 @@ else
     echo "    Skipping: GH_TOKEN not set"
 fi
 
+# ── Write pending-deploy marker (#227) ──
+# Done here on the pts-build-vm, immediately after binary upload, so the
+# marker exists before the VM exits. pts-build-cleanup (d3ci42-local) only
+# needs to delete the VM and notify — it no longer runs pts-promote.sh.
+# A server restart triggered by the marker can only kill the lightweight
+# cleanup steps (which are non-critical), not this script.
+echo ""; echo "==> Writing pending-deploy marker..."
+if ! gsutil -q stat "${DEPLOY_BUCKET}/${VERSION}/woodpecker-server" 2>/dev/null; then
+    echo "    ❌ Binary not found — aborting promote to prevent a bad deploy"
+    exit 1
+fi
+printf '%s\n%s\n%s' "${VERSION}" "${COMMIT_SHA}" "${CI_PIPELINE_NUMBER:-0}" | \
+    gsutil -q cp - "${DEPLOY_BUCKET}/pending"
+echo "    Pending marker written — woodpecker-deploy.sh will pick up within 30s"
+
 echo ""; echo "==> pts-build compile complete: ${VERSION}"
-echo "    Pending marker will be written by pts-promote.sh after cleanup (#219)."
