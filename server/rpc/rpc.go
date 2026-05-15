@@ -45,14 +45,17 @@ import (
 const updateAgentLastWorkDelay = time.Minute
 
 type RPC struct {
-	queue                  queue.Queue
-	pubsub                 *pubsub.Publisher
-	logger                 logging.Log
-	store                  store.Store
-	pipelineTime           *prometheus.GaugeVec
-	pipelineCount          *prometheus.CounterVec
-	rpcUpdateRejectedTotal prometheus.Counter
-	deployPatterns         []string // workflow names that should prefer on-demand agents
+	queue                    queue.Queue
+	pubsub                   *pubsub.Publisher
+	logger                   logging.Log
+	store                    store.Store
+	pipelineTime             *prometheus.GaugeVec
+	pipelineCount            *prometheus.CounterVec
+	rpcUpdateRejectedTotal   prometheus.Counter
+	ciPipelineTime           *prometheus.GaugeVec   // ci_* alias (#226)
+	ciPipelineCount          *prometheus.CounterVec // ci_* alias (#226)
+	ciRPCUpdateRejectedTotal prometheus.Counter     // ci_* alias (#226)
+	deployPatterns           []string               // workflow names that should prefer on-demand agents
 }
 
 // Next blocks until it provides the next workflow to execute.
@@ -431,6 +434,9 @@ func (s *RPC) Update(c context.Context, strWorkflowID string, state rpc.StepStat
 			if s.rpcUpdateRejectedTotal != nil {
 				s.rpcUpdateRejectedTotal.Inc()
 			}
+			if s.ciRPCUpdateRejectedTotal != nil {
+				s.ciRPCUpdateRejectedTotal.Inc()
+			}
 			log.Warn().
 				Err(err).
 				Str("step_uuid", state.StepUUID).
@@ -651,9 +657,12 @@ func (s *RPC) Done(c context.Context, strWorkflowID string, state rpc.WorkflowSt
 	if currentPipeline.Status == model.StatusSuccess || currentPipeline.Status == model.StatusFailure {
 		s.pipelineCount.WithLabelValues(repo.FullName, currentPipeline.Branch, string(currentPipeline.Status), "total").Inc()
 		s.pipelineTime.WithLabelValues(repo.FullName, currentPipeline.Branch, string(currentPipeline.Status), "total").Set(float64(currentPipeline.Finished - currentPipeline.Started))
+		s.ciPipelineCount.WithLabelValues(repo.FullName, currentPipeline.Branch, string(currentPipeline.Status), "total").Inc()
+		s.ciPipelineTime.WithLabelValues(repo.FullName, currentPipeline.Branch, string(currentPipeline.Status), "total").Set(float64(currentPipeline.Finished - currentPipeline.Started))
 	}
 	if currentPipeline.IsMultiPipeline() {
 		s.pipelineTime.WithLabelValues(repo.FullName, currentPipeline.Branch, string(workflow.State), workflow.Name).Set(float64(workflow.Finished - workflow.Started))
+		s.ciPipelineTime.WithLabelValues(repo.FullName, currentPipeline.Branch, string(workflow.State), workflow.Name).Set(float64(workflow.Finished - workflow.Started))
 	}
 
 	return s.updateAgentLastWork(agent)

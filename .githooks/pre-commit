@@ -95,7 +95,11 @@ COV_SKIP_REGEX='_test\.go$|/mocks/|wire_gen\.go$|_easyjson\.go$|\.pb\.go$|/fixtu
 #   server+agent over a real WebSocket — untestable with mock-store
 #   stubs. Inherited from upstream; do NOT use this exemption for
 #   incremental changes that don't add tests for the changed function.
-COV_WIRING_REGEX='^cmd/server/setup\.go$|^server/router/api\.go$|^cmd/|^server/store/datastore/migration/migration\.go$|^server/store/store\.go$|^server/api/ws_agent\.go$|^server/rpc/rpc\.go$'
+# - server/rpc/server.go: constructor/wiring file. NewRPC() registers
+#   Prometheus metrics via promauto which panics on double-registration;
+#   tests use NewRPCForTesting() instead and cannot call NewRPC().
+#   NewWoodpeckerServer() and loadDeployPatterns() are startup-only.
+COV_WIRING_REGEX='^cmd/server/setup\.go$|^server/router/api\.go$|^cmd/|^server/store/datastore/migration/migration\.go$|^server/store/store\.go$|^server/api/ws_agent\.go$|^server/rpc/rpc\.go$|^server/rpc/server\.go$'
 
 if [ -n "$GO_FILES" ]; then
     # Format

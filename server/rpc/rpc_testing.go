@@ -27,7 +27,8 @@ import (
 // constructor instead.
 //
 // Caller's caveat: code paths that increment pipelineTime / pipelineCount /
-// rpcUpdateRejectedTotal will nil-deref because those fields are NOT set.
+// rpcUpdateRejectedTotal / ciPipelineTime / ciPipelineCount /
+// ciRPCUpdateRejectedTotal will nil-deref because those fields are NOT set.
 // In practice the WS-handler tests in `server/api/ws_agent_test.go` don't
 // reach those paths (they use Init/Done/Update/Log/Extend/ReportHealth
 // only). Add explicit asserts in any test that strays.

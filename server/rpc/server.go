@@ -64,15 +64,34 @@ func NewRPC(queue queue.Queue, logger logging.Log, pubsub *pubsub.Publisher, sto
 		Name:      "rpc_update_to_terminal_step_total",
 		Help:      "Agent RPC step-status updates rejected because the step is already in a terminal state server-side (#31). Indicator of agent ↔ server state divergence.",
 	})
+	// ci_* aliases (#226) — dual-emit so Grafana dashboards can query either prefix.
+	ciPipelineTime := prometheus_auto.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: "ci",
+		Name:      "pipeline_time",
+		Help:      "Pipeline time (ci_* alias for woodpecker_pipeline_time, #226).",
+	}, []string{"repo", "branch", "status", "pipeline"})
+	ciPipelineCount := prometheus_auto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "ci",
+		Name:      "pipeline_count",
+		Help:      "Pipeline count (ci_* alias for woodpecker_pipeline_count, #226).",
+	}, []string{"repo", "branch", "status", "pipeline"})
+	ciRPCUpdateRejectedTotal := prometheus_auto.NewCounter(prometheus.CounterOpts{
+		Namespace: "ci",
+		Name:      "rpc_update_to_terminal_step_total",
+		Help:      "Agent RPC step-status updates rejected because the step is already in a terminal state server-side (ci_* alias for woodpecker_rpc_update_to_terminal_step_total, #226).",
+	})
 	return &RPC{
-		store:                  store,
-		queue:                  queue,
-		pubsub:                 pubsub,
-		logger:                 logger,
-		pipelineTime:           pipelineTime,
-		pipelineCount:          pipelineCount,
-		rpcUpdateRejectedTotal: rpcUpdateRejectedTotal,
-		deployPatterns:         loadDeployPatterns(),
+		store:                    store,
+		queue:                    queue,
+		pubsub:                   pubsub,
+		logger:                   logger,
+		pipelineTime:             pipelineTime,
+		pipelineCount:            pipelineCount,
+		rpcUpdateRejectedTotal:   rpcUpdateRejectedTotal,
+		ciPipelineTime:           ciPipelineTime,
+		ciPipelineCount:          ciPipelineCount,
+		ciRPCUpdateRejectedTotal: ciRPCUpdateRejectedTotal,
+		deployPatterns:           loadDeployPatterns(),
 	}
 }
 
