@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"go.woodpecker-ci.org/woodpecker/v3/server/cache"
+	"go.woodpecker-ci.org/woodpecker/v3/server/logdrain"
 	"go.woodpecker-ci.org/woodpecker/v3/server/logging"
 	"go.woodpecker-ci.org/woodpecker/v3/server/model"
 	"go.woodpecker-ci.org/woodpecker/v3/server/plugin"
@@ -38,7 +39,8 @@ var Config = struct {
 		Manager    services.Manager
 		LogStore   log.Service
 		Plugins    *plugin.Registry
-		WSAgentRPC any // *grpc.RPC — set by server startup, used by WS agent handler
+		LogDrain   *logdrain.Drain // #233: best-effort step-log forward to GCP Cloud Logging
+		WSAgentRPC any             // *grpc.RPC — set by server startup, used by WS agent handler
 	}
 	Server struct {
 		JWTSecret           string

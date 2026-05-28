@@ -32,6 +32,7 @@ import (
 	"go.woodpecker-ci.org/woodpecker/v3/server"
 	"go.woodpecker-ci.org/woodpecker/v3/server/cache"
 	"go.woodpecker-ci.org/woodpecker/v3/server/forge/setup"
+	"go.woodpecker-ci.org/woodpecker/v3/server/logdrain"
 	"go.woodpecker-ci.org/woodpecker/v3/server/logging"
 	"go.woodpecker-ci.org/woodpecker/v3/server/model"
 	"go.woodpecker-ci.org/woodpecker/v3/server/pipeline"
@@ -193,6 +194,10 @@ func setupEvilGlobals(ctx context.Context, c *cli.Command, s store.Store) (err e
 	if err != nil {
 		return fmt.Errorf("could not setup log store: %w", err)
 	}
+
+	// #233: best-effort step-log drain to GCP Cloud Logging. New never errors —
+	// an unset project or unavailable ADC yields a disabled no-op (logged INFO).
+	server.Config.Services.LogDrain = logdrain.New(ctx, c.String("log-drain-gcp-project"), c.String("log-drain-gcp-log-name"))
 
 	// #891 / #176 / #188: Reconcile orphaned "running" pipelines.
 	// The reconciler asks the queue which pipelines have active tasks
