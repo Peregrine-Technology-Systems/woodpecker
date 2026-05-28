@@ -80,7 +80,9 @@ func TestReleaseAgentTasks_KillsWorkflowAndPipeline(t *testing.T) {
 
 	s := store_mocks.NewMockStore(t)
 
-	step1 := &model.Step{ID: 1, State: model.StatusRunning}
+	// step1 did real work: started and produced log output. That makes the
+	// workflow unsafe to re-queue (#235 F3) → kill path.
+	step1 := &model.Step{ID: 1, State: model.StatusRunning, Started: time.Now().Unix()}
 	step2 := &model.Step{ID: 2, State: model.StatusPending}
 
 	workflow := &model.Workflow{
@@ -101,6 +103,9 @@ func TestReleaseAgentTasks_KillsWorkflowAndPipeline(t *testing.T) {
 	// Mock store calls in order
 	s.On("WorkflowLoad", int64(100)).Return(workflow, nil)
 	s.On("StepListFromWorkflowFind", workflow).Return([]*model.Step{step1, step2}, nil)
+	// #235 F3: stepDidRealWork consults logs for a running step with no real
+	// exit code; one log line proves work was done → kill, not re-queue.
+	s.On("LogFind", step1).Return([]*model.LogEntry{{StepID: 1, Line: 1}}, nil)
 	s.On("StepUpdate", mock.MatchedBy(func(step *model.Step) bool {
 		return step.State == model.StatusKilled && step.Error == "agent disconnected"
 	})).Return(nil)
@@ -223,6 +228,81 @@ func TestReleaseAgentTasks_RequeueAfterInit(t *testing.T) {
 	assert.Equal(t, []*model.Task{task}, q.requeued, "Init-then-disconnect task must be re-queued")
 	assert.Empty(t, q.errored, "Init-then-disconnect task must not be killed")
 	s.AssertExpectations(t)
+}
+
+// TestReleaseAgentTasks_RequeuePhantomStartedStep verifies the #235 F3 widening
+// (#1327): a workflow whose step was claimed and stamped Started but produced no
+// output and never returned a real exit code — the "agent ack'd then vanished"
+// shape (e.g. spot VM preempted seconds after dispatch-ack) — is re-queued, and
+// the phantom step is reset to pending so the new agent's updates aren't
+// rejected as terminal-state transitions.
+func TestReleaseAgentTasks_RequeuePhantomStartedStep(t *testing.T) {
+	task := &model.Task{ID: "100", AgentID: 42}
+	q := &stubQueue{info: queue.InfoT{Running: []*model.Task{task}}}
+
+	workflow := &model.Workflow{
+		ID:         100,
+		PipelineID: 200,
+		AgentID:    42,
+		State:      model.StatusRunning,
+		Started:    time.Now().Unix(),
+	}
+	// Phantom step: started, but failure with exit_code=-1 and no logs.
+	phantom := &model.Step{ID: 1, State: model.StatusFailure, Started: time.Now().Unix(), ExitCode: -1}
+
+	s := store_mocks.NewMockStore(t)
+	s.On("WorkflowLoad", int64(100)).Return(workflow, nil)
+	s.On("StepListFromWorkflowFind", workflow).Return([]*model.Step{phantom}, nil)
+	s.On("LogFind", phantom).Return([]*model.LogEntry{}, nil) // no output → no real work
+	s.On("WorkflowUpdate", mock.MatchedBy(func(w *model.Workflow) bool {
+		return w.ID == 100 && w.State == model.StatusPending && w.AgentID == 0 && w.Started == 0
+	})).Return(nil)
+	s.On("StepUpdate", mock.MatchedBy(func(step *model.Step) bool {
+		return step.ID == 1 && step.State == model.StatusPending && step.Started == 0 && step.ExitCode == 0
+	})).Return(nil)
+
+	rpc := RPC{queue: q, store: s}
+	rpc.ReleaseAgentTasks(context.Background(), 42)
+
+	assert.Equal(t, []*model.Task{task}, q.requeued, "phantom-started task must be re-queued (#1327)")
+	assert.Empty(t, q.errored, "phantom-started task must not be killed")
+	s.AssertExpectations(t)
+}
+
+// TestReleaseAgentTasks_KillsWhenStepRanAndExited verifies the F3 widening stays
+// conservative: a step that ran and returned a real (positive) exit code did
+// observable work, so its workflow is killed — never re-queued — to avoid
+// duplicating side effects.
+func TestReleaseAgentTasks_KillsWhenStepRanAndExited(t *testing.T) {
+	task := &model.Task{ID: "100", AgentID: 42}
+	q := &stubQueue{info: queue.InfoT{Running: []*model.Task{task}}}
+
+	workflow := &model.Workflow{ID: 100, PipelineID: 200, State: model.StatusRunning, Started: time.Now().Unix()}
+	// ranStep is first so its positive exit code short-circuits the partition
+	// before any LogFind. The pending sibling makes anyKilled true in the kill
+	// loop, so the workflow is stamped agent-disconnect and forge status
+	// early-returns (no GetUser) — same path as KillsWorkflowAndPipeline.
+	ranStep := &model.Step{ID: 1, State: model.StatusFailure, Started: time.Now().Unix(), ExitCode: 1}
+	pendingStep := &model.Step{ID: 2, State: model.StatusPending}
+
+	s := store_mocks.NewMockStore(t)
+	s.On("WorkflowLoad", int64(100)).Return(workflow, nil)
+	s.On("StepListFromWorkflowFind", workflow).Return([]*model.Step{ranStep, pendingStep}, nil)
+	s.On("StepUpdate", mock.Anything).Return(nil)
+	s.On("WorkflowUpdate", mock.Anything).Return(nil)
+	s.On("GetPipeline", int64(200)).Return(&model.Pipeline{ID: 200, RepoID: 300, Status: model.StatusRunning}, nil)
+	s.On("WorkflowGetTree", mock.Anything).Return([]*model.Workflow{
+		{ID: 100, State: model.StatusKilled, Finished: 1, Error: "agent disconnected"},
+	}, nil)
+	s.On("UpdatePipeline", mock.Anything).Return(nil)
+	s.On("GetRepo", int64(300)).Return(&model.Repo{ID: 300, FullName: "test/repo"}, nil)
+
+	rpc := RPC{queue: q, store: s}
+	rpc.ReleaseAgentTasks(context.Background(), 42)
+
+	assert.Contains(t, q.errored, "100", "a step that ran and exited must force kill, not re-queue")
+	assert.Empty(t, q.requeued, "step that did real work must not be re-queued")
+	s.AssertNotCalled(t, "LogFind", mock.Anything) // positive exit code short-circuits the log check
 }
 
 // TestReleaseAgentTasks_RequeueFailureFallsBackToKill verifies that when

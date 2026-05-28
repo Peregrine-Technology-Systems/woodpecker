@@ -215,22 +215,31 @@ func (s *RPC) ReleaseAgentTasks(c context.Context, agentID int64) {
 		}
 
 		steps, _ := s.store.StepListFromWorkflowFind(wf)
-		hasStartedStep := false
+		// #235 F3: re-queue is safe only when NO step did observable work.
+		// A step that was merely claimed and stamped Started but produced no
+		// output and never returned a real exit code (the "agent ack'd then
+		// vanished" shape from #1327 — e.g. a spot VM preempted seconds after
+		// dispatch-ack) did nothing re-runnable. Re-running a step that DID
+		// work would duplicate side effects (a partial deploy), so any such
+		// step forces the kill path. This widens the previous predicate, which
+		// killed on Started>0 alone and so left #1327's phantom-started
+		// workflows unrecoverable.
+		didRealWork := false
 		for _, step := range steps {
-			if step.Started > 0 || step.State == model.StatusRunning {
-				hasStartedStep = true
+			if s.stepDidRealWork(step) {
+				didRealWork = true
 				break
 			}
 		}
 
-		if hasStartedStep {
+		if didRealWork {
 			wf.Children = steps // cache so kill loop skips a second load
 			workflowCache[workflowIDStr] = wf
 			toKill = append(toKill, workflowIDStr)
 			continue
 		}
 
-		// No step has executed — safe to re-queue.
+		// No step did real work — safe to re-queue.
 		task := taskByID[workflowIDStr]
 		if task == nil {
 			// Task not in running map for this agent — fall back to kill (#225).
@@ -243,26 +252,24 @@ func (s *RPC) ReleaseAgentTasks(c context.Context, agentID int64) {
 		}
 
 		log.Info().Int64("agent_id", agentID).Int64("workflow_id", workflowID).
-			Bool("had_init", wf.Started > 0).
-			Msg("release: re-queuing claimed-but-not-started task (#224)")
+			Bool("had_init", wf.Started > 0).Int("steps", len(steps)).
+			Msg("release: re-queuing claimed-but-no-work-done task (#224/#1327)")
 		toRequeue = append(toRequeue, task)
-		if wf.Started > 0 {
-			requeueWF[workflowIDStr] = wf
-		}
+		wf.Children = steps
+		requeueWF[workflowIDStr] = wf
 	}
 
-	// Re-queue tasks that had no step execute. For any that called Init
-	// (wf.Started > 0), reset DB state to pending first so the UI is accurate
-	// while the task waits for a new agent. Use Requeue (not PushAtOnce) to
-	// atomically remove from q.running and insert into q.pending (#225).
+	// Re-queue tasks that did no real work. Reset DB state to pending — both
+	// the workflow (if Init ran, wf.Started > 0) and any phantom-started steps
+	// — so the UI is accurate while the task waits for a new agent and so the
+	// new agent's step updates aren't rejected as terminal-state transitions.
+	// Use Requeue (not PushAtOnce) to atomically remove from q.running and
+	// insert into q.pending (#225).
 	for _, task := range toRequeue {
 		if wf := requeueWF[task.ID]; wf != nil {
-			wf.State = model.StatusPending
-			wf.AgentID = 0
-			wf.Started = 0
-			if err := s.store.WorkflowUpdate(wf); err != nil {
+			if err := s.resetWorkflowForRequeue(wf); err != nil {
 				log.Error().Err(err).Int64("workflow_id", wf.ID).
-					Msg("release: failed to reset workflow state for re-queue — killing instead")
+					Msg("release: failed to reset state for re-queue — killing instead")
 				toKill = append(toKill, task.ID)
 				continue
 			}
@@ -373,6 +380,64 @@ func (s *RPC) ReleaseAgentTasks(c context.Context, agentID int64) {
 		}
 		s.updateForgeStatus(c, repo, currentPipeline, workflow)
 	}
+}
+
+// stepDidRealWork reports whether a step executed observable work, which makes
+// its workflow unsafe to re-queue (re-running would duplicate side effects such
+// as a partial deploy). A step that was merely claimed and stamped Started but
+// produced no log output and never returned a real exit code — the "agent
+// ack'd dispatch then vanished" shape from #1327 / pts.413 — did nothing
+// re-runnable and is safe to re-queue. (#235 F3)
+func (s *RPC) stepDidRealWork(step *model.Step) bool {
+	if step.Started == 0 {
+		return false // never dispatched to the runtime
+	}
+	// Completed successfully, or ran and returned a real (positive) exit code.
+	// ExitCode <= 0 covers "never exited" (-1) and the not-yet-set zero value.
+	if step.State == model.StatusSuccess || step.ExitCode > 0 {
+		return true
+	}
+	// No terminal real-exit signal — fall back to log output. A step that
+	// emitted even one log line had started doing observable work.
+	logs, err := s.store.LogFind(step)
+	if err != nil {
+		// Can't prove the step was a no-op — be conservative and treat it as
+		// real work so a possibly-side-effecting step is never re-run.
+		log.Warn().Err(err).Int64("step_id", step.ID).
+			Msg("release: LogFind failed — treating step as real work")
+		return true
+	}
+	return len(logs) > 0
+}
+
+// resetWorkflowForRequeue returns a re-queued workflow and its phantom-started
+// steps to a clean pending state so the UI is accurate while the task waits for
+// a new agent, and so the new agent's step updates are not rejected as
+// terminal-state transitions. Only invoked for workflows where no step did real
+// work (see stepDidRealWork), so resetting non-success steps is safe. (#235 F3)
+func (s *RPC) resetWorkflowForRequeue(wf *model.Workflow) error {
+	if wf.Started > 0 {
+		wf.State = model.StatusPending
+		wf.AgentID = 0
+		wf.Started = 0
+		if err := s.store.WorkflowUpdate(wf); err != nil {
+			return err
+		}
+	}
+	for _, step := range wf.Children {
+		if step.State == model.StatusSuccess || (step.Started == 0 && step.State == model.StatusPending) {
+			continue // nothing to reset
+		}
+		step.State = model.StatusPending
+		step.Started = 0
+		step.Finished = 0
+		step.ExitCode = 0
+		step.Error = ""
+		if err := s.store.StepUpdate(step); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // Update let agent updates the step state at the server.
