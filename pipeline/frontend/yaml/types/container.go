@@ -36,6 +36,11 @@ type Container struct {
 	When      constraint.When    `yaml:"when,omitempty"`
 	Failure   string             `yaml:"failure,omitempty"`
 	Detached  bool               `yaml:"detach,omitempty"`
+	// outcome verification (Peregrine #235): server-side proof-query on kill
+	Kind               string        `yaml:"kind,omitempty"`
+	Verify             *VerifyConfig `yaml:"verify,omitempty"`
+	VerifyURL          string        `yaml:"verify_url,omitempty"`
+	VerifyExpectCommit string        `yaml:"verify_expect_commit,omitempty"`
 	// state
 	Volumes Volumes `yaml:"volumes,omitempty"`
 	// network
@@ -55,6 +60,19 @@ type Container struct {
 	ExtraHosts  []string `yaml:"extra_hosts,omitempty"`
 	NetworkMode string   `yaml:"network_mode,omitempty"`
 	Tmpfs       []string `yaml:"tmpfs,omitempty"`
+}
+
+// VerifyConfig declares a server-side proof-query that runs when the step is
+// killed mid-execution. If the query confirms the step's work actually landed
+// (e.g. a deploy's /version endpoint reports the expected commit), the server
+// reconciles the killed step to success instead of failing the pipeline. The
+// probe is a read-only HTTP GET issued by the server — never a re-run of the
+// step's work. (Peregrine #235, Option A)
+type VerifyConfig struct {
+	WhenKilled   bool   `yaml:"when_killed,omitempty"`
+	URL          string `yaml:"url,omitempty"`
+	ExpectCommit string `yaml:"expect_commit,omitempty"`
+	ExpectStatus int    `yaml:"expect_status,omitempty"`
 }
 
 func (c *Container) IsPlugin() bool {

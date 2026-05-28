@@ -42,7 +42,14 @@ func TestSetPipelineStepsOnPipeline(t *testing.T) {
 				{
 					Steps: []*backend_types.Step{
 						{
-							Name: "step",
+							Name: "deploy",
+							// #235: a compiled verify proof-query must be carried
+							// onto the persisted model.Step.
+							Verify: &backend_types.VerifyConfig{
+								URL:          "https://target/version",
+								ExpectCommit: "abcdef0",
+								ExpectStatus: 200,
+							},
 						},
 					},
 				},
@@ -58,6 +65,16 @@ func TestSetPipelineStepsOnPipeline(t *testing.T) {
 	}
 	if pipeline.Workflows[0].Children[0].PPID != 1 {
 		t.Fatal("Should set step PPID")
+	}
+	// #235: the deploy step's verify proof-query round-trips to model.Step.
+	deployStep := pipeline.Workflows[0].Children[1]
+	if deployStep.Verify == nil || deployStep.Verify.URL != "https://target/version" ||
+		deployStep.Verify.ExpectCommit != "abcdef0" || deployStep.Verify.ExpectStatus != 200 {
+		t.Fatalf("Should carry verify config onto model.Step, got %+v", deployStep.Verify)
+	}
+	// the clone step (no verify) must stay nil
+	if pipeline.Workflows[0].Children[0].Verify != nil {
+		t.Fatal("Step without verify config must have nil Verify")
 	}
 }
 

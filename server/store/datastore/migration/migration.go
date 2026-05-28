@@ -58,6 +58,7 @@ var migrationTasks = []*xormigrate.Migration{
 	&addTaskPriority,
 	&addPriorityAudit,
 	&addPipelineKillReason,
+	&addStepVerify,
 }
 
 var allBeans = []any{

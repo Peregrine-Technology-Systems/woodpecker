@@ -284,3 +284,20 @@ func TestIsPlugin(t *testing.T) {
 		Entrypoint: base.StringOrSlice([]string{"echo 'this is not a plugin'"}),
 	}).IsPlugin())
 }
+
+func TestIsTrustedCloneImage(t *testing.T) {
+	trusted := []string{"docker.io/woodpeckerci/plugin-git"}
+	// A plugin (no commands/entrypoint/env) whose image matches the allow list.
+	assert.True(t, (&Container{
+		Image: "docker.io/woodpeckerci/plugin-git",
+	}).IsTrustedCloneImage(trusted))
+	// Non-matching image.
+	assert.False(t, (&Container{
+		Image: "docker.io/some/other-image",
+	}).IsTrustedCloneImage(trusted))
+	// Matching image but not a plugin (has commands) → not trusted.
+	assert.False(t, (&Container{
+		Image:    "docker.io/woodpeckerci/plugin-git",
+		Commands: base.StringOrSlice([]string{"echo hi"}),
+	}).IsTrustedCloneImage(trusted))
+}

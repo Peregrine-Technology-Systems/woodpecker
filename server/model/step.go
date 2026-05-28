@@ -37,7 +37,20 @@ type Step struct {
 	Started    int64       `json:"started,omitempty"    xorm:"started"`
 	Finished   int64       `json:"finished,omitempty"   xorm:"finished"`
 	Type       StepType    `json:"type,omitempty"       xorm:"type"`
+	// Verify is the server-side outcome-verification proof-query for this step.
+	// When set and the step is killed mid-execution, the server issues a
+	// read-only HTTP GET and, on a match, reconciles the step to success rather
+	// than failing the pipeline. nil means no verification. (Peregrine #235)
+	Verify *StepVerify `json:"verify,omitempty" xorm:"json 'verify'"`
 } //	@name	Step
+
+// StepVerify is the persisted outcome-verification proof-query for a step
+// (Peregrine #235, Option A). See Step.Verify.
+type StepVerify struct {
+	URL          string `json:"url,omitempty"`
+	ExpectCommit string `json:"expect_commit,omitempty"`
+	ExpectStatus int    `json:"expect_status,omitempty"`
+} //	@name	StepVerify
 
 // TableName return database table name for xorm.
 func (Step) TableName() string {

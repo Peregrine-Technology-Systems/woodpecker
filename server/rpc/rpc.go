@@ -335,6 +335,23 @@ func (s *RPC) ReleaseAgentTasks(c context.Context, agentID int64) {
 			}
 		}
 
+		// #235: a step killed by the disconnect that declares an
+		// outcome-verification proof-query gets one read-only probe — covers
+		// the "agent disconnected mid-deploy but the deploy actually landed"
+		// case (peregrine-ci-scaler#1055). A reconciled step flips to success,
+		// so the workflow status below is computed from the real outcome.
+		if n := pipeline.ReconcileVerifiedKilledSteps(c, s.store, workflow); n > 0 {
+			log.Info().Int64("workflow_id", workflowID).Int("reconciled_steps", n).
+				Msg("verify: reconciled disconnect-killed step(s) to success (#235)")
+			anyKilled = false
+			for _, st := range workflow.Children {
+				if st.State == model.StatusKilled {
+					anyKilled = true
+					break
+				}
+			}
+		}
+
 		// If all steps had already completed before the disconnect, compute
 		// workflow status from them instead of marking killed (#168).
 		workflow.Finished = now
@@ -668,6 +685,15 @@ func (s *RPC) Done(c context.Context, strWorkflowID string, state rpc.WorkflowSt
 	workflow.Children, err = s.store.StepListFromWorkflowFind(workflow)
 	if err != nil {
 		return err
+	}
+
+	// #235: a step killed mid-execution that declares an outcome-verification
+	// proof-query gets one read-only probe; if it confirms the work landed
+	// (e.g. the deploy target's /version reports the expected commit), the step
+	// is reconciled to success. Combined with the #230/#232 invariant below,
+	// flipping the only killed step to success makes the workflow succeed.
+	if n := pipeline.ReconcileVerifiedKilledSteps(c, s.store, workflow); n > 0 {
+		logger.Info().Int("reconciled_steps", n).Msg("verify: reconciled killed step(s) to success (#235)")
 	}
 
 	if workflow, err = pipeline.UpdateWorkflowStatusToDone(s.store, *workflow, state); err != nil {

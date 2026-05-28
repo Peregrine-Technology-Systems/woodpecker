@@ -45,6 +45,19 @@ type Step struct {
 	Ports          []Port            `json:"ports,omitempty"`
 	BackendOptions map[string]any    `json:"backend_options,omitempty"`
 	WorkflowLabels map[string]string `json:"workflow_labels,omitempty"`
+	Verify         *VerifyConfig     `json:"verify,omitempty"`
+}
+
+// VerifyConfig is the compiled, server-side outcome-verification proof-query for
+// a step. When set, the server issues a read-only HTTP GET to URL if the step is
+// killed mid-execution and, on a match, reconciles the step to success rather
+// than failing the pipeline. A nil VerifyConfig means no verification. The
+// when_killed gate from the YAML is resolved at compile time: Verify is only
+// populated when verification on kill was requested. (Peregrine #235, Option A)
+type VerifyConfig struct {
+	URL          string `json:"url,omitempty"`
+	ExpectCommit string `json:"expect_commit,omitempty"`
+	ExpectStatus int    `json:"expect_status,omitempty"`
 }
 
 // StepType identifies the type of step.

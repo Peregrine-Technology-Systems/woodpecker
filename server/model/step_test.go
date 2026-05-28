@@ -44,3 +44,7 @@ func TestStepStatus(t *testing.T) {
 	step.State = StatusSuccess
 	assert.Equal(t, step.Failing(), false)
 }
+
+func TestStepTableName(t *testing.T) {
+	assert.Equal(t, "steps", Step{}.TableName())
+}

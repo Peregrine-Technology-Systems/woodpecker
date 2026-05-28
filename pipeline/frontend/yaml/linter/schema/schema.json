@@ -273,6 +273,10 @@
       "type": "object",
       "additionalProperties": false,
       "required": ["image"],
+      "dependencies": {
+        "verify_url": ["kind"],
+        "verify_expect_commit": ["kind"]
+      },
       "allOf": [
         {
           "if": {
@@ -291,6 +295,23 @@
               {
                 "required": ["entrypoint"]
               }
+            ]
+          }
+        },
+        {
+          "comment": "kind: deploy requires verify_url (Peregrine #235).",
+          "if": {
+            "properties": { "kind": { "const": "deploy" } },
+            "required": ["kind"]
+          },
+          "then": { "required": ["verify_url"] }
+        },
+        {
+          "comment": "The kind/verify_url shorthand and the explicit verify block are mutually exclusive (Peregrine #235).",
+          "not": {
+            "anyOf": [
+              { "required": ["verify", "verify_url"] },
+              { "required": ["verify", "kind"] }
             ]
           }
         }
@@ -352,6 +373,56 @@
         "dns_search": {
           "description": "Change DNS lookup domain for step. Only allowed if 'Trusted Network' option is enabled in repo settings by an admin. Read more: https://woodpecker-ci.org/docs/usage/workflow-syntax#dns",
           "$ref": "#/definitions/string_or_string_slice"
+        },
+        "kind": {
+          "$ref": "#/definitions/step_kind"
+        },
+        "verify": {
+          "$ref": "#/definitions/step_verify"
+        },
+        "verify_url": {
+          "$ref": "#/definitions/step_verify_url"
+        },
+        "verify_expect_commit": {
+          "$ref": "#/definitions/step_verify_expect_commit"
+        }
+      }
+    },
+    "step_kind": {
+      "description": "Marks a step's class. `deploy` enables the implicit outcome-verification shorthand (verify_url + verify_expect_commit). Peregrine #235.",
+      "type": "string",
+      "enum": ["deploy"]
+    },
+    "step_verify_url": {
+      "description": "HTTP(S) URL the server GETs to verify a killed deploy step actually landed (e.g. the target's /version endpoint). Used with `kind: deploy`. Peregrine #235.",
+      "type": "string"
+    },
+    "step_verify_expect_commit": {
+      "description": "Commit SHA the verify_url response's `commit` field must match (by 7-char prefix) for the killed step to reconcile to success. Peregrine #235.",
+      "type": "string"
+    },
+    "step_verify": {
+      "description": "Server-side outcome-verification proof-query run when the step is killed mid-execution. A read-only HTTP GET; on a match the killed step reconciles to success. Peregrine #235.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["when_killed", "url"],
+      "properties": {
+        "when_killed": {
+          "description": "Run the proof-query when the step is killed. Currently the only supported trigger, so it must be true.",
+          "const": true
+        },
+        "url": {
+          "description": "HTTP(S) URL the server GETs as the proof-query.",
+          "type": "string",
+          "pattern": "^https?://"
+        },
+        "expect_commit": {
+          "description": "Commit SHA the response's `commit` JSON field must match (by 7-char prefix).",
+          "type": "string"
+        },
+        "expect_status": {
+          "description": "HTTP status code that counts as a pass (default 200).",
+          "type": "integer"
         }
       }
     },

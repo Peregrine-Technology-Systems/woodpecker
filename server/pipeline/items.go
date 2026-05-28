@@ -181,7 +181,7 @@ func setPipelineStepsOnPipeline(pipeline *model.Pipeline, pipelineItems []*stepb
 		for _, stage := range item.Config.Stages {
 			for _, step := range stage.Steps {
 				pidSequence++
-				step := &model.Step{
+				modelStep := &model.Step{
 					Name:       step.Name,
 					UUID:       step.UUID,
 					PipelineID: pipeline.ID,
@@ -191,10 +191,20 @@ func setPipelineStepsOnPipeline(pipeline *model.Pipeline, pipelineItems []*stepb
 					Failure:    step.Failure,
 					Type:       model.StepType(step.Type),
 				}
-				if pipeline.Status == model.StatusBlocked {
-					step.State = model.StatusBlocked
+				// Carry the compiled outcome-verification proof-query so the
+				// server can read it at kill time without the (by-then-gone)
+				// queue task. (Peregrine #235)
+				if step.Verify != nil {
+					modelStep.Verify = &model.StepVerify{
+						URL:          step.Verify.URL,
+						ExpectCommit: step.Verify.ExpectCommit,
+						ExpectStatus: step.Verify.ExpectStatus,
+					}
 				}
-				item.Workflow.Children = append(item.Workflow.Children, step)
+				if pipeline.Status == model.StatusBlocked {
+					modelStep.State = model.StatusBlocked
+				}
+				item.Workflow.Children = append(item.Workflow.Children, modelStep)
 			}
 		}
 		if pipeline.Status == model.StatusBlocked {
