@@ -92,6 +92,21 @@ func (c *Compiler) createProcess(container *yaml_types.Container, workflow *yaml
 
 	environment["CI_WORKSPACE"] = path.Join(workspaceBase, c.workspacePath)
 
+	// #236: snapshot the reserved CI_* metadata namespace (repo identity,
+	// commit, pipeline info — plus CI_WORKSPACE just set) BEFORE the user's
+	// `environment:` is applied. These are server-provided values that
+	// downstream consumers — agent credential/deploy-key hooks, the
+	// outcome-verification commit check — trust for authorization. A step must
+	// not be able to forge them, so they are re-asserted after the user
+	// environment below: user config may add new vars but can never override
+	// the reserved namespace.
+	reservedEnv := map[string]string{}
+	for k, v := range environment {
+		if strings.HasPrefix(k, "CI_") {
+			reservedEnv[k] = v
+		}
+	}
+
 	if stepType == backend_types.StepTypeService || container.Detached {
 		detached = true
 	}
@@ -123,6 +138,10 @@ func (c *Compiler) createProcess(container *yaml_types.Container, workflow *yaml
 	if err := settings.ParamsToEnv(container.Environment, environment, "", false, getSecretValue, secretMapping); err != nil {
 		return nil, err
 	}
+
+	// #236: re-assert the reserved CI_* namespace so a step's `environment:`
+	// cannot forge server-provided metadata (repo identity, commit, …).
+	maps.Copy(environment, reservedEnv)
 
 	if utils.MatchImageDynamic(container.Image, c.escalated...) && container.IsPlugin() {
 		privileged = true
