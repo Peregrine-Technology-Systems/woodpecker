@@ -88,6 +88,33 @@ steps:
     <<: *base-step
     image: golang:latest
 `,
+	}, {
+		Title: "verify-kind-deploy", Data: `
+when:
+  event: push
+steps:
+  deploy:
+    image: bash
+    commands:
+      - ./deploy.sh
+    kind: deploy
+    verify_url: https://target/version
+    verify_expect_commit: abcdef0
+`,
+	}, {
+		Title: "verify-block", Data: `
+when:
+  event: push
+steps:
+  deploy:
+    image: bash
+    commands:
+      - ./deploy.sh
+    verify:
+      when_killed: true
+      url: https://target/version
+      expect_commit: abcdef0
+`,
 	}}
 
 	for _, testd := range testdatas {
@@ -181,6 +208,27 @@ func TestLintErrors(t *testing.T) {
 		{
 			from: "steps: { build: { image: golang }, publish: { image: golang, depends_on: [ binary ] } }",
 			want: "One or more of the specified dependencies do not exist",
+		},
+		// #235 outcome-verification schema validation
+		{
+			from: "steps: { deploy: { image: bash, commands: [ x ], kind: deploy } }",
+			want: "verify_url is required",
+		},
+		{
+			from: "steps: { deploy: { image: bash, commands: [ x ], kind: rollback, verify_url: 'https://t/v' } }",
+			want: "steps.deploy.kind must be one of the following: \"deploy\"",
+		},
+		{
+			from: "steps: { deploy: { image: bash, commands: [ x ], verify: { when_killed: false, url: 'https://t/v' } } }",
+			want: "steps.deploy.verify.when_killed does not match: true",
+		},
+		{
+			from: "steps: { deploy: { image: bash, commands: [ x ], verify: { when_killed: true, url: 'ftp://t/v' } } }",
+			want: "Does not match pattern '^https?://'",
+		},
+		{
+			from: "steps: { deploy: { image: bash, commands: [ x ], kind: deploy, verify_url: 'https://t/v', verify: { when_killed: true, url: 'https://t/v' } } }",
+			want: "Must not validate the schema (not)",
 		},
 	}
 

@@ -20,7 +20,50 @@ import (
 	"github.com/stretchr/testify/assert"
 
 	backend_types "go.woodpecker-ci.org/woodpecker/v3/pipeline/backend/types"
+	yaml_types "go.woodpecker-ci.org/woodpecker/v3/pipeline/frontend/yaml/types"
 )
+
+func TestConvertVerify(t *testing.T) {
+	t.Run("kind: deploy shorthand expands to a verify proof-query", func(t *testing.T) {
+		got := convertVerify(&yaml_types.Container{
+			Kind:               "deploy",
+			VerifyURL:          "https://target/version",
+			VerifyExpectCommit: "abcdef0",
+		})
+		assert.Equal(t, &backend_types.VerifyConfig{
+			URL:          "https://target/version",
+			ExpectCommit: "abcdef0",
+		}, got)
+	})
+
+	t.Run("explicit verify block is carried through when when_killed is set", func(t *testing.T) {
+		got := convertVerify(&yaml_types.Container{
+			Verify: &yaml_types.VerifyConfig{
+				WhenKilled:   true,
+				URL:          "https://target/health",
+				ExpectStatus: 204,
+			},
+		})
+		assert.Equal(t, &backend_types.VerifyConfig{
+			URL:          "https://target/health",
+			ExpectStatus: 204,
+		}, got)
+	})
+
+	t.Run("kind: deploy without verify_url yields no verification", func(t *testing.T) {
+		assert.Nil(t, convertVerify(&yaml_types.Container{Kind: "deploy"}))
+	})
+
+	t.Run("verify block without when_killed yields no verification", func(t *testing.T) {
+		assert.Nil(t, convertVerify(&yaml_types.Container{
+			Verify: &yaml_types.VerifyConfig{URL: "https://target/version"},
+		}))
+	})
+
+	t.Run("no verify config yields nil", func(t *testing.T) {
+		assert.Nil(t, convertVerify(&yaml_types.Container{}))
+	})
+}
 
 func TestConvertPortNumber(t *testing.T) {
 	portDef := "1234"

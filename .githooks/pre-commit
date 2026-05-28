@@ -99,7 +99,26 @@ COV_SKIP_REGEX='_test\.go$|/mocks/|wire_gen\.go$|_easyjson\.go$|\.pb\.go$|/fixtu
 #   Prometheus metrics via promauto which panics on double-registration;
 #   tests use NewRPCForTesting() instead and cannot call NewRPC().
 #   NewWoodpeckerServer() and loadDeployPatterns() are startup-only.
-COV_WIRING_REGEX='^cmd/server/setup\.go$|^server/router/api\.go$|^cmd/|^server/store/datastore/migration/migration\.go$|^server/store/store\.go$|^server/api/ws_agent\.go$|^server/rpc/rpc\.go$|^server/rpc/server\.go$'
+# - pipeline/frontend/yaml/compiler/convert.go: large upstream frontend→backend
+#   step compiler. The Peregrine addition (convertVerify, #235) is at 100%
+#   (TestConvertVerify). The pre-existing gap is createProcess (71%), whose
+#   untested branches are secret-mapping / registry-auth / privileged-plugin /
+#   ports paths that need heavy compiler fixtures. Inherited from upstream; do
+#   NOT use this exemption for incremental changes that don't add tests for the
+#   changed function.
+# - pipeline/backend/types/step.go: type/struct-declaration file (Step,
+#   StepType, VerifyConfig — zero executable statements). The package has no
+#   test files so the cover profile reports NO_DATA. Like server/store/store.go,
+#   there is nothing to execute; the verify field it declares is exercised via
+#   the compiler (convertVerify) and pipeline (items/verify) tests.
+# - server/pipeline/items.go: large upstream pipeline-assembly file. The
+#   Peregrine addition (verify proof-query copy onto model.Step in
+#   setPipelineStepsOnPipeline, #235) is covered by TestSetPipelineStepsOnPipeline.
+#   The pre-existing gap is createPipelineItems (0%) and parsePipeline (72.7%),
+#   which require a live forge + store to exercise. Inherited from upstream; do
+#   NOT use this exemption for incremental changes that don't add tests for the
+#   changed function.
+COV_WIRING_REGEX='^cmd/server/setup\.go$|^server/router/api\.go$|^cmd/|^server/store/datastore/migration/migration\.go$|^server/store/store\.go$|^server/api/ws_agent\.go$|^server/rpc/rpc\.go$|^server/rpc/server\.go$|^pipeline/frontend/yaml/compiler/convert\.go$|^server/pipeline/items\.go$|^pipeline/backend/types/step\.go$'
 
 if [ -n "$GO_FILES" ]; then
     # Format

@@ -185,7 +185,31 @@ func (c *Compiler) createProcess(container *yaml_types.Container, workflow *yaml
 		Ports:          ports,
 		BackendOptions: container.BackendOptions,
 		WorkflowLabels: workflow.Labels,
+		Verify:         convertVerify(container),
 	}, nil
+}
+
+// convertVerify compiles a step's outcome-verification config (Peregrine #235,
+// Option A). The `kind: deploy` shorthand expands into an implicit verify
+// proof-query against verify_url / verify_expect_commit; an explicit `verify:`
+// block is carried through when it opts in via when_killed. Env vars in the URL
+// and expected commit are already substituted upstream (EnvVarSubst runs on the
+// raw YAML before parse). Returns nil when no verification was requested.
+func convertVerify(container *yaml_types.Container) *backend_types.VerifyConfig {
+	if container.Kind == "deploy" && container.VerifyURL != "" {
+		return &backend_types.VerifyConfig{
+			URL:          container.VerifyURL,
+			ExpectCommit: container.VerifyExpectCommit,
+		}
+	}
+	if v := container.Verify; v != nil && v.WhenKilled && v.URL != "" {
+		return &backend_types.VerifyConfig{
+			URL:          v.URL,
+			ExpectCommit: v.ExpectCommit,
+			ExpectStatus: v.ExpectStatus,
+		}
+	}
+	return nil
 }
 
 func (c *Compiler) stepWorkingDir(container *yaml_types.Container) string {
