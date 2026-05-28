@@ -222,6 +222,39 @@ func TestAllEventTypesPublish(t *testing.T) {
 	}
 }
 
+// TestEventTypeAttributeMatchesPayloadType locks the publication↔subscription
+// coupling (#234): a Pub/Sub subscription filter matches on the
+// `attributes.event_type`, while the scaler consumes by reading the payload
+// `type`. If the two ever disagree, a filtered subscription silently drops
+// events the consumer would process. This asserts they are identical for every
+// mapped lifecycle event AND for an unknown event that falls through unmapped.
+func TestEventTypeAttributeMatchesPayloadType(t *testing.T) {
+	types := []plugin.EventType{
+		plugin.EventPipelineCreated,
+		plugin.EventPipelinePending,
+		plugin.EventPipelineStarted,
+		plugin.EventPipelineCompleted,
+		plugin.EventPipelineFailed,
+		plugin.EventPipelineKilled,
+		plugin.EventPipelineSuperseded,
+		plugin.EventStepCompleted,
+		plugin.EventType("some.future.event"), // unmapped → falls through
+	}
+	for _, et := range types {
+		pub, messages := testPublisher("woodpecker-server")
+		require.NoError(t, pub.OnEvent(context.Background(), sampleEvent(et)))
+		require.Len(t, *messages, 1, "message count for %s", et)
+
+		var got pubsubEvent
+		require.NoError(t, json.Unmarshal((*messages)[0].data, &got))
+		attr := (*messages)[0].attrs["event_type"]
+
+		assert.NotEmpty(t, attr, "event_type attribute must be set for %s", et)
+		assert.Equal(t, got.Type, attr,
+			"event_type attribute must equal payload type for %s (a mismatch silently drops events on a filtered sub)", et)
+	}
+}
+
 func TestTimestampFormat(t *testing.T) {
 	pub, messages := testPublisher("test")
 	event := sampleEvent(plugin.EventPipelineCreated)
