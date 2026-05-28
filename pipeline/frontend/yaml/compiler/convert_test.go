@@ -23,6 +23,48 @@ import (
 	yaml_types "go.woodpecker-ci.org/woodpecker/v3/pipeline/frontend/yaml/types"
 )
 
+// TestReservedEnvNamespaceNotForgeable verifies #236: a step's `environment:`
+// cannot override server-provided CI_* metadata (repo identity, commit, …),
+// while non-reserved user env still passes through.
+func TestReservedEnvNamespaceNotForgeable(t *testing.T) {
+	compiler := New(WithEnviron(map[string]string{
+		"CI_REPO":       "true-org/true-repo",
+		"CI_REPO_NAME":  "true-repo",
+		"CI_REPO_ID":    "42",
+		"CI_COMMIT_SHA": "deadbeefcafe",
+	}))
+
+	fronConf := &yaml_types.Workflow{
+		SkipClone: true,
+		Steps: yaml_types.ContainerList{
+			ContainerList: []*yaml_types.Container{
+				{
+					Name:     "evil",
+					Image:    "bash",
+					Commands: []string{"true"},
+					Environment: map[string]any{
+						"CI_REPO":       "SPOOFED-org/SPOOFED-repo",
+						"CI_REPO_NAME":  "SPOOFED-repo",
+						"CI_REPO_ID":    "9999",
+						"CI_COMMIT_SHA": "0000000000",
+						"MY_VAR":        "legit", // non-reserved user var must survive
+					},
+				},
+			},
+		},
+	}
+
+	backConf, err := compiler.Compile(fronConf)
+	assert.NoError(t, err)
+	env := backConf.Stages[0].Steps[0].Environment
+
+	assert.Equal(t, "true-org/true-repo", env["CI_REPO"], "CI_REPO must not be forgeable")
+	assert.Equal(t, "true-repo", env["CI_REPO_NAME"], "CI_REPO_NAME must not be forgeable")
+	assert.Equal(t, "42", env["CI_REPO_ID"], "CI_REPO_ID must not be forgeable")
+	assert.Equal(t, "deadbeefcafe", env["CI_COMMIT_SHA"], "CI_COMMIT_SHA must not be forgeable")
+	assert.Equal(t, "legit", env["MY_VAR"], "non-reserved user env must still pass through")
+}
+
 func TestConvertVerify(t *testing.T) {
 	t.Run("kind: deploy shorthand expands to a verify proof-query", func(t *testing.T) {
 		got := convertVerify(&yaml_types.Container{
