@@ -610,18 +610,25 @@ func (s *RPC) Done(c context.Context, strWorkflowID string, state rpc.WorkflowSt
 	}
 
 	var queueErr error
-	if !state.Canceled {
+	switch {
+	case !state.Canceled:
 		if workflow.Failing() {
 			queueErr = s.queue.Error(c, strWorkflowID, fmt.Errorf("workflow finished with error %s", state.Error))
 		} else {
 			queueErr = s.queue.Done(c, strWorkflowID, workflow.State)
 		}
-	} else {
-		if workflow.Started > 0 {
-			queueErr = s.queue.Done(c, strWorkflowID, model.StatusKilled)
-		} else {
-			queueErr = s.queue.Done(c, strWorkflowID, model.StatusCanceled)
-		}
+	// #230/#232: the agent reported Canceled, but UpdateWorkflowStatusToDone
+	// may have reconciled the workflow to its real terminal outcome when the
+	// cancel arrived after every step had already finished. Propagate that
+	// reconciled state to queue dependents instead of blindly killing them, so
+	// a downstream workflow that depends_on a reconciled-success workflow still
+	// runs.
+	case workflow.State != model.StatusKilled && workflow.State != model.StatusCanceled:
+		queueErr = s.queue.Done(c, strWorkflowID, workflow.State)
+	case workflow.Started > 0:
+		queueErr = s.queue.Done(c, strWorkflowID, model.StatusKilled)
+	default:
+		queueErr = s.queue.Done(c, strWorkflowID, model.StatusCanceled)
 	}
 	if queueErr != nil {
 		logger.Error().Err(queueErr).Msg("queue.Done: cannot ack workflow")

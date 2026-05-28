@@ -296,4 +296,120 @@ func TestUpdateWorkflowStatusToDone(t *testing.T) {
 		assert.NoError(t, err)
 		assert.Equal(t, int64(1234567900), result.Finished)
 	})
+
+	// #230/#232: a spurious cancel (SIGTERM from scale-down / spot preemption)
+	// arriving after every step finished must NOT retroactively kill a workflow
+	// whose work completed successfully.
+	t.Run("should reconcile to success when canceled after all steps succeeded", func(t *testing.T) {
+		workflow := model.Workflow{
+			ID:    7,
+			State: model.StatusRunning,
+			Children: []*model.Step{
+				{ID: 1, State: model.StatusSuccess},
+				{ID: 2, State: model.StatusSuccess},
+			},
+		}
+		state := rpc.WorkflowState{
+			Started:  1234567800,
+			Finished: 1234567900,
+			Error:    "Canceled", // ErrCancel.Error() — stamped by the agent on cancel
+			Canceled: true,
+		}
+
+		mockStore := store_mocks.NewMockStore(t)
+		mockStore.On("WorkflowUpdate", mock.MatchedBy(func(w *model.Workflow) bool {
+			return w.State == model.StatusSuccess && w.Error == ""
+		})).Return(nil)
+
+		result, err := UpdateWorkflowStatusToDone(mockStore, workflow, state)
+
+		assert.NoError(t, err)
+		assert.Equal(t, model.StatusSuccess, result.State)
+		assert.Empty(t, result.Error, "spurious Canceled error must be cleared")
+	})
+
+	// #230/#232: a genuine mid-flight interruption leaves a killed child step;
+	// that workflow must stay killed.
+	t.Run("should stay killed when a child step was killed mid-execution", func(t *testing.T) {
+		workflow := model.Workflow{
+			ID:    8,
+			State: model.StatusRunning,
+			Children: []*model.Step{
+				{ID: 1, State: model.StatusSuccess},
+				{ID: 2, State: model.StatusKilled}, // running step, canceled mid-run
+				{ID: 3, State: model.StatusSkipped},
+			},
+		}
+		state := rpc.WorkflowState{
+			Started:  1234567800,
+			Finished: 1234567900,
+			Error:    "Canceled",
+			Canceled: true,
+		}
+
+		mockStore := store_mocks.NewMockStore(t)
+		mockStore.On("WorkflowUpdate", mock.MatchedBy(func(w *model.Workflow) bool {
+			return w.State == model.StatusKilled
+		})).Return(nil)
+
+		result, err := UpdateWorkflowStatusToDone(mockStore, workflow, state)
+
+		assert.NoError(t, err)
+		assert.Equal(t, model.StatusKilled, result.State)
+	})
+
+	// A canceled workflow with no recorded steps cannot be proven to have
+	// completed its work, so it stays killed.
+	t.Run("should stay killed when canceled with no children", func(t *testing.T) {
+		workflow := model.Workflow{
+			ID:       9,
+			State:    model.StatusRunning,
+			Children: []*model.Step{},
+		}
+		state := rpc.WorkflowState{
+			Started:  1234567800,
+			Finished: 1234567900,
+			Error:    "Canceled",
+			Canceled: true,
+		}
+
+		mockStore := store_mocks.NewMockStore(t)
+		mockStore.On("WorkflowUpdate", mock.MatchedBy(func(w *model.Workflow) bool {
+			return w.State == model.StatusKilled
+		})).Return(nil)
+
+		result, err := UpdateWorkflowStatusToDone(mockStore, workflow, state)
+
+		assert.NoError(t, err)
+		assert.Equal(t, model.StatusKilled, result.State)
+	})
+
+	// A real failure that coincides with a cancel must surface as failure, not
+	// be masked as success or killed.
+	t.Run("should report failure when canceled but a step failed", func(t *testing.T) {
+		workflow := model.Workflow{
+			ID:    10,
+			State: model.StatusRunning,
+			Children: []*model.Step{
+				{ID: 1, State: model.StatusSuccess, Failure: model.FailureFail},
+				{ID: 2, State: model.StatusFailure, Failure: model.FailureFail},
+			},
+		}
+		state := rpc.WorkflowState{
+			Started:  1234567800,
+			Finished: 1234567900,
+			Error:    "Canceled",
+			Canceled: true,
+		}
+
+		mockStore := store_mocks.NewMockStore(t)
+		mockStore.On("WorkflowUpdate", mock.MatchedBy(func(w *model.Workflow) bool {
+			return w.State == model.StatusFailure
+		})).Return(nil)
+
+		result, err := UpdateWorkflowStatusToDone(mockStore, workflow, state)
+
+		assert.NoError(t, err)
+		assert.Equal(t, model.StatusFailure, result.State)
+	})
 }
