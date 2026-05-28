@@ -22,7 +22,7 @@ pipeline/    pipeline execution engine
 shared/      common types, config, utils
 
 .woodpecker/
-  pts-build.yaml         compile the fork on pentest-dev-vm
+  pts-build.yaml         compile the fork on an ephemeral pts-build-vm
   pts-ci.yaml            Peregrine-specific CI
   pts-build-compile.yaml build step
   pts-build-cleanup.yaml cleanup step
