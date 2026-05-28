@@ -90,5 +90,5 @@ killed, exactly as before this feature.
 
 Arbitrary-command probes (`ssh`, `gcloud`, `sha256sum` on the target) that can
 only run on a fresh agent are **not** implemented here — that is Option B in
-#235, tracked as a separate follow-up issue. This feature (Option A) is the
-server-side HTTP proof-query only.
+#235, tracked as follow-up #237. This feature (Option A) is the server-side
+HTTP proof-query only.
