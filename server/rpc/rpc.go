@@ -822,6 +822,19 @@ func (s *RPC) Log(c context.Context, stepUUID string, rpcLogEntries []*rpc.LogEn
 		log.Error().Err(err).Msg("could not store log entries")
 	}
 
+	// #233: best-effort parallel drain to GCP Cloud Logging. SQLite above is
+	// the source of truth — this never affects the store write or the ack. The
+	// repo lookup (for the full-name label) and the drain are gated on Enabled
+	// so the disabled path adds nothing to the hot log path.
+	if drain := server.Config.Services.LogDrain; drain.Enabled() {
+		if repo, rerr := s.store.GetRepo(currentPipeline.RepoID); rerr == nil {
+			drain.Append(repo.FullName, currentPipeline.Number, step, logEntries)
+		} else {
+			log.Warn().Err(rerr).Int64("repo_id", currentPipeline.RepoID).
+				Msg("log drain: repo lookup failed — skipping drain for this batch")
+		}
+	}
+
 	return nil
 }
 

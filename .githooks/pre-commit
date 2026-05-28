@@ -111,6 +111,15 @@ COV_SKIP_REGEX='_test\.go$|/mocks/|wire_gen\.go$|_easyjson\.go$|\.pb\.go$|/fixtu
 #   test files so the cover profile reports NO_DATA. Like server/store/store.go,
 #   there is nothing to execute; the verify field it declares is exercised via
 #   the compiler (convertVerify) and pipeline (items/verify) tests.
+# - server/config.go: declaration-only global Config struct (no executable
+#   statements); the `server` package has no test files so the profile reports
+#   NO_DATA. Like server/store/store.go — nothing to execute.
+# - server/logdrain/gcp.go: thin GCP Cloud Logging client constructor (#233).
+#   The Peregrine drain logic is in drain.go (100%); gcp.go's testable
+#   disabled-path (empty project) is covered, but logging.NewClient + the
+#   ADC/OnError/logger wiring can't run without live GCP credentials. Same
+#   shape as the gcppubsub New() path. Do NOT use for incremental changes
+#   without tests for the changed function.
 # - server/pipeline/items.go: large upstream pipeline-assembly file. The
 #   Peregrine addition (verify proof-query copy onto model.Step in
 #   setPipelineStepsOnPipeline, #235) is covered by TestSetPipelineStepsOnPipeline.
@@ -118,7 +127,7 @@ COV_SKIP_REGEX='_test\.go$|/mocks/|wire_gen\.go$|_easyjson\.go$|\.pb\.go$|/fixtu
 #   which require a live forge + store to exercise. Inherited from upstream; do
 #   NOT use this exemption for incremental changes that don't add tests for the
 #   changed function.
-COV_WIRING_REGEX='^cmd/server/setup\.go$|^server/router/api\.go$|^cmd/|^server/store/datastore/migration/migration\.go$|^server/store/store\.go$|^server/api/ws_agent\.go$|^server/rpc/rpc\.go$|^server/rpc/server\.go$|^pipeline/frontend/yaml/compiler/convert\.go$|^server/pipeline/items\.go$|^pipeline/backend/types/step\.go$'
+COV_WIRING_REGEX='^cmd/server/setup\.go$|^server/router/api\.go$|^cmd/|^server/store/datastore/migration/migration\.go$|^server/store/store\.go$|^server/api/ws_agent\.go$|^server/rpc/rpc\.go$|^server/rpc/server\.go$|^pipeline/frontend/yaml/compiler/convert\.go$|^server/pipeline/items\.go$|^pipeline/backend/types/step\.go$|^server/logdrain/gcp\.go$|^server/config\.go$'
 
 if [ -n "$GO_FILES" ]; then
     # Format

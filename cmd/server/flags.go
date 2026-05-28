@@ -626,6 +626,17 @@ var flags = append([]cli.Flag{
 		Name:    "plugin-status-api-token",
 		Usage:   "Bearer token for the status API plugin endpoints",
 	},
+	&cli.StringFlag{
+		Sources: cli.EnvVars("WOODPECKER_LOG_DRAIN_GCP_PROJECT"),
+		Name:    "log-drain-gcp-project",
+		Usage:   "GCP project ID for the step-log Cloud Logging drain (#233). Empty disables the drain.",
+	},
+	&cli.StringFlag{
+		Sources: cli.EnvVars("WOODPECKER_LOG_DRAIN_GCP_LOG_NAME"),
+		Name:    "log-drain-gcp-log-name",
+		Usage:   "Cloud Logging log name for the step-log drain (#233).",
+		Value:   "woodpecker-steps",
+	},
 }, logger.GlobalLoggerFlags...)
 
 // If woodpecker is running inside a container the default value for

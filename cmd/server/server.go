@@ -117,6 +117,13 @@ func run(ctx context.Context, c *cli.Command) error {
 		return fmt.Errorf("can't setup globals: %w", err)
 	}
 
+	// #233: flush + close the Cloud Logging drain on shutdown (no-op if disabled).
+	defer func() {
+		if err := server.Config.Services.LogDrain.Close(); err != nil {
+			log.Error().Err(err).Msg("could not close log drain")
+		}
+	}()
+
 	// wait for all services until one do stops with an error
 	serviceWaitingGroup := errgroup.Group{}
 
