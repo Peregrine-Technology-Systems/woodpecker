@@ -546,6 +546,63 @@ func (_c *MockQueue_PushAtOnce_Call) RunAndReturn(run func(c context.Context, ta
 	return _c
 }
 
+// Requeue provides a mock function for the type MockQueue
+func (_mock *MockQueue) Requeue(c context.Context, task *model.Task) error {
+	ret := _mock.Called(c, task)
+
+	if len(ret) == 0 {
+		panic("no return value specified for Requeue")
+	}
+
+	var r0 error
+	if returnFunc, ok := ret.Get(0).(func(context.Context, *model.Task) error); ok {
+		r0 = returnFunc(c, task)
+	} else {
+		r0 = ret.Error(0)
+	}
+	return r0
+}
+
+// MockQueue_Requeue_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'Requeue'
+type MockQueue_Requeue_Call struct {
+	*mock.Call
+}
+
+// Requeue is a helper method to define mock.On call
+//   - c context.Context
+//   - task *model.Task
+func (_e *MockQueue_Expecter) Requeue(c interface{}, task interface{}) *MockQueue_Requeue_Call {
+	return &MockQueue_Requeue_Call{Call: _e.mock.On("Requeue", c, task)}
+}
+
+func (_c *MockQueue_Requeue_Call) Run(run func(c context.Context, task *model.Task)) *MockQueue_Requeue_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		var arg0 context.Context
+		if args[0] != nil {
+			arg0 = args[0].(context.Context)
+		}
+		var arg1 *model.Task
+		if args[1] != nil {
+			arg1 = args[1].(*model.Task)
+		}
+		run(
+			arg0,
+			arg1,
+		)
+	})
+	return _c
+}
+
+func (_c *MockQueue_Requeue_Call) Return(err error) *MockQueue_Requeue_Call {
+	_c.Call.Return(err)
+	return _c
+}
+
+func (_c *MockQueue_Requeue_Call) RunAndReturn(run func(c context.Context, task *model.Task) error) *MockQueue_Requeue_Call {
+	_c.Call.Return(run)
+	return _c
+}
+
 // Resume provides a mock function for the type MockQueue
 func (_mock *MockQueue) Resume() {
 	_mock.Called()
@@ -575,6 +632,52 @@ func (_c *MockQueue_Resume_Call) Return() *MockQueue_Resume_Call {
 }
 
 func (_c *MockQueue_Resume_Call) RunAndReturn(run func()) *MockQueue_Resume_Call {
+	_c.Run(run)
+	return _c
+}
+
+// SetAgentLivenessFn provides a mock function for the type MockQueue
+func (_mock *MockQueue) SetAgentLivenessFn(connected func(agentID int64) bool, reclaim func(agentID int64)) {
+	_mock.Called(connected, reclaim)
+	return
+}
+
+// MockQueue_SetAgentLivenessFn_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'SetAgentLivenessFn'
+type MockQueue_SetAgentLivenessFn_Call struct {
+	*mock.Call
+}
+
+// SetAgentLivenessFn is a helper method to define mock.On call
+//   - connected func(agentID int64) bool
+//   - reclaim func(agentID int64)
+func (_e *MockQueue_Expecter) SetAgentLivenessFn(connected interface{}, reclaim interface{}) *MockQueue_SetAgentLivenessFn_Call {
+	return &MockQueue_SetAgentLivenessFn_Call{Call: _e.mock.On("SetAgentLivenessFn", connected, reclaim)}
+}
+
+func (_c *MockQueue_SetAgentLivenessFn_Call) Run(run func(connected func(agentID int64) bool, reclaim func(agentID int64))) *MockQueue_SetAgentLivenessFn_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		var arg0 func(agentID int64) bool
+		if args[0] != nil {
+			arg0 = args[0].(func(agentID int64) bool)
+		}
+		var arg1 func(agentID int64)
+		if args[1] != nil {
+			arg1 = args[1].(func(agentID int64))
+		}
+		run(
+			arg0,
+			arg1,
+		)
+	})
+	return _c
+}
+
+func (_c *MockQueue_SetAgentLivenessFn_Call) Return() *MockQueue_SetAgentLivenessFn_Call {
+	_c.Call.Return()
+	return _c
+}
+
+func (_c *MockQueue_SetAgentLivenessFn_Call) RunAndReturn(run func(connected func(agentID int64) bool, reclaim func(agentID int64))) *MockQueue_SetAgentLivenessFn_Call {
 	_c.Run(run)
 	return _c
 }
@@ -681,51 +784,6 @@ func (_c *MockQueue_UpdatePriority_Call) Return(oldPriority int64, err error) *M
 }
 
 func (_c *MockQueue_UpdatePriority_Call) RunAndReturn(run func(taskID string, newPriority int64) (int64, error)) *MockQueue_UpdatePriority_Call {
-	_c.Call.Return(run)
-	return _c
-}
-
-func (_mock *MockQueue) Requeue(c context.Context, task *model.Task) error {
-	ret := _mock.Called(c, task)
-
-	if len(ret) == 0 {
-		panic("no return value specified for Requeue")
-	}
-
-	var r0 error
-	if returnFunc, ok := ret.Get(0).(func(context.Context, *model.Task) error); ok {
-		r0 = returnFunc(c, task)
-	} else {
-		r0 = ret.Error(0)
-	}
-	return r0
-}
-
-// MockQueue_Requeue_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'Requeue'
-type MockQueue_Requeue_Call struct {
-	*mock.Call
-}
-
-// Requeue is a helper method to define mock.On call
-//   - c context.Context
-//   - task *model.Task
-func (_e *MockQueue_Expecter) Requeue(c interface{}, task interface{}) *MockQueue_Requeue_Call {
-	return &MockQueue_Requeue_Call{Call: _e.mock.On("Requeue", c, task)}
-}
-
-func (_c *MockQueue_Requeue_Call) Run(run func(c context.Context, task *model.Task)) *MockQueue_Requeue_Call {
-	_c.Call.Run(func(args mock.Arguments) {
-		run(args[0].(context.Context), args[1].(*model.Task))
-	})
-	return _c
-}
-
-func (_c *MockQueue_Requeue_Call) Return(err error) *MockQueue_Requeue_Call {
-	_c.Call.Return(err)
-	return _c
-}
-
-func (_c *MockQueue_Requeue_Call) RunAndReturn(run func(context.Context, *model.Task) error) *MockQueue_Requeue_Call {
 	_c.Call.Return(run)
 	return _c
 }

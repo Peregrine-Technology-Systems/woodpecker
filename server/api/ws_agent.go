@@ -266,6 +266,10 @@ func (s *wsAgentState) handleRegister(_ context.Context, env Envelope, hostname 
 	s.agentID = agent.ID
 	s.mu.Unlock()
 
+	// #243: record the live connection so the queue's owner-liveness reclaim
+	// treats this agent's running tasks as alive. A reconnect re-asserts it.
+	markAgentConnected(agent.ID)
+
 	// #208: if this agent_id has a pending deferred-release from a
 	// recent disconnect, cancel it — the agent came back within the
 	// grace window, its in-flight workflows survive the blip.

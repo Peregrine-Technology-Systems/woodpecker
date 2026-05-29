@@ -89,6 +89,13 @@ func scheduleAgentRelease(agentID int64, rpcPeer *grpcserver.RPC) {
 		log.Warn().Int64("agent_id", agentID).
 			Msg("ws-agent: reconnect grace expired, releasing tasks")
 		wsReconnectTotal.WithLabelValues("abandoned").Inc()
+		// #243: the agent never came back within the grace window — drop it
+		// from the connected set so the queue's owner-liveness reclaim treats
+		// any task still (or newly) stranded on this id as orphaned. This
+		// closes the post-release assignment race: a task that lands in
+		// q.running for this dead id AFTER this one-shot release ran is then
+		// reclaimed by the next dispatch tick instead of leaking to TaskTimeout.
+		markAgentDisconnected(agentID)
 		rpcPeer.ReleaseAgentTasks(context.Background(), agentID)
 	})
 }

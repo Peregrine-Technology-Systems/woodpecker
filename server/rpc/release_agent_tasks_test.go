@@ -49,12 +49,13 @@ func (q *stubQueue) Requeue(_ context.Context, task *model.Task) error {
 	q.requeued = append(q.requeued, task)
 	return nil
 }
-func (q *stubQueue) Wait(context.Context, string) error { return nil }
-func (q *stubQueue) Info(context.Context) queue.InfoT   { return q.info }
-func (q *stubQueue) Pause()                             {}
-func (q *stubQueue) Resume()                            {}
-func (q *stubQueue) KickAgentWorkers(int64)             {}
-func (q *stubQueue) SetDispatchHook(queue.DispatchFunc) {}
+func (q *stubQueue) Wait(context.Context, string) error               { return nil }
+func (q *stubQueue) Info(context.Context) queue.InfoT                 { return q.info }
+func (q *stubQueue) Pause()                                           {}
+func (q *stubQueue) Resume()                                          {}
+func (q *stubQueue) KickAgentWorkers(int64)                           {}
+func (q *stubQueue) SetDispatchHook(queue.DispatchFunc)               {}
+func (q *stubQueue) SetAgentLivenessFn(func(int64) bool, func(int64)) {}
 func (q *stubQueue) UpdatePriority(string, int64) (int64, error) {
 	return 0, queue.ErrNotFound
 }
