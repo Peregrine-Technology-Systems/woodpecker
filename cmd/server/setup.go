@@ -30,6 +30,7 @@ import (
 	"github.com/urfave/cli/v3"
 
 	"go.woodpecker-ci.org/woodpecker/v3/server"
+	"go.woodpecker-ci.org/woodpecker/v3/server/api"
 	"go.woodpecker-ci.org/woodpecker/v3/server/cache"
 	"go.woodpecker-ci.org/woodpecker/v3/server/forge/setup"
 	"go.woodpecker-ci.org/woodpecker/v3/server/logdrain"
@@ -226,11 +227,21 @@ func setupEvilGlobals(ctx context.Context, c *cli.Command, s store.Store) (err e
 	}()
 
 	// WebSocket agent transport (#474) — shares business logic with gRPC
-	server.Config.Services.WSAgentRPC = woodpeckerGrpc.NewRPC(
+	wsAgentRPC := woodpeckerGrpc.NewRPC(
 		server.Config.Services.Queue,
 		server.Config.Services.Logs,
 		server.Config.Services.Pubsub,
 		s,
+	)
+	server.Config.Services.WSAgentRPC = wsAgentRPC
+
+	// #243: owner-liveness reclaim. The queue asks api.IsAgentConnected whether
+	// a running task's owning agent is still connected each dispatch tick; if
+	// not, it fires this reclaim to release the stranded task(s) immediately
+	// instead of waiting the 15-minute TaskTimeout lease.
+	server.Config.Services.Queue.SetAgentLivenessFn(
+		api.IsAgentConnected,
+		func(agentID int64) { api.ReclaimAgentTasks(agentID, wsAgentRPC) },
 	)
 
 	// plugins

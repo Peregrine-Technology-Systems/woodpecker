@@ -149,6 +149,14 @@ type Queue interface {
 	// to running without being assigned to an agent worker.
 	SetDispatchHook(fn DispatchFunc)
 
+	// SetAgentLivenessFn injects the owner-liveness oracle and reclaim
+	// callback (#243). On each dispatch tick the queue asks connected() whether
+	// a running task's owning agent still has a live connection; if not, it
+	// invokes reclaim(agentID) to release the stranded task(s) immediately
+	// instead of waiting the full TaskTimeout lease. Both may be nil (the
+	// liveness path is then disabled), which is the default for tests.
+	SetAgentLivenessFn(connected func(agentID int64) bool, reclaim func(agentID int64))
+
 	// UpdatePriority finds a pending or waiting-on-deps task by ID and
 	// updates its Priority, re-inserting at the correct position in the
 	// pending list if it was pending. Returns the old priority on success.

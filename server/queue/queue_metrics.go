@@ -45,3 +45,47 @@ var dispatchFailures = promauto.NewCounterVec(prometheus.CounterOpts{
 func recordDispatchFailure(reason string) {
 	dispatchFailures.WithLabelValues(reason).Inc()
 }
+
+// #243: orphaned-workflow observability. The dispatcher samples this every
+// process() tick. Two manifestations, because static analysis of the #243
+// incident could not distinguish them and we want the metric to catch either:
+//
+//   - running_dead_owner   — a task in q.running whose owning agent is no
+//     longer connected (recycled / preempted / came back under a new
+//     agent_id per #77). These are reclaimed within one tick via the
+//     owner-liveness path rather than waiting the 15-minute TaskTimeout lease.
+//   - pending_dispatchable — a task in q.pending that ShouldRun() (deps
+//     satisfied) yet has sat undispatched past orphanAgeThreshold. Indicates
+//     no agent matched its labels, or a dispatch-loop stall.
+//
+// Naming: this is an instantaneous count, so it is a Gauge (no _total
+// suffix). The cumulative reclaim count is the separate _reclaimed_total
+// counter below. Alert on `woodpecker_orphaned_workflows > 0` sustained for
+// several minutes — that is the "confused operator" case from #243 made
+// alert-able.
+var orphanedWorkflows = promauto.NewGaugeVec(prometheus.GaugeOpts{
+	Namespace: "woodpecker",
+	Name:      "orphaned_workflows",
+	Help:      "Workflows the dispatcher considers orphaned right now, by manifestation: running_dead_owner / pending_dispatchable (#243).",
+}, []string{"state"})
+
+// orphanReclaimsTotal counts owner-liveness reclaims actually triggered: a
+// running task's agent was found disconnected and ReleaseAgentTasks was
+// re-fired without waiting the TaskTimeout lease. A non-zero rate is the
+// actionable signal that agent recycles are stranding tasks. (#243)
+var orphanReclaimsTotal = promauto.NewCounter(prometheus.CounterOpts{
+	Namespace: "woodpecker",
+	Name:      "orphaned_workflows_reclaimed_total",
+	Help:      "Cumulative owner-liveness reclaims: a running task's agent was found disconnected and its tasks were released early (#243).",
+})
+
+// setOrphanedWorkflows is the single mutation surface for the gauge so tests
+// can assert without reaching into promauto internals.
+func setOrphanedWorkflows(state string, n float64) {
+	orphanedWorkflows.WithLabelValues(state).Set(n)
+}
+
+// recordOrphanReclaim increments the reclaim counter.
+func recordOrphanReclaim() {
+	orphanReclaimsTotal.Inc()
+}

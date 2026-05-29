@@ -53,22 +53,45 @@ type fifo struct {
 	extension     time.Duration
 	paused        bool
 	dispatchHook  DispatchFunc
+
+	// #243: owner-liveness reclaim. agentConnected reports whether a running
+	// task's owning agent still has a live connection; reclaimOrphan releases
+	// the stranded task(s) for an agent found disconnected. reclaimFiredAt
+	// throttles re-firing reclaim for the same agent across consecutive ticks
+	// while a prior reclaim (store I/O) is still settling.
+	agentConnected func(agentID int64) bool
+	reclaimOrphan  func(agentID int64)
+	reclaimFiredAt map[int64]time.Time
 }
 
 // processTimeInterval is the time till the queue rearranges things,
 // as the agent pull in 10 milliseconds we should also give them work asap.
 const processTimeInterval = 100 * time.Millisecond
 
+// #243 owner-liveness reclaim tuning. Vars (not consts) so tests can shrink them.
+var (
+	// orphanAgeThreshold is how long a dispatchable task may sit in q.pending
+	// before it is reported as pending_dispatchable. Set above the normal
+	// pick-up latency (sub-second) so healthy tasks never register.
+	orphanAgeThreshold = 120 * time.Second
+
+	// reclaimRefireInterval bounds how often the queue re-fires reclaim for one
+	// disconnected agent — one reclaim covers all of that agent's stranded
+	// tasks, and ReleaseAgentTasks may take longer than a tick to settle.
+	reclaimRefireInterval = 5 * time.Second
+)
+
 // NewMemoryQueue returns a new fifo queue.
 func NewMemoryQueue(ctx context.Context) Queue {
 	q := &fifo{
-		ctx:           ctx,
-		workers:       map[*worker]struct{}{},
-		running:       map[string]*entry{},
-		pending:       list.New(),
-		waitingOnDeps: list.New(),
-		extension:     constant.TaskTimeout,
-		paused:        false,
+		ctx:            ctx,
+		workers:        map[*worker]struct{}{},
+		running:        map[string]*entry{},
+		pending:        list.New(),
+		waitingOnDeps:  list.New(),
+		extension:      constant.TaskTimeout,
+		paused:         false,
+		reclaimFiredAt: map[int64]time.Time{},
 	}
 	go q.process()
 	return q
@@ -277,6 +300,61 @@ func (q *fifo) SetDispatchHook(fn DispatchFunc) {
 	q.dispatchHook = fn
 }
 
+// SetAgentLivenessFn injects the owner-liveness oracle + reclaim callback (#243).
+func (q *fifo) SetAgentLivenessFn(connected func(int64) bool, reclaim func(int64)) {
+	q.Lock()
+	defer q.Unlock()
+	q.agentConnected = connected
+	q.reclaimOrphan = reclaim
+}
+
+// sampleOrphans updates the #243 orphaned-workflow gauges and returns the set
+// of agent IDs that own a running task but are no longer connected and are due
+// for a reclaim re-fire (throttled by reclaimRefireInterval). Caller must hold
+// q.Mutex. The actual reclaim runs after the lock is released — ReleaseAgentTasks
+// re-enters the queue (q.Info, q.Requeue), so firing it under the lock deadlocks.
+func (q *fifo) sampleOrphans(now time.Time) []int64 {
+	// pending_dispatchable: tasks that could run now but have aged out.
+	pendingDispatchable := 0
+	for e := q.pending.Front(); e != nil; e = e.Next() {
+		task, _ := e.Value.(*model.Task)
+		if task.ShouldRun() && task.Created > 0 && now.Unix()-task.Created > int64(orphanAgeThreshold.Seconds()) {
+			pendingDispatchable++
+		}
+	}
+	setOrphanedWorkflows("pending_dispatchable", float64(pendingDispatchable))
+
+	// running_dead_owner: running tasks whose owning agent is gone.
+	deadOwnerRunning := 0
+	var due []int64
+	if q.agentConnected != nil {
+		seen := make(map[int64]struct{})
+		for _, e := range q.running {
+			agentID := e.item.AgentID
+			if agentID <= 0 || q.agentConnected(agentID) {
+				continue // unclaimed (dispatch hook) or owner still alive
+			}
+			deadOwnerRunning++
+			if _, ok := seen[agentID]; ok {
+				continue
+			}
+			seen[agentID] = struct{}{}
+			if last := q.reclaimFiredAt[agentID]; now.Sub(last) >= reclaimRefireInterval {
+				q.reclaimFiredAt[agentID] = now
+				due = append(due, agentID)
+			}
+		}
+		// drop throttle entries for agents no longer owning running tasks
+		for agentID := range q.reclaimFiredAt {
+			if _, ok := seen[agentID]; !ok {
+				delete(q.reclaimFiredAt, agentID)
+			}
+		}
+	}
+	setOrphanedWorkflows("running_dead_owner", float64(deadOwnerRunning))
+	return due
+}
+
 // Requeue atomically moves a running task back to pending without propagating
 // dep-status updates to dependent tasks (#225). If the task is no longer in
 // q.running (e.g. resubmitExpiredPipelines already moved it), the provided
@@ -380,7 +458,20 @@ func (q *fifo) process() {
 			}
 			worker.channel <- task
 		}
+
+		// #243: sample orphan gauges and collect dead-owner agents while still
+		// holding the lock; fire the reclaim callback only after unlocking
+		// (ReleaseAgentTasks re-enters the queue and would deadlock otherwise).
+		orphanAgents := q.sampleOrphans(time.Now())
+		reclaim := q.reclaimOrphan
 		q.Unlock()
+
+		for _, agentID := range orphanAgents {
+			recordOrphanReclaim()
+			if reclaim != nil {
+				go reclaim(agentID)
+			}
+		}
 	}
 }
 
