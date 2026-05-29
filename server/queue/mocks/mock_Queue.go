@@ -636,25 +636,25 @@ func (_c *MockQueue_Resume_Call) RunAndReturn(run func()) *MockQueue_Resume_Call
 	return _c
 }
 
-// SetAgentLivenessFn provides a mock function for the type MockQueue
-func (_mock *MockQueue) SetAgentLivenessFn(connected func(agentID int64) bool, reclaim func(agentID int64)) {
-	_mock.Called(connected, reclaim)
+// SetAgentReclaimFn provides a mock function for the type MockQueue
+func (_mock *MockQueue) SetAgentReclaimFn(knownDead func(agentID int64) bool, reclaim func(agentID int64)) {
+	_mock.Called(knownDead, reclaim)
 	return
 }
 
-// MockQueue_SetAgentLivenessFn_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'SetAgentLivenessFn'
-type MockQueue_SetAgentLivenessFn_Call struct {
+// MockQueue_SetAgentReclaimFn_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'SetAgentReclaimFn'
+type MockQueue_SetAgentReclaimFn_Call struct {
 	*mock.Call
 }
 
-// SetAgentLivenessFn is a helper method to define mock.On call
-//   - connected func(agentID int64) bool
+// SetAgentReclaimFn is a helper method to define mock.On call
+//   - knownDead func(agentID int64) bool
 //   - reclaim func(agentID int64)
-func (_e *MockQueue_Expecter) SetAgentLivenessFn(connected interface{}, reclaim interface{}) *MockQueue_SetAgentLivenessFn_Call {
-	return &MockQueue_SetAgentLivenessFn_Call{Call: _e.mock.On("SetAgentLivenessFn", connected, reclaim)}
+func (_e *MockQueue_Expecter) SetAgentReclaimFn(knownDead interface{}, reclaim interface{}) *MockQueue_SetAgentReclaimFn_Call {
+	return &MockQueue_SetAgentReclaimFn_Call{Call: _e.mock.On("SetAgentReclaimFn", knownDead, reclaim)}
 }
 
-func (_c *MockQueue_SetAgentLivenessFn_Call) Run(run func(connected func(agentID int64) bool, reclaim func(agentID int64))) *MockQueue_SetAgentLivenessFn_Call {
+func (_c *MockQueue_SetAgentReclaimFn_Call) Run(run func(knownDead func(agentID int64) bool, reclaim func(agentID int64))) *MockQueue_SetAgentReclaimFn_Call {
 	_c.Call.Run(func(args mock.Arguments) {
 		var arg0 func(agentID int64) bool
 		if args[0] != nil {
@@ -672,12 +672,12 @@ func (_c *MockQueue_SetAgentLivenessFn_Call) Run(run func(connected func(agentID
 	return _c
 }
 
-func (_c *MockQueue_SetAgentLivenessFn_Call) Return() *MockQueue_SetAgentLivenessFn_Call {
+func (_c *MockQueue_SetAgentReclaimFn_Call) Return() *MockQueue_SetAgentReclaimFn_Call {
 	_c.Call.Return()
 	return _c
 }
 
-func (_c *MockQueue_SetAgentLivenessFn_Call) RunAndReturn(run func(connected func(agentID int64) bool, reclaim func(agentID int64))) *MockQueue_SetAgentLivenessFn_Call {
+func (_c *MockQueue_SetAgentReclaimFn_Call) RunAndReturn(run func(knownDead func(agentID int64) bool, reclaim func(agentID int64))) *MockQueue_SetAgentReclaimFn_Call {
 	_c.Run(run)
 	return _c
 }

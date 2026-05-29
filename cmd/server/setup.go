@@ -235,12 +235,15 @@ func setupEvilGlobals(ctx context.Context, c *cli.Command, s store.Store) (err e
 	)
 	server.Config.Services.WSAgentRPC = wsAgentRPC
 
-	// #243: owner-liveness reclaim. The queue asks api.IsAgentConnected whether
-	// a running task's owning agent is still connected each dispatch tick; if
-	// not, it fires this reclaim to release the stranded task(s) immediately
-	// instead of waiting the 15-minute TaskTimeout lease.
-	server.Config.Services.Queue.SetAgentLivenessFn(
-		api.IsAgentConnected,
+	// #243/#246: owner-liveness reclaim. Each dispatch tick the queue asks
+	// api.IsAgentKnownDisconnected whether a running task's owning agent has been
+	// POSITIVELY observed as gone (its WS reconnect grace expired); only then does
+	// it fire this reclaim to release the stranded task(s) immediately instead of
+	// waiting the 15-minute TaskTimeout lease. The predicate fails safe: a
+	// gRPC/local-backend agent that never registers through the WS path is never
+	// known-dead, so its in-flight steps are never killed at t+0s (#246).
+	server.Config.Services.Queue.SetAgentReclaimFn(
+		api.IsAgentKnownDisconnected,
 		func(agentID int64) { api.ReclaimAgentTasks(agentID, wsAgentRPC) },
 	)
 
