@@ -50,10 +50,12 @@ func recordDispatchFailure(reason string) {
 // process() tick. Two manifestations, because static analysis of the #243
 // incident could not distinguish them and we want the metric to catch either:
 //
-//   - running_dead_owner   — a task in q.running whose owning agent is no
-//     longer connected (recycled / preempted / came back under a new
-//     agent_id per #77). These are reclaimed within one tick via the
-//     owner-liveness path rather than waiting the 15-minute TaskTimeout lease.
+//   - running_dead_owner   — a task in q.running whose owning agent has been
+//     POSITIVELY observed as disconnected (its WS reconnect grace expired —
+//     recycled / preempted / came back under a new agent_id per #77). These are
+//     reclaimed within one tick via the owner-liveness path rather than waiting
+//     the 15-minute TaskTimeout lease. #246: an agent whose liveness was never
+//     tracked (gRPC/local-backend) is NOT counted here and is never reclaimed.
 //   - pending_dispatchable — a task in q.pending that ShouldRun() (deps
 //     satisfied) yet has sat undispatched past orphanAgeThreshold. Indicates
 //     no agent matched its labels, or a dispatch-loop stall.

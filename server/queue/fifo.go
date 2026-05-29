@@ -54,12 +54,15 @@ type fifo struct {
 	paused        bool
 	dispatchHook  DispatchFunc
 
-	// #243: owner-liveness reclaim. agentConnected reports whether a running
-	// task's owning agent still has a live connection; reclaimOrphan releases
-	// the stranded task(s) for an agent found disconnected. reclaimFiredAt
-	// throttles re-firing reclaim for the same agent across consecutive ticks
-	// while a prior reclaim (store I/O) is still settling.
-	agentConnected func(agentID int64) bool
+	// #243/#246: owner-liveness reclaim. agentKnownDead reports whether a running
+	// task's owning agent has been POSITIVELY observed as disconnected (its WS
+	// reconnect grace expired) — it fails SAFE, returning false for any agent
+	// whose liveness was never tracked (e.g. gRPC/local-backend agents), so they
+	// are never reclaimed early (#246). reclaimOrphan releases the stranded
+	// task(s) for an agent found dead. reclaimFiredAt throttles re-firing reclaim
+	// for the same agent across consecutive ticks while a prior reclaim (store
+	// I/O) is still settling.
+	agentKnownDead func(agentID int64) bool
 	reclaimOrphan  func(agentID int64)
 	reclaimFiredAt map[int64]time.Time
 }
@@ -300,11 +303,12 @@ func (q *fifo) SetDispatchHook(fn DispatchFunc) {
 	q.dispatchHook = fn
 }
 
-// SetAgentLivenessFn injects the owner-liveness oracle + reclaim callback (#243).
-func (q *fifo) SetAgentLivenessFn(connected func(int64) bool, reclaim func(int64)) {
+// SetAgentReclaimFn injects the fail-safe known-dead oracle + reclaim callback
+// (#243, hardened #246).
+func (q *fifo) SetAgentReclaimFn(knownDead func(int64) bool, reclaim func(int64)) {
 	q.Lock()
 	defer q.Unlock()
-	q.agentConnected = connected
+	q.agentKnownDead = knownDead
 	q.reclaimOrphan = reclaim
 }
 
@@ -324,15 +328,18 @@ func (q *fifo) sampleOrphans(now time.Time) []int64 {
 	}
 	setOrphanedWorkflows("pending_dispatchable", float64(pendingDispatchable))
 
-	// running_dead_owner: running tasks whose owning agent is gone.
+	// running_dead_owner: running tasks whose owning agent is positively known
+	// to be gone. Fails safe (#246) — an agent never tracked through the WS path
+	// (e.g. a gRPC/local-backend agent) is NOT known-dead, so it is left alone
+	// and falls back to the TaskTimeout lease rather than being killed at t+0s.
 	deadOwnerRunning := 0
 	var due []int64
-	if q.agentConnected != nil {
+	if q.agentKnownDead != nil {
 		seen := make(map[int64]struct{})
 		for _, e := range q.running {
 			agentID := e.item.AgentID
-			if agentID <= 0 || q.agentConnected(agentID) {
-				continue // unclaimed (dispatch hook) or owner still alive
+			if agentID <= 0 || !q.agentKnownDead(agentID) {
+				continue // unclaimed (dispatch hook) or owner not known dead
 			}
 			deadOwnerRunning++
 			if _, ok := seen[agentID]; ok {

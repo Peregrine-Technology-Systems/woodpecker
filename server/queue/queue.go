@@ -149,13 +149,20 @@ type Queue interface {
 	// to running without being assigned to an agent worker.
 	SetDispatchHook(fn DispatchFunc)
 
-	// SetAgentLivenessFn injects the owner-liveness oracle and reclaim
-	// callback (#243). On each dispatch tick the queue asks connected() whether
-	// a running task's owning agent still has a live connection; if not, it
-	// invokes reclaim(agentID) to release the stranded task(s) immediately
-	// instead of waiting the full TaskTimeout lease. Both may be nil (the
-	// liveness path is then disabled), which is the default for tests.
-	SetAgentLivenessFn(connected func(agentID int64) bool, reclaim func(agentID int64))
+	// SetAgentReclaimFn injects the owner-liveness reclaim path (#243, hardened
+	// in #246). On each dispatch tick the queue asks knownDead(agentID) whether a
+	// running task's owning agent has been POSITIVELY observed as disconnected
+	// (its WS reconnect grace expired); if so, it invokes reclaim(agentID) to
+	// release the stranded task(s) immediately instead of waiting the full
+	// TaskTimeout lease.
+	//
+	// knownDead MUST fail safe: an agent whose liveness was never tracked (e.g. a
+	// gRPC/local-backend agent that never registers through the WS path) returns
+	// false and is NEVER reclaimed — it falls back to the TaskTimeout lease. The
+	// pre-#246 oracle keyed on "absent from the connected set," which mistook
+	// every gRPC agent for dead and killed its steps at t+0s (#246). Both may be
+	// nil (the reclaim path is then disabled), which is the default for tests.
+	SetAgentReclaimFn(knownDead func(agentID int64) bool, reclaim func(agentID int64))
 
 	// UpdatePriority finds a pending or waiting-on-deps task by ID and
 	// updates its Priority, re-inserting at the correct position in the

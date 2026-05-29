@@ -451,7 +451,7 @@ func (q *failingPushQueue) Pause()                                              
 func (q *failingPushQueue) Resume()                                               {}
 func (q *failingPushQueue) KickAgentWorkers(int64)                                {}
 func (q *failingPushQueue) SetDispatchHook(DispatchFunc)                          {}
-func (q *failingPushQueue) SetAgentLivenessFn(func(int64) bool, func(int64))      {}
+func (q *failingPushQueue) SetAgentReclaimFn(func(int64) bool, func(int64))       {}
 func (q *failingPushQueue) UpdatePriority(string, int64) (int64, error) {
 	return 0, ErrNotFound
 }

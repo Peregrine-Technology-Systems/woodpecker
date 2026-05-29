@@ -38,20 +38,21 @@ func newOrphanTestFifo() *fifo {
 	}
 }
 
-func TestSetAgentLivenessFn(t *testing.T) {
+func TestSetAgentReclaimFn(t *testing.T) {
 	q := newOrphanTestFifo()
-	connected := func(int64) bool { return true }
+	knownDead := func(int64) bool { return true }
 	reclaim := func(int64) {}
-	q.SetAgentLivenessFn(connected, reclaim)
-	assert.NotNil(t, q.agentConnected)
+	q.SetAgentReclaimFn(knownDead, reclaim)
+	assert.NotNil(t, q.agentKnownDead)
 	assert.NotNil(t, q.reclaimOrphan)
-	assert.True(t, q.agentConnected(1))
+	assert.True(t, q.agentKnownDead(1))
 }
 
 func TestSampleOrphans_RunningDeadOwner(t *testing.T) {
+	defer orphanedWorkflows.Reset()
 	q := newOrphanTestFifo()
-	// agent 9 alive, everyone else dead.
-	q.agentConnected = func(id int64) bool { return id == 9 }
+	// agent 7 positively known dead; everyone else alive/untracked.
+	q.agentKnownDead = func(id int64) bool { return id == 7 }
 	q.running["dead"] = &entry{item: &model.Task{ID: "dead", AgentID: 7}}
 	q.running["dead2"] = &entry{item: &model.Task{ID: "dead2", AgentID: 7}} // same dead agent — deduped in `due`
 	q.running["live"] = &entry{item: &model.Task{ID: "live", AgentID: 9}}
@@ -64,15 +65,39 @@ func TestSampleOrphans_RunningDeadOwner(t *testing.T) {
 		"both tasks on the dead agent are counted")
 }
 
-func TestSampleOrphans_NoLivenessFnDisablesReclaim(t *testing.T) {
-	q := newOrphanTestFifo() // agentConnected nil
+// TestSampleOrphans_UntrackedAgentNotReclaimed is the #246 regression guard:
+// an agent that is NOT positively known dead (e.g. a gRPC/local-backend agent
+// that never registers through the WS path, so the liveness oracle has no
+// record of it) must NEVER be reclaimed, even though it owns running tasks.
+// Pre-#246 the oracle keyed on "absent from the connected set," so these agents
+// read as dead and their clone step was killed at t+0s, jamming tier:local.
+func TestSampleOrphans_UntrackedAgentNotReclaimed(t *testing.T) {
+	defer orphanedWorkflows.Reset()
+	q := newOrphanTestFifo()
+	// knownDead returns false for every agent — the fail-safe default for any
+	// agent the WS liveness path never observed disconnecting.
+	q.agentKnownDead = func(int64) bool { return false }
+	q.running["local"] = &entry{item: &model.Task{ID: "local", AgentID: 23000}}
+	q.running["local2"] = &entry{item: &model.Task{ID: "local2", AgentID: 23000}}
+
+	due := q.sampleOrphans(time.Now())
+
+	assert.Empty(t, due, "an untracked (not-known-dead) agent is never reclaimed")
+	assert.Empty(t, q.reclaimFiredAt, "no throttle entry is recorded for a live/untracked agent")
+	assert.Equal(t, float64(0), testutil.ToFloat64(orphanedWorkflows.WithLabelValues("running_dead_owner")),
+		"untracked-agent tasks are not counted as dead-owner")
+}
+
+func TestSampleOrphans_NoReclaimFnDisablesReclaim(t *testing.T) {
+	q := newOrphanTestFifo() // agentKnownDead nil
 	q.running["x"] = &entry{item: &model.Task{ID: "x", AgentID: 7}}
 	assert.Nil(t, q.sampleOrphans(time.Now()))
 }
 
 func TestSampleOrphans_ReclaimThrottle(t *testing.T) {
+	defer orphanedWorkflows.Reset()
 	q := newOrphanTestFifo()
-	q.agentConnected = func(int64) bool { return false }
+	q.agentKnownDead = func(int64) bool { return true }
 	q.running["dead"] = &entry{item: &model.Task{ID: "dead", AgentID: 7}}
 
 	t0 := time.Now()
@@ -83,8 +108,9 @@ func TestSampleOrphans_ReclaimThrottle(t *testing.T) {
 }
 
 func TestSampleOrphans_ThrottleEvictsResolvedAgents(t *testing.T) {
+	defer orphanedWorkflows.Reset()
 	q := newOrphanTestFifo()
-	q.agentConnected = func(int64) bool { return false }
+	q.agentKnownDead = func(int64) bool { return true }
 	q.running["dead"] = &entry{item: &model.Task{ID: "dead", AgentID: 7}}
 
 	t0 := time.Now()
@@ -124,8 +150,8 @@ func TestProcessFiresReclaimForOrphanedRunningTask(t *testing.T) {
 	q, _ := NewMemoryQueue(ctx).(*fifo)
 
 	reclaimed := make(chan int64, 4)
-	q.SetAgentLivenessFn(
-		func(int64) bool { return false }, // owner always "dead"
+	q.SetAgentReclaimFn(
+		func(int64) bool { return true }, // owner positively known dead
 		func(id int64) { reclaimed <- id },
 	)
 
