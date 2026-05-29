@@ -8,6 +8,15 @@ labels:
 
 depends_on: [pts-build-compile]
 
+# Slack notification removed (#246): Slack is being deprecated org-wide. The
+# pts-build pipeline's terminal status is already published to the bus by the
+# woodpecker server's GCP Pub/Sub plugin (server/plugin/gcppubsub, #234) —
+# `pipeline.success`/`failed`/`killed` CloudEvents on `ci-events` carry repo,
+# pipeline #, status, branch, commit, author, message + an `event_type` filter
+# attribute. That bus status supersedes the per-pipeline Slack webhook, which
+# also required `slack_webhook_url` to be scoped to the `manual` event (the
+# scope drifted and jammed manual deploys). Infra consumer/alerting migration
+# tracked in peregrine-infrastructure (see issue filed for this item).
 steps:
   - name: delete-vm
     image: bash
@@ -16,14 +25,3 @@ steps:
         from_secret: woodpecker_api_token
     commands:
       - scripts/woodpecker/pts-cleanup.sh
-
-  - name: notify
-    image: bash
-    environment:
-      SLACK_WEBHOOK_URL:
-        from_secret: slack_webhook_url
-    commands:
-      - scripts/woodpecker/pts-notify.sh
-    when:
-      - status: [success, failure, killed]
-    depends_on: [delete-vm]

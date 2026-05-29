@@ -197,11 +197,11 @@ Workflow 2 — pts-build-compile.yaml (pts-build-vm agent, label: agent=pts-buil
    11. GitHub Release + binary assets (woodpecker-server-linux-amd64, woodpecker-agent-linux-amd64)
    12. Write job to gs://ci-runners-de-image-builder-state/jobs/ + start ci-image-builder
 
-Workflow 3 — pts-build-cleanup.yaml (GCP agent, always runs):
+Workflow 3 — pts-build-cleanup.yaml (d3ci42-local, always runs):
   pts-cleanup.sh:
    13. gcloud instances stop pts-build-vm
-  pts-notify.sh:
-   14. Slack notify (success/failure of compile workflow)
+  (Slack notify removed #246 — Slack deprecated org-wide. Pipeline terminal
+   status is published to the bus by the server's GCP Pub/Sub plugin, #234.)
 
 Separately on d3ci42 — woodpecker-deploy.service (systemd timer, every 30s):
   woodpecker-deploy.sh:

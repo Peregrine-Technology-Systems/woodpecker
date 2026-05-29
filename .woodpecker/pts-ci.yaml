@@ -18,15 +18,9 @@ steps:
     commands:
       - scripts/woodpecker/pts-lint.sh
     depends_on: []
-
-  - name: notify-status
-    image: bash
-    environment:
-      SLACK_WEBHOOK_URL:
-        from_secret: slack_webhook_url
-    commands:
-      - scripts/woodpecker/pts-notify.sh
-    when:
-      - status: [failure]
-    depends_on: [test, lint]
+# Slack notify-status step removed (#246): Slack is being deprecated org-wide.
+# CI pipeline pass/fail is already published to the bus by the woodpecker
+# server's GCP Pub/Sub plugin (server/plugin/gcppubsub, #234) as
+# `pipeline.success`/`failed` CloudEvents on `ci-events`. Infra alerting
+# migration tracked in peregrine-infrastructure (see issue filed for this item).
 # CI pipeline activated
