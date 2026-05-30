@@ -314,33 +314,19 @@ func run(ctx context.Context, c *cli.Command, backends []types.Backend) error {
 
 	log.Debug().Msgf("agent registered with ID %d", agentConfig.AgentID)
 
-	// Proactive token refresh (#116): exit cleanly at 75% of the token lifetime
-	// when idle so systemd restarts with a fresh registration before the token
-	// expires. Prevents silent auth failures mid-pipeline on long-running agents.
-	// agentTokenDuration must match server/rpc.jwtTokenDuration (1h).
-	const agentTokenDuration = 1 * time.Hour
-	tokenRefreshAt := time.Now().Add(agentTokenDuration * 3 / 4)
-	serviceWaitingGroup.Go(func() error {
-		select {
-		case <-agentCtx.Done():
-			return nil
-		case <-time.After(time.Until(tokenRefreshAt)):
-		}
-		// Only force reconnect when no tasks are in flight.
-		for counter.Running > 0 {
-			select {
-			case <-agentCtx.Done():
-				return nil
-			case <-time.After(30 * time.Second):
-			}
-		}
-		log.Info().Msg("proactive token refresh: no tasks running, reconnecting for fresh registration (#116)")
-		if agentConfigPath != "" {
-			_ = os.Remove(agentConfigPath)
-		}
-		log.Fatal().Msg("exiting for token refresh — systemd will restart with fresh credentials")
-		return nil
-	})
+	// NOTE (#252): there is deliberately no proactive "restart to refresh the
+	// token" goroutine here. The earlier #116 mechanism exited the process at
+	// 75% of the JWT lifetime (deleting agent.conf → systemd restart → fresh
+	// registration under a NEW agent_id), which recycled the agent's identity
+	// every ~45min and stranded straddler workflows whose deps cleared around
+	// the recycle (#243/#246/#248; repro: infra pipeline 5324). It was redundant:
+	//   - gRPC: agent/rpc/auth_interceptor.go already refreshes the JWT IN PLACE
+	//     every authInterceptorRefreshInterval (30min < 1h lifetime), keeping the
+	//     same agent_id and connection — see scheduleRefreshToken/refreshToken.
+	//   - WS: agent/rpc/client_ws.go authenticates with the durable agent token
+	//     (no short-lived JWT to expire).
+	// So token expiry is already prevented on both transports without churning
+	// identity. Do NOT reintroduce a timer-based os.Remove(conf)+log.Fatal here.
 
 	serviceWaitingGroup.Go(func() error {
 		for {
