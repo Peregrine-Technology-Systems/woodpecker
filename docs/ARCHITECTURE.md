@@ -172,6 +172,25 @@ WOODPECKER_HOSTNAME=d3ci42-local
 
 **Stale agent.conf self-heal (#77)**: after a woodpecker-server restart that changes the JWT signing key or resets the agents DB, the agent's saved ID (`/etc/woodpecker/agent.conf`) becomes invalid. The agent detects `Unauthenticated` / `AgentID not found` / `sql: no rows` errors and calls `log.Fatal()` — the process exits with status 1, `Restart=on-failure` triggers, systemd restarts with no conf, and the agent re-registers fresh.
 
+### Agent label taxonomy (`backend` / `tier`) — validated at queue accept (#255)
+
+Pipelines route to agents via labels: every non-empty task label must be present on an agent (`server/rpc/filter.go`). Two routing labels matter on Peregrine:
+
+| Label | Values | Meaning |
+|---|---|---|
+| `backend` | `local` | runs on the co-located `d3ci42-local` agent (internal tooling). Omitted/`docker` = GCP fleet. |
+| `tier` | `spot` (default), `ondemand`, `n2`, `integration-test` | selects a GCP agent VM class (consumed by peregrine-ci-scaler). |
+
+**Legal sets** (a workflow's labels must form one of these):
+- `{backend: local}` alone — no `tier` (the local agent carries no GCP tier).
+- `{tier: <spot|ondemand|n2|integration-test>}` — with `backend` omitted or `docker`.
+
+**Illegal** (rejected at submit time → pipeline `errored`):
+- `backend: local` + any `tier` — geometrically impossible; no agent has both.
+- `tier: local` or any other unknown `tier` value.
+
+The validator is `pipeline.ValidateLabelCombination` ([pts] #255), run on every workflow in `server/pipeline.Create` before enqueue. This is the single source of truth for the taxonomy — keep `pipeline.KnownTiers` in lockstep with the scaler's tier definitions. Before #255 an impossible combination was accepted and sat `pending` forever with no error surface (2026-05-31: 14 pending / 0 running on d3ci42).
+
 ### Build + Deploy Pipeline (three workflows, #74/#80/#140)
 
 Triggered on every push to `main`. Three decoupled Woodpecker workflows — wake/compile on pts-build-vm (GCP), cleanup on any GCP agent, deploy via standalone systemd timer on d3ci42.

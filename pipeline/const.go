@@ -34,4 +34,7 @@ const (
 	LabelFilterPlatform string = "platform"
 	LabelFilterHostname string = "hostname"
 	LabelFilterBackend  string = "backend"
+	// LabelFilterTier is a Peregrine routing label ([pts] #255) consumed by the
+	// scaler to select a GCP agent VM class. Validated by ValidateLabelCombination.
+	LabelFilterTier string = "tier"
 )

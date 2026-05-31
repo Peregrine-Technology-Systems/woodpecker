@@ -98,7 +98,7 @@ func createFilterFuncWithDeploy(agentFilter rpc.Filter, deployPatterns []string)
 		// Deploy auto-routing: boost on-demand/n2 agents and hold
 		// deploy tasks from spot agents for deployHoldWindow seconds.
 		if len(deployPatterns) > 0 && isDeployWorkflow(task.Name, deployPatterns) {
-			agentTier := agentFilter.Labels["tier"]
+			agentTier := agentFilter.Labels[pipelineConsts.LabelFilterTier]
 
 			// Boost on-demand/n2 agents
 			if boost, ok := deployTierBoost[agentTier]; ok {
