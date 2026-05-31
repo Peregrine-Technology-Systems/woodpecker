@@ -18,6 +18,12 @@ steps:
     commands:
       - scripts/woodpecker/pts-lint.sh
     depends_on: []
+
+  - name: bats
+    image: bash
+    commands:
+      - scripts/woodpecker/pts-bats.sh
+    depends_on: []
 # Slack notify-status step removed (#246): Slack is being deprecated org-wide.
 # CI pipeline pass/fail is already published to the bus by the woodpecker
 # server's GCP Pub/Sub plugin (server/plugin/gcppubsub, #234) as
