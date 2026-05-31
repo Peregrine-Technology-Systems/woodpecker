@@ -245,7 +245,10 @@ Binary and SHA256 at `${VERSION}/woodpecker-server{,.sha256}`. Pending marker at
 
 **TTL coordination:** pts-wake.sh sets `ttl-override-min=45` on pts-build-vm. The `ttl-reaper-dev-vm.sh` timer on d3ci42 reads this label and keeps the VM alive for 45 min — enough for boot + cache restore + compile + cleanup.
 
-**woodpecker-deploy.sh operational notes:**  
+**woodpecker-deploy.sh is owned by peregrine-infrastructure, NOT this fork.**  
+The live script is `peregrine-infrastructure/woodpecker-server/woodpecker-deploy.sh`, installed onto d3ci42 by `deploy-woodpecker-server.sh` (which auto-enables the systemd units). The fork does **not** own or deploy it — there is no copy of it in this repo (a stale duplicate that drifted and never ran was removed; see #257/#258 and the infra ownership issue). The fork's only responsibility is to **honor the deploy contract**: pts-build uploads `<version>/woodpecker-server{,.sha256}` to `gs://ci-runners-de-build-cache/woodpecker-deploy/` and writes `pending` = `version\ncommit\npipeline`; the server serves `/healthz` → HTTP 204 with an `X-Woodpecker-Version` header. Contract changes go to infra as an issue.
+
+**woodpecker-deploy.sh operational notes (infra-side, for reference):**  
 - Runs as `woodpecker-deploy.service` (oneshot) fired by `woodpecker-deploy.timer` (every 30s)  
 - Exclusive flock at `/tmp/woodpecker-deploy.lock` prevents concurrent runs  
 - Sources `/etc/woodpecker/secrets.env` for `SLACK_WEBHOOK_URL`  

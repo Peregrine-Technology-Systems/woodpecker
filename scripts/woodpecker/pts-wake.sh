@@ -24,8 +24,8 @@ WP_API="https://d3ci42.peregrinetechsys.net"
 # status so an undetermined owner/status never falls through to a destructive
 # delete (#3089 class).
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=scripts/woodpecker/lib/deploy-helpers.sh
-source "${SCRIPT_DIR}/lib/deploy-helpers.sh"
+# shellcheck source=scripts/woodpecker/lib/wake-helpers.sh
+source "${SCRIPT_DIR}/lib/wake-helpers.sh"
 
 # Same zone list used by ci-image-builder bootstrap.sh (peregrine-infrastructure PR #1665)
 ZONE_LIST="us-central1-a us-central1-b us-east1-b us-east1-c us-east1-d us-west1-a us-west1-b us-west1-c us-east4-a us-east4-b us-south1-b"
