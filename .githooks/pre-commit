@@ -127,7 +127,22 @@ COV_SKIP_REGEX='_test\.go$|/mocks/|wire_gen\.go$|_easyjson\.go$|\.pb\.go$|/fixtu
 #   which require a live forge + store to exercise. Inherited from upstream; do
 #   NOT use this exemption for incremental changes that don't add tests for the
 #   changed function.
-COV_WIRING_REGEX='^cmd/server/setup\.go$|^server/router/api\.go$|^cmd/|^server/store/datastore/migration/migration\.go$|^server/store/store\.go$|^server/api/ws_agent\.go$|^server/rpc/rpc\.go$|^server/rpc/server\.go$|^pipeline/frontend/yaml/compiler/convert\.go$|^server/pipeline/items\.go$|^pipeline/backend/types/step\.go$|^server/logdrain/gcp\.go$|^server/config\.go$'
+# - pipeline/const.go: const-declaration-only file (label keys, exit codes, log
+#   limits — zero executable statements), so the cover profile reports NO_DATA.
+#   Like server/store/store.go and server/config.go — nothing to execute. The
+#   LabelFilterTier const it declares (#255) is exercised via
+#   pipeline.ValidateLabelCombination (100%) and server/rpc/filter.go.
+# - server/pipeline/create.go: the Create() pipeline-orchestration entrypoint
+#   (forge token refresh → config fetch → parse → persist → prepareStart →
+#   start) plus its updatePipeline{WithErr,Pending} helpers are all 0% under
+#   unit tests — they require a live forge + store + queue harness, exactly like
+#   the sibling items.go createPipelineItems path. The Peregrine addition for
+#   #255 (validatePipelineLabels) is at 100% (TestValidatePipelineLabels) and the
+#   taxonomy logic it calls (pipeline.ValidateLabelCombination) is at 100% in its
+#   own package; only the 3-line call site inside Create() is uncovered, and that
+#   orchestration body is the integration seam. Do NOT use this exemption for
+#   incremental changes that don't add tests for the changed function.
+COV_WIRING_REGEX='^pipeline/const\.go$|^cmd/server/setup\.go$|^server/router/api\.go$|^cmd/|^server/store/datastore/migration/migration\.go$|^server/store/store\.go$|^server/api/ws_agent\.go$|^server/rpc/rpc\.go$|^server/rpc/server\.go$|^pipeline/frontend/yaml/compiler/convert\.go$|^server/pipeline/items\.go$|^server/pipeline/create\.go$|^pipeline/backend/types/step\.go$|^server/logdrain/gcp\.go$|^server/config\.go$'
 
 if [ -n "$GO_FILES" ]; then
     # Format

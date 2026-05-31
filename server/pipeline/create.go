@@ -22,11 +22,13 @@ import (
 
 	"github.com/rs/zerolog/log"
 
+	corepipeline "go.woodpecker-ci.org/woodpecker/v3/pipeline"
 	pipeline_errors "go.woodpecker-ci.org/woodpecker/v3/pipeline/errors"
 	"go.woodpecker-ci.org/woodpecker/v3/server"
 	"go.woodpecker-ci.org/woodpecker/v3/server/forge"
 	forge_types "go.woodpecker-ci.org/woodpecker/v3/server/forge/types"
 	"go.woodpecker-ci.org/woodpecker/v3/server/model"
+	"go.woodpecker-ci.org/woodpecker/v3/server/pipeline/stepbuilder"
 	"go.woodpecker-ci.org/woodpecker/v3/server/plugin"
 	"go.woodpecker-ci.org/woodpecker/v3/server/store"
 )
@@ -116,6 +118,14 @@ func Create(ctx context.Context, _store store.Store, repo *model.Repo, pipeline 
 		return nil, ErrFiltered
 	}
 
+	// [pts] #255 — reject label combinations no agent can ever satisfy at submit
+	// time, so the author sees the failure now instead of the task sitting pending
+	// forever with no error surface.
+	if labelErr := validatePipelineLabels(pipelineItems); labelErr != nil {
+		log.Warn().Str("repo", repo.FullName).Err(labelErr).Msg("rejecting pipeline: incompatible labels")
+		return pipeline, updatePipelineWithErr(ctx, _forge, _store, pipeline, repo, repoUser, labelErr)
+	}
+
 	pipeline = setPipelineStepsOnPipeline(pipeline, pipelineItems)
 
 	// persist the pipeline config for historical correctness, restarts, etc
@@ -172,6 +182,23 @@ func Create(ctx context.Context, _store store.Store, repo *model.Repo, pipeline 
 	}
 
 	return pipeline, nil
+}
+
+// validatePipelineLabels runs each workflow's labels through the legal-taxonomy
+// check ([pts] #255). The first unsatisfiable workflow fails the whole pipeline —
+// a pipeline with one un-runnable workflow can never complete, so erroring early
+// is both correct and the clearest signal to the author. The workflow name is
+// included so multi-workflow pipelines point at the offending file.
+func validatePipelineLabels(items []*stepbuilder.Item) error {
+	for _, item := range items {
+		if item.Workflow.State == model.StatusSkipped {
+			continue
+		}
+		if err := corepipeline.ValidateLabelCombination(item.Labels); err != nil {
+			return fmt.Errorf("workflow %q: %w", item.Workflow.Name, err)
+		}
+	}
+	return nil
 }
 
 func updatePipelineWithErr(ctx context.Context, _forge forge.Forge, _store store.Store, pipeline *model.Pipeline, repo *model.Repo, repoUser *model.User, err error) error {
