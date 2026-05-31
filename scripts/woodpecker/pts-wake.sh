@@ -20,6 +20,13 @@ PTS_BUILD_PROJECT="ci-runners-de"
 PTS_BUILD_VM="pts-build-vm"
 WP_API="https://d3ci42.peregrinetechsys.net"
 
+# Fail-safe helpers — get_vm_owner_pipeline / get_pipeline_status branch on exit
+# status so an undetermined owner/status never falls through to a destructive
+# delete (#3089 class).
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/woodpecker/lib/deploy-helpers.sh
+source "${SCRIPT_DIR}/lib/deploy-helpers.sh"
+
 # Same zone list used by ci-image-builder bootstrap.sh (peregrine-infrastructure PR #1665)
 ZONE_LIST="us-central1-a us-central1-b us-east1-b us-east1-c us-east1-d us-west1-a us-west1-b us-west1-c us-east4-a us-east4-b us-south1-b"
 
@@ -34,15 +41,19 @@ CURRENT_ZONE=$(echo "${DESCRIBE}" | awk '{print $2}' | awk -F/ '{print $NF}')
 STATUS="${STATUS:-NOT_FOUND}"
 
 if [ "${STATUS}" = "RUNNING" ] && [ -n "${CURRENT_ZONE}" ]; then
-    OWNER_PIPELINE=$(gcloud compute instances describe "${PTS_BUILD_VM}" \
-        --zone="${CURRENT_ZONE}" --project="${PTS_BUILD_PROJECT}" \
-        --format="value(metadata.items[pts-build-pipeline])" 2>/dev/null || echo "")
+    # Fail-safe mutex (#120 / #3089): only delete the running VM when we can
+    # POSITIVELY determine it is stale/unowned. If ownership or owner-status
+    # can't be determined (gcloud/API error), keep the VM — never destroy what
+    # we can't prove is safe to destroy.
+    if ! OWNER_PIPELINE=$(get_vm_owner_pipeline "${PTS_BUILD_VM}" "${CURRENT_ZONE}" "${PTS_BUILD_PROJECT}"); then
+        echo "==> ${PTS_BUILD_VM} RUNNING in ${CURRENT_ZONE} but owner metadata is UNREADABLE — refusing to delete (fail-safe, #120). Aborting wake; TTL reaper (#228) backstops a truly-stale VM."
+        exit 0
+    fi
     if [ -n "${OWNER_PIPELINE}" ] && [ "${OWNER_PIPELINE}" != "0" ]; then
-        OWNER_STATUS=$(curl -s --max-time 5 \
-            -H "Authorization: Bearer ${WOODPECKER_API_TOKEN}" \
-            "${WP_API}/api/repos/13/pipelines/${OWNER_PIPELINE}" \
-            2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin).get('status','unknown'))" \
-            2>/dev/null || echo "unknown")
+        if ! OWNER_STATUS=$(get_pipeline_status "${WP_API}" "${WOODPECKER_API_TOKEN}" "${OWNER_PIPELINE}"); then
+            echo "==> ${PTS_BUILD_VM} owned by #${OWNER_PIPELINE} but its status is UNDETERMINED (API/parse error) — refusing to delete (fail-safe, #120). Aborting wake."
+            exit 0
+        fi
         echo "==> ${PTS_BUILD_VM} RUNNING in ${CURRENT_ZONE} — owner=#${OWNER_PIPELINE} status=${OWNER_STATUS}"
         if [ "${OWNER_STATUS}" = "running" ] || [ "${OWNER_STATUS}" = "pending" ]; then
             echo "    Active pipeline #${OWNER_PIPELINE} is compiling — aborting (#120)."

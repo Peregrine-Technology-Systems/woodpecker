@@ -32,6 +32,18 @@ HEALTH_URL="http://localhost:8000/healthz"
 HEALTH_BUDGET=90  # seconds
 LOCK_FILE="/tmp/woodpecker-deploy.lock"
 
+# ── Helpers (sourceable lib — hardened against the #3089 silent-OK class) ──
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/woodpecker/lib/deploy-helpers.sh
+source "${SCRIPT_DIR}/lib/deploy-helpers.sh"
+
+# API token secret (#92). The real Woodpecker API token lives in `ci-api-token`;
+# the old `woodpecker-api-token` name does not exist in GCP SM (NOT_FOUND), so
+# rotation silently never ran. See lib/deploy-helpers.sh::rotate_api_token.
+API_TOKEN_SECRET="ci-api-token"
+GCP_PROJECT="ci-runners-de"
+SERVER_URL="http://localhost:8000"
+
 # ── Secrets ──
 source /etc/woodpecker/secrets.env 2>/dev/null || true
 SLACK_URL="${SLACK_WEBHOOK_URL:-}"
@@ -61,10 +73,18 @@ if ! flock -n 9; then
 fi
 
 # ── Check for pending deploy ──
-PENDING_CONTENT=$(gsutil -q cat "${DEPLOY_BUCKET}/pending" 2>/dev/null || echo "")
-if [ -z "${PENDING_CONTENT}" ]; then
-    exit 0  # nothing to deploy
-fi
+# read_pending_marker distinguishes "no marker" (idle, quiet) from a backend
+# error (could not determine — must NOT be silently treated as idle, #3089).
+PENDING_CONTENT="$(read_pending_marker "${DEPLOY_BUCKET}")"
+case $? in
+    0) : ;;          # marker present — proceed
+    1) exit 0 ;;     # genuinely no pending deploy — common idle case
+    *)               # backend error — surface loudly, do not masquerade as idle
+        echo "ERROR: could not read pending marker from ${DEPLOY_BUCKET} — treating as a failure, not as idle"
+        slack ":warning:" "deploy timer could not read the pending marker (GCS error) — check gsutil auth/connectivity on d3ci42."
+        exit 1
+        ;;
+esac
 
 VERSION=$(echo "${PENDING_CONTENT}" | head -1)
 COMMIT_SHA=$(echo "${PENDING_CONTENT}" | sed -n '2p')
@@ -242,25 +262,17 @@ done
 # Refresh the API token by calling the server's own endpoint (user ID 1).
 # The API token is signed with user.Hash (stored in DB), not WOODPECKER_JWT_SECRET,
 # so we ask the server to sign a fresh one rather than constructing it here.
-EXISTING_API_TOKEN=$(gcloud secrets versions access latest --secret="woodpecker-api-token" --project=ci-runners-de 2>/dev/null || echo "")
-if [ -n "${EXISTING_API_TOKEN}" ]; then
-    NEW_API_TOKEN=$(curl -sf --max-time 10 -X POST \
-        -H "Authorization: Bearer ${EXISTING_API_TOKEN}" \
-        "http://localhost:8000/api/user/token" 2>/dev/null || echo "")
-    if [ -n "${NEW_API_TOKEN}" ]; then
-        gcloud secrets versions add woodpecker-api-token \
-            --data-file=<(printf '%s' "${NEW_API_TOKEN}") \
-            --project=ci-runners-de 2>/dev/null || \
-        gcloud secrets create woodpecker-api-token \
-            --data-file=<(printf '%s' "${NEW_API_TOKEN}") \
-            --project=ci-runners-de
-        echo "$(date -u +%FT%TZ) woodpecker-deploy: JWT secret and API token rotated successfully (#92)"
-    else
-        slack ":warning:" "JWT rotation: could not refresh API token from /api/user/token — old token may have expired; manual rotation needed (#92)"
-    fi
-else
-    slack ":warning:" "JWT rotation: woodpecker-api-token not found in GCP SM — skipping API token refresh (#92)"
-fi
+# rotate_api_token branches on exit status (error vs genuinely-absent, no
+# silent-OK swallow) and verifies the new token works before overwriting the
+# stored one (Act → Verify). See lib/deploy-helpers.sh.
+ROTATE_OUT="$(rotate_api_token "${API_TOKEN_SECRET}" "${GCP_PROJECT}" "${SERVER_URL}")"
+ROTATE_RC=$?
+echo "$(date -u +%FT%TZ) woodpecker-deploy: ${ROTATE_OUT}"
+case "${ROTATE_RC}" in
+    0) : ;;  # rotated + verified
+    1) : ;;  # secret genuinely absent — informational, nothing to refresh
+    *) slack ":warning:" "JWT rotation: ${ROTATE_OUT}" ;;  # real error — alert
+esac
 
 # Remove pending marker
 gsutil -q rm "${DEPLOY_BUCKET}/pending" 2>/dev/null || true
