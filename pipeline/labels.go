@@ -21,58 +21,55 @@ import (
 	"strings"
 )
 
-// [pts] #255 — queue-acceptance label-combination validation.
+// [pts] #255/#261 — queue-acceptance label validation.
 //
-// Woodpecker matches a task's labels against agent labels (server/rpc/filter.go):
-// every non-empty task label must be present on an agent. If no agent can ever
-// satisfy the combination, the task sits pending forever with no error surface —
-// the failure is only noticed downstream (operator, user complaint, scaler
-// queue-healthy gauge). This validator moves the failure to submit time so the
-// author sees it at `gh pr create`, not in incident archaeology.
+// Three orthogonal routing dimensions, each with exactly one job:
 //
-// The taxonomy below is Peregrine-specific (the `tier` label is a routing
-// convention consumed by peregrine-ci-scaler, not upstream Woodpecker). This is
-// the single source of truth for legal `backend`/`tier` combinations; keep it in
-// sync with docs/ARCHITECTURE.md and the scaler's tier definitions.
+//	platform  — OS / arch family (linux, …).            "Can it run here?"
+//	backend   — execution ENVIRONMENT.                  "What/where does it execute?"
+//	tier      — Peregrine scaling/scheduling class.     "What VM class do I want?"
+//
+// `backend` is FREE-FORM and the validator never gates its values. It ranges from
+// the engine (`local`, `docker`) through environment flavors (`local-stripped`)
+// to a SPECIFIC HOST via the `local-<host>` convention. Because Woodpecker matches
+// labels by exact string, `backend: local` (generic native fleet) and
+// `backend: local-d3ci42` (the co-located server box) are distinct buckets:
+// generic `local` work can't land on the box, and `local-d3ci42` targets only it.
+// This is how a workflow pins to a specific host now that the whole fleet honestly
+// advertises `backend: local` (post peregrine-infrastructure#1357).
+//
+// `tier`, by contrast, is a closed set of scaling classes — a value outside it is
+// a typo or a dead convention (notably `tier: local`, which conflated host-identity
+// with scaling class and is intentionally rejected; the host pin lives on `backend`).
+// This is the ONLY dimension the validator governs. A `backend`+`tier` combination
+// is always legal: `backend: local + tier: spot` ("native step on a spot VM") is
+// the common case, NOT an error.
 
 // ErrIncompatibleLabels is returned by ValidateLabelCombination when a task's
 // labels can never be satisfied by any agent. Callers surface it as a blocking
 // pipeline error (status errored).
 var ErrIncompatibleLabels = errors.New("incompatible label combination")
 
-// BackendLocal is the backend-label value for the co-located d3ci42-local agent.
-// Local-backend tasks run only on that agent, which carries no GCP tier.
-const BackendLocal = "local"
-
-// KnownTiers is the set of legal `tier` values — the GCP agent VM classes the
-// scaler provisions. A `tier` outside this set (e.g. the historically-undefined
-// `tier: local`) is a misconfiguration and rejected at submit. Update this list
-// — in lockstep with the scaler — when a new VM class is introduced.
+// KnownTiers is the set of legal `tier` values — the scaling/scheduling classes
+// the scaler provisions. A `tier` outside this set (e.g. the dead `tier: local`)
+// is a misconfiguration and rejected at submit. Update this list — in lockstep
+// with the scaler — when a new scaling class is introduced. NOTE: a specific host
+// is NOT a tier; pin to a host via `backend: local-<host>` instead.
 var KnownTiers = []string{"spot", "ondemand", "n2", "integration-test"}
 
-// ValidateLabelCombination rejects task label sets that no agent can satisfy.
+// ValidateLabelCombination rejects task label sets no agent can satisfy.
 //
-// Rules (#255):
-//  1. If `tier` is set (non-empty), it must be one of KnownTiers.
-//  2. `backend=local` may not be combined with any `tier` — the local-backend
-//     agent is d3ci42-local, which carries no GCP tier, so the combination is
-//     geometrically unsatisfiable.
-//
-// Empty-valued labels are treated as unset (the agent filter ignores them).
-// A nil/empty map is valid. Internal labels (org-id, repo, …) are orthogonal
-// and ignored here.
+// Sole rule (#255/#261): if `tier` is set (non-empty), it must be one of
+// KnownTiers. `backend` and `platform` are free-form constraints and are not
+// gated — backend in particular is deliberately extensible (engine → flavor →
+// `local-<host>` host pin). Empty-valued and internal (org-id, repo, …) labels
+// are ignored. A nil/empty map is valid.
 func ValidateLabelCombination(labels map[string]string) error {
 	tier := strings.TrimSpace(labels[LabelFilterTier])
-	backend := strings.TrimSpace(labels[LabelFilterBackend])
 
 	if tier != "" && !slices.Contains(KnownTiers, tier) {
-		return fmt.Errorf("%w: unknown tier=%q (valid tiers: %s)",
+		return fmt.Errorf("%w: unknown tier=%q (valid tiers: %s). A specific host is not a tier — pin to it via backend=local-<host>",
 			ErrIncompatibleLabels, tier, strings.Join(KnownTiers, ", "))
-	}
-
-	if backend == BackendLocal && tier != "" {
-		return fmt.Errorf("%w: backend=%s conflicts with tier=%s — local-backend tasks run on the d3ci42-local agent, which carries no GCP tier (legal sets: {backend=local} alone, or {tier in [%s]})",
-			ErrIncompatibleLabels, BackendLocal, tier, strings.Join(KnownTiers, ", "))
 	}
 
 	return nil

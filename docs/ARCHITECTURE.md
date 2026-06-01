@@ -172,24 +172,19 @@ WOODPECKER_HOSTNAME=d3ci42-local
 
 **Stale agent.conf self-heal (#77)**: after a woodpecker-server restart that changes the JWT signing key or resets the agents DB, the agent's saved ID (`/etc/woodpecker/agent.conf`) becomes invalid. The agent detects `Unauthenticated` / `AgentID not found` / `sql: no rows` errors and calls `log.Fatal()` — the process exits with status 1, `Restart=on-failure` triggers, systemd restarts with no conf, and the agent re-registers fresh.
 
-### Agent label taxonomy (`backend` / `tier`) — validated at queue accept (#255)
+### Agent label taxonomy — three orthogonal dimensions (#255/#261)
 
-Pipelines route to agents via labels: every non-empty task label must be present on an agent (`server/rpc/filter.go`). Two routing labels matter on Peregrine:
+Pipelines route to agents via labels: every non-empty task label must be present on an agent (`server/rpc/filter.go`), matched by **exact string** (or `*`). Three dimensions, each with exactly one job:
 
-| Label | Values | Meaning |
+| Label | Owns | Values |
 |---|---|---|
-| `backend` | `local` | runs on the co-located `d3ci42-local` agent (internal tooling). Omitted/`docker` = GCP fleet. |
-| `tier` | `spot` (default), `ondemand`, `n2`, `integration-test` | selects a GCP agent VM class (consumed by peregrine-ci-scaler). |
+| `platform` | OS / arch | `linux/amd64`, … (heading toward Linux-variant granularity) |
+| `backend` | execution **environment** (free-form) | `local`, `docker`; flavors (`local-stripped`); **host pins** via `local-<host>` |
+| `tier` | scaling/scheduling class **only** | `spot`, `ondemand`, `n2`, `integration-test` |
 
-**Legal sets** (a workflow's labels must form one of these):
-- `{backend: local}` alone — no `tier` (the local agent carries no GCP tier).
-- `{tier: <spot|ondemand|n2|integration-test>}` — with `backend` omitted or `docker`.
+**Host pinning.** Post peregrine-infrastructure#1357 the whole fleet honestly advertises `backend: local` (Docker-less native execution), so `backend: local` no longer isolates the co-located server box. Pin a specific host on the **`backend`** axis via the `local-<host>` convention: the box advertises `backend: local-d3ci42`. Exact-match means generic `backend: local` work can't land on the box, and `backend: local-d3ci42` targets *only* it. A host is **not** a `tier` — `tier: local` is rejected.
 
-**Illegal** (rejected at submit time → pipeline `errored`):
-- `backend: local` + any `tier` — geometrically impossible; no agent has both.
-- `tier: local` or any other unknown `tier` value.
-
-The validator is `pipeline.ValidateLabelCombination` ([pts] #255), run on every workflow in `server/pipeline.Create` before enqueue. This is the single source of truth for the taxonomy — keep `pipeline.KnownTiers` in lockstep with the scaler's tier definitions. Before #255 an impossible combination was accepted and sat `pending` forever with no error surface (2026-05-31: 14 pending / 0 running on d3ci42).
+**The validator (`pipeline.ValidateLabelCombination`, [pts] #255/#261)** runs on every workflow in `server/pipeline.Create` before enqueue and governs **only `tier`**: it must be a known scaling class (`pipeline.KnownTiers` — keep in lockstep with the scaler). `backend` and `platform` are free-form constraints and are never gated — `backend` is deliberately extensible (engine → flavor → host pin). `backend: local + tier: spot` ("native step on a spot VM") is the common case, not an error. The only rejection is an unknown/dead `tier` value (notably `tier: local`, which conflated host-identity with scaling class). It converts a silent forever-pending stall into a loud submit-time error (2026-05-31: 14 pending / 0 running on d3ci42 from an unsatisfiable combo).
 
 ### Build + Deploy Pipeline (three workflows, #74/#80/#140)
 
