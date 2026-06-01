@@ -37,15 +37,18 @@ func TestValidatePipelineLabels(t *testing.T) {
 		items := []*stepbuilder.Item{
 			item("build", map[string]string{corepipeline.LabelFilterTier: "spot"}),
 			item("deploy", map[string]string{corepipeline.LabelFilterTier: "ondemand"}),
-			item("local", map[string]string{corepipeline.LabelFilterBackend: corepipeline.BackendLocal}),
+			item("local", map[string]string{corepipeline.LabelFilterBackend: "local-d3ci42"}),
+			item("native-spot", map[string]string{corepipeline.LabelFilterBackend: "local", corepipeline.LabelFilterTier: "spot"}),
 		}
 		assert.NoError(t, validatePipelineLabels(items))
 	})
 
 	t.Run("one unsatisfiable workflow fails the pipeline and is named", func(t *testing.T) {
+		// tier=local is the dead value (#261) — host-identity is not a scaling
+		// class; the box is pinned via backend=local-d3ci42 instead.
 		items := []*stepbuilder.Item{
 			item("build", map[string]string{corepipeline.LabelFilterTier: "spot"}),
-			item("deploy-local", map[string]string{corepipeline.LabelFilterBackend: corepipeline.BackendLocal, corepipeline.LabelFilterTier: "ondemand"}),
+			item("deploy-local", map[string]string{corepipeline.LabelFilterTier: "local"}),
 		}
 		err := validatePipelineLabels(items)
 		require.Error(t, err)

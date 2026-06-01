@@ -28,28 +28,31 @@ func TestValidateLabelCombination(t *testing.T) {
 		labels  map[string]string
 		wantErr bool
 	}{
-		// --- legal sets (must NOT error) ---
+		// --- legal: backend + platform are free-form, only `tier` is governed ---
 		{"nil labels", nil, false},
 		{"empty labels", map[string]string{}, false},
-		{"backend=local alone", map[string]string{LabelFilterBackend: BackendLocal}, false},
+		{"backend=local alone", map[string]string{LabelFilterBackend: "local"}, false},
+		{"backend=docker alone", map[string]string{LabelFilterBackend: "docker"}, false},
 		{"tier=spot alone", map[string]string{LabelFilterTier: "spot"}, false},
 		{"tier=ondemand alone", map[string]string{LabelFilterTier: "ondemand"}, false},
 		{"tier=n2 alone", map[string]string{LabelFilterTier: "n2"}, false},
 		{"tier=integration-test alone", map[string]string{LabelFilterTier: "integration-test"}, false},
-		{"backend=docker + tier=ondemand (orthogonal, legal)", map[string]string{LabelFilterBackend: "docker", LabelFilterTier: "ondemand"}, false},
-		{"backend=local + platform (orthogonal, legal)", map[string]string{LabelFilterBackend: BackendLocal, LabelFilterPlatform: "linux/amd64"}, false},
+		// the #261 flip: backend=local + tier is the NORMAL case (native step on a fleet VM), not an error
+		{"backend=local + tier=spot (the common case)", map[string]string{LabelFilterBackend: "local", LabelFilterTier: "spot"}, false},
+		{"backend=local + tier=ondemand", map[string]string{LabelFilterBackend: "local", LabelFilterTier: "ondemand"}, false},
+		{"backend=docker + tier=ondemand", map[string]string{LabelFilterBackend: "docker", LabelFilterTier: "ondemand"}, false},
+		// host pin via the local-<host> convention — free-form backend value
+		{"backend=local-d3ci42 (host pin) alone", map[string]string{LabelFilterBackend: "local-d3ci42"}, false},
+		{"backend=local-stripped (flavor)", map[string]string{LabelFilterBackend: "local-stripped"}, false},
+		{"backend=local + platform (orthogonal)", map[string]string{LabelFilterBackend: "local", LabelFilterPlatform: "linux/amd64"}, false},
 		{"internal labels ignored", map[string]string{LabelFilterOrg: "123", LabelFilterRepo: "a/b"}, false},
-		// empty values are treated as unset by the agent filter, so they must not trip validation
-		{"backend=local + empty tier", map[string]string{LabelFilterBackend: BackendLocal, LabelFilterTier: ""}, false},
-		{"empty backend + tier=spot", map[string]string{LabelFilterBackend: "", LabelFilterTier: "spot"}, false},
+		{"empty tier treated as unset", map[string]string{LabelFilterBackend: "local", LabelFilterTier: ""}, false},
 		{"whitespace tier treated as unset", map[string]string{LabelFilterTier: "   "}, false},
 
-		// --- illegal sets (MUST error) — the #255 incident shapes ---
-		{"backend=local + tier=ondemand (geometrically impossible)", map[string]string{LabelFilterBackend: BackendLocal, LabelFilterTier: "ondemand"}, true},
-		{"backend=local + tier=spot", map[string]string{LabelFilterBackend: BackendLocal, LabelFilterTier: "spot"}, true},
-		{"tier=local (undefined third value)", map[string]string{LabelFilterTier: "local"}, true},
+		// --- illegal: only an unknown/dead `tier` value ---
+		{"tier=local (dead — host-identity is not a scaling class)", map[string]string{LabelFilterTier: "local"}, true},
 		{"unknown tier value", map[string]string{LabelFilterTier: "gigantic"}, true},
-		{"backend=local + unknown tier (unknown-tier rule fires first)", map[string]string{LabelFilterBackend: BackendLocal, LabelFilterTier: "local"}, true},
+		{"backend=local + tier=local (unknown tier still fires)", map[string]string{LabelFilterBackend: "local", LabelFilterTier: "local"}, true},
 	}
 
 	for _, tc := range cases {
@@ -65,21 +68,36 @@ func TestValidateLabelCombination(t *testing.T) {
 	}
 }
 
-// TestValidateLabelCombination_MessageNamesTheConflict is the silent-OK
-// counterpart: an error is only useful if its message tells the author what to
-// fix. Assert the offending labels and the legal sets are quoted.
-func TestValidateLabelCombination_MessageNamesTheConflict(t *testing.T) {
-	err := ValidateLabelCombination(map[string]string{LabelFilterBackend: BackendLocal, LabelFilterTier: "ondemand"})
+// TestValidateLabelCombination_MessageGuidesTheFix is the silent-OK counterpart:
+// an error is only useful if its message tells the author what to do. The unknown
+// -tier message must name the bad value, list the legal tiers, AND point at the
+// backend host-pin convention (the #261 trap was that `tier: local` people wanted
+// a host, not a tier).
+func TestValidateLabelCombination_MessageGuidesTheFix(t *testing.T) {
+	err := ValidateLabelCombination(map[string]string{LabelFilterTier: "local"})
 	require.Error(t, err)
 	msg := err.Error()
-	assert.Contains(t, msg, "backend=local")
-	assert.Contains(t, msg, "tier=ondemand")
-	assert.Contains(t, msg, "spot", "message must list the legal tiers so the author can pick one")
+	assert.Contains(t, msg, `tier="local"`)
+	assert.Contains(t, msg, "spot", "must list the legal tiers")
+	assert.Contains(t, msg, "backend=local-<host>", "must point at the host-pin convention")
 }
 
-// TestKnownTiersAreNonEmpty guards the taxonomy itself: the list must be
-// non-empty and every entry must validate as a legal standalone tier (a typo'd
-// entry here would otherwise reject the very pipelines it is meant to allow).
+// TestBackendValuesAreNeverGated locks the #261 contract: backend is free-form —
+// engine, flavor, or a local-<host> host pin — and combining it with any legal
+// tier is always allowed. A regression here would re-break the ~90% of pipelines
+// that legitimately carry backend=local.
+func TestBackendValuesAreNeverGated(t *testing.T) {
+	for _, backend := range []string{"local", "docker", "local-d3ci42", "local-stripped", "anything"} {
+		for _, tier := range []string{"", "spot", "ondemand"} {
+			labels := map[string]string{LabelFilterBackend: backend}
+			if tier != "" {
+				labels[LabelFilterTier] = tier
+			}
+			assert.NoError(t, ValidateLabelCombination(labels), "backend=%q tier=%q must be legal", backend, tier)
+		}
+	}
+}
+
 func TestKnownTiersAreNonEmpty(t *testing.T) {
 	require.NotEmpty(t, KnownTiers)
 	for _, tier := range KnownTiers {
