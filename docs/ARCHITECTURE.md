@@ -334,6 +334,10 @@ Pipelines stuck at `status=created` are detected after a configurable threshold 
 
 Prometheus counter incremented when the RPC layer rejects a step-update because the step is already in a terminal state. Non-zero steady-state rate indicates server–agent state divergence (typically post-restart desync). Dashboard this metric; spike = alarm.
 
+### `ci-events` Pub/Sub contract (#264)
+
+The server publishes pipeline lifecycle events to the GCP Pub/Sub topic `ci-events` via the `gcppubsub` plugin. The **authoritative wire contract** — flat payload, `data.pipeline` as an integer, full event-type list with the `pipeline.success`-not-`.completed` gotcha — lives next to the code at [`server/plugin/gcppubsub/CONTRACT.md`](../server/plugin/gcppubsub/CONTRACT.md). Subscribers (scaler, worker-registry, monitoring) adapt to that document; changing the shape requires bumping `schema_version` and updating CONTRACT.md in the same PR. The publisher fail-closes on an empty event type (`ErrEmptyEventType`), so empty-type messages on the topic originate from a different publisher.
+
 ---
 
 ## GitHub Release Assets

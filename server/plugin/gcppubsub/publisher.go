@@ -17,17 +17,25 @@ package gcppubsub
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"time"
-
-	"cloud.google.com/go/pubsub"
-	"github.com/rs/zerolog/log"
+	"strings"
 
 	"go.woodpecker-ci.org/woodpecker/v3/server/plugin"
 )
 
+// ErrEmptyEventType is returned by OnEvent when the resolved wire type is
+// empty. Fail closed: a typeless event must never reach the ci-events topic,
+// where subscribers route on the type. See woodpecker#264.
+var ErrEmptyEventType = errors.New("gcppubsub: refusing to publish event with empty type")
+
 // publishFn abstracts Pub/Sub publishing for testability.
 type publishFn func(ctx context.Context, data []byte, attrs map[string]string)
+
+// marshal is a seam over json.Marshal so the marshal-error branch in OnEvent is
+// reachable from tests. The flat pubsubEvent struct cannot fail to marshal in
+// production, but the error handling is kept (idiomatic) and must be covered.
+var marshal = json.Marshal
 
 // Publisher implements plugin.EventHook by publishing events to GCP Pub/Sub.
 // Event format matches the webhook sidecar's schema_version "1.0" for
@@ -36,37 +44,6 @@ type Publisher struct {
 	publish publishFn
 	close   func() error
 	source  string
-}
-
-// New creates a Publisher backed by a real GCP Pub/Sub client.
-func New(ctx context.Context, project, topicName string) (*Publisher, error) {
-	client, err := pubsub.NewClient(ctx, project)
-	if err != nil {
-		return nil, fmt.Errorf("pubsub client: %w", err)
-	}
-
-	topic := client.Topic(topicName)
-	topic.PublishSettings.CountThreshold = 100
-	topic.PublishSettings.DelayThreshold = 500 * time.Millisecond
-
-	pub := func(_ context.Context, data []byte, attrs map[string]string) {
-		result := topic.Publish(context.Background(), &pubsub.Message{
-			Data:       data,
-			Attributes: attrs,
-		})
-		go func() {
-			if _, err := result.Get(context.Background()); err != nil {
-				log.Warn().Err(err).Msg("pubsub publish failed")
-			}
-		}()
-	}
-
-	cls := func() error {
-		topic.Stop()
-		return client.Close()
-	}
-
-	return newPublisher("woodpecker-server", pub, cls), nil
 }
 
 // newPublisher creates a Publisher with injectable dependencies (for testing).
@@ -80,7 +57,11 @@ func (p *Publisher) Name() string { return "gcppubsub" }
 func (p *Publisher) OnEvent(ctx context.Context, event plugin.PipelineEvent) error {
 	pe := buildEvent(p.source, event)
 
-	data, err := json.Marshal(pe)
+	if strings.TrimSpace(pe.Type) == "" {
+		return fmt.Errorf("%w (source=%q, pipeline=%d)", ErrEmptyEventType, p.source, event.Number)
+	}
+
+	data, err := marshal(pe)
 	if err != nil {
 		return fmt.Errorf("marshal event: %w", err)
 	}

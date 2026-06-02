@@ -117,6 +117,52 @@ func TestUnknownEventTypeFallsThrough(t *testing.T) {
 	assert.Equal(t, "custom.event", mapEventType("custom.event"))
 }
 
+// TestOnEventRejectsEmptyType is the fail-closed counterpart for the contract:
+// an event with an empty Type must NOT reach the wire. Empty-type messages
+// observed by downstream subscribers (woodpecker#264) come from other
+// publishers on the shared ci-events topic; this guard proves the fork can
+// never be their source.
+func TestOnEventRejectsEmptyType(t *testing.T) {
+	pub, messages := testPublisher("test")
+	event := sampleEvent(plugin.EventPipelineCompleted)
+	event.Type = "" // zero-value EventType
+
+	err := pub.OnEvent(context.Background(), event)
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrEmptyEventType)
+	assert.Empty(t, *messages, "no message must be published for an empty-type event")
+}
+
+// TestOnEventRejectsTypeMappingToEmpty guards the same invariant at the wire
+// layer: even if a future mapping produced an empty string, nothing publishes.
+func TestOnEventRejectsTypeMappingToEmpty(t *testing.T) {
+	pub, messages := testPublisher("test")
+	event := sampleEvent(plugin.EventPipelineCompleted)
+	event.Type = plugin.EventType("   ") // whitespace-only collapses to empty
+
+	err := pub.OnEvent(context.Background(), event)
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrEmptyEventType)
+	assert.Empty(t, *messages)
+}
+
+// TestOnEventMarshalError covers the (production-unreachable) marshal-error
+// branch via the marshal seam.
+func TestOnEventMarshalError(t *testing.T) {
+	orig := marshal
+	t.Cleanup(func() { marshal = orig })
+	marshal = func(any) ([]byte, error) { return nil, errors.New("boom") }
+
+	pub, messages := testPublisher("test")
+	err := pub.OnEvent(context.Background(), sampleEvent(plugin.EventPipelineCompleted))
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "marshal event")
+	assert.Empty(t, *messages, "nothing publishes when marshal fails")
+}
+
 func TestSeverityMapping(t *testing.T) {
 	tests := []struct {
 		eventType string
