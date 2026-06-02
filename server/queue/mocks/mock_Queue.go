@@ -682,6 +682,46 @@ func (_c *MockQueue_SetAgentReclaimFn_Call) RunAndReturn(run func(knownDead func
 	return _c
 }
 
+// SetAgentStaleFn provides a mock function for the type MockQueue
+func (_mock *MockQueue) SetAgentStaleFn(stale func(agentID int64) bool) {
+	_mock.Called(stale)
+	return
+}
+
+// MockQueue_SetAgentStaleFn_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'SetAgentStaleFn'
+type MockQueue_SetAgentStaleFn_Call struct {
+	*mock.Call
+}
+
+// SetAgentStaleFn is a helper method to define mock.On call
+//   - stale func(agentID int64) bool
+func (_e *MockQueue_Expecter) SetAgentStaleFn(stale interface{}) *MockQueue_SetAgentStaleFn_Call {
+	return &MockQueue_SetAgentStaleFn_Call{Call: _e.mock.On("SetAgentStaleFn", stale)}
+}
+
+func (_c *MockQueue_SetAgentStaleFn_Call) Run(run func(stale func(agentID int64) bool)) *MockQueue_SetAgentStaleFn_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		var arg0 func(agentID int64) bool
+		if args[0] != nil {
+			arg0 = args[0].(func(agentID int64) bool)
+		}
+		run(
+			arg0,
+		)
+	})
+	return _c
+}
+
+func (_c *MockQueue_SetAgentStaleFn_Call) Return() *MockQueue_SetAgentStaleFn_Call {
+	_c.Call.Return()
+	return _c
+}
+
+func (_c *MockQueue_SetAgentStaleFn_Call) RunAndReturn(run func(stale func(agentID int64) bool)) *MockQueue_SetAgentStaleFn_Call {
+	_c.Run(run)
+	return _c
+}
+
 // SetDispatchHook provides a mock function for the type MockQueue
 func (_mock *MockQueue) SetDispatchHook(fn queue.DispatchFunc) {
 	_mock.Called(fn)

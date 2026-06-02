@@ -164,6 +164,15 @@ type Queue interface {
 	// nil (the reclaim path is then disabled), which is the default for tests.
 	SetAgentReclaimFn(knownDead func(agentID int64) bool, reclaim func(agentID int64))
 
+	// SetAgentStaleFn injects the observe-only LastContact-aged liveness oracle
+	// (#248). Each dispatch tick the queue asks stale(agentID) whether a running
+	// task's owning agent has not refreshed LastContact within the staleness
+	// window, and counts the matches into the running_owner_stale gauge. Unlike
+	// the known-dead oracle above this is TRANSPORT-AGNOSTIC (both gRPC and WS
+	// stamp LastContact), so it makes the gRPC/local-backend "stranded running
+	// task" manifestation measurable. It NEVER drives a reclaim. May be nil.
+	SetAgentStaleFn(stale func(agentID int64) bool)
+
 	// UpdatePriority finds a pending or waiting-on-deps task by ID and
 	// updates its Priority, re-inserting at the correct position in the
 	// pending list if it was pending. Returns the old priority on success.

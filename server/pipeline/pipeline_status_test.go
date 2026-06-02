@@ -208,6 +208,34 @@ func TestPipelineStatus_AllTerminalRollsUp(t *testing.T) {
 	assert.NotEqual(t, model.StatusRunning, got)
 }
 
+// TestPipelineStatus_SkippedNeverMasksPartial reproduces #270: a pipeline whose
+// workflows are [ci:skipped, deploy:partial, promote:skipped] must NOT roll up
+// to `skipped`. Before the MergeStatusValues fix the rollup seeded on the first
+// skipped workflow and the partial-absorption branch returned the lowest-priority
+// `skipped`, so a deploy that actually mutated production was reported as if
+// nothing happened. The pipeline must report at least `partial`.
+func TestPipelineStatus_SkippedNeverMasksPartial(t *testing.T) {
+	t.Parallel()
+	got := PipelineStatus([]*model.Workflow{
+		{Name: "ci", State: model.StatusSkipped},
+		{Name: "deploy", State: model.StatusPartial},
+		{Name: "promote", State: model.StatusSkipped},
+	})
+	assert.Equal(t, model.StatusPartial, got,
+		"a partial deploy workflow must not be masked by skipped siblings (#270)")
+
+	// Order-independence: the partial workflow first, in the middle, or last all
+	// roll up to partial.
+	assert.Equal(t, model.StatusPartial, PipelineStatus([]*model.Workflow{
+		{State: model.StatusPartial},
+		{State: model.StatusSkipped},
+	}))
+	assert.Equal(t, model.StatusPartial, PipelineStatus([]*model.Workflow{
+		{State: model.StatusSkipped},
+		{State: model.StatusPartial},
+	}))
+}
+
 // TestIsTerminalKill — pure helper, exhaustive over StatusValue.
 func TestIsTerminalKill(t *testing.T) {
 	cases := map[model.StatusValue]bool{

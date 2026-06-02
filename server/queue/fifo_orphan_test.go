@@ -141,6 +141,67 @@ func TestSampleOrphans_PendingDispatchableAging(t *testing.T) {
 	assert.Equal(t, float64(1), testutil.ToFloat64(orphanedWorkflows.WithLabelValues("pending_dispatchable")))
 }
 
+func TestSetAgentStaleFn(t *testing.T) {
+	q := newOrphanTestFifo()
+	q.SetAgentStaleFn(func(int64) bool { return true })
+	assert.NotNil(t, q.agentStale)
+	assert.True(t, q.agentStale(1))
+}
+
+// TestSampleOrphans_RunningOwnerStale is the #248 measure-first guard: a running
+// task whose owning agent's LastContact has aged out is counted into the
+// transport-agnostic running_owner_stale gauge — INDEPENDENTLY of the WS-only
+// known-dead path, and crucially WITHOUT driving any reclaim (`due` stays empty).
+// This is exactly the manifestation (B) that was invisible post-#246 for
+// gRPC/local agents.
+func TestSampleOrphans_RunningOwnerStale(t *testing.T) {
+	defer orphanedWorkflows.Reset()
+	q := newOrphanTestFifo()
+	// agent 50 is LastContact-stale but NOT WS-known-dead (the gRPC/local case).
+	q.agentStale = func(id int64) bool { return id == 50 }
+	q.agentKnownDead = func(int64) bool { return false }
+	q.running["s1"] = &entry{item: &model.Task{ID: "s1", AgentID: 50}}
+	q.running["s2"] = &entry{item: &model.Task{ID: "s2", AgentID: 50}}
+	q.running["live"] = &entry{item: &model.Task{ID: "live", AgentID: 9}}
+	q.running["hook"] = &entry{item: &model.Task{ID: "hook", AgentID: 0}} // unclaimed — skipped
+
+	due := q.sampleOrphans(time.Now())
+
+	assert.Empty(t, due, "a stale owner must NEVER be reclaimed — observe-only (#248)")
+	assert.Equal(t, float64(2), testutil.ToFloat64(orphanedWorkflows.WithLabelValues("running_owner_stale")),
+		"both tasks on the stale agent are counted, transport-agnostically")
+	assert.Equal(t, float64(0), testutil.ToFloat64(orphanedWorkflows.WithLabelValues("running_dead_owner")),
+		"stale != WS-known-dead — the reclaim gauge stays at 0")
+}
+
+// TestSampleOrphans_NilStaleFnLeavesGaugeZero — with no oracle injected the
+// running_owner_stale gauge stays at zero and nothing panics.
+func TestSampleOrphans_NilStaleFnLeavesGaugeZero(t *testing.T) {
+	defer orphanedWorkflows.Reset()
+	q := newOrphanTestFifo() // agentStale nil
+	q.running["x"] = &entry{item: &model.Task{ID: "x", AgentID: 7}}
+	q.sampleOrphans(time.Now())
+	assert.Equal(t, float64(0), testutil.ToFloat64(orphanedWorkflows.WithLabelValues("running_owner_stale")))
+}
+
+// TestSampleOrphans_WaitingOnDepsAged is the #245 guard: tasks parked in
+// q.waitingOnDeps past the age threshold are counted, so the next recurrence of
+// the infra#5265 stuck-workflow pattern reports which bucket the orphan sat in.
+func TestSampleOrphans_WaitingOnDepsAged(t *testing.T) {
+	defer orphanedWorkflows.Reset()
+	q := newOrphanTestFifo()
+	now := time.Now()
+	stale := now.Add(-2 * orphanAgeThreshold).Unix()
+	fresh := now.Unix()
+
+	q.waitingOnDeps.PushBack(&model.Task{ID: "aged", Created: stale})
+	q.waitingOnDeps.PushBack(&model.Task{ID: "young", Created: fresh})
+	q.waitingOnDeps.PushBack(&model.Task{ID: "no-created", Created: 0}) // unstamped — never counts
+
+	q.sampleOrphans(now)
+	assert.Equal(t, float64(1), testutil.ToFloat64(orphanedWorkflows.WithLabelValues("waiting_on_deps_aged")))
+}
+
 // TestProcessFiresReclaimForOrphanedRunningTask drives the real process()
 // goroutine: a running task owned by a disconnected agent is reclaimed within a
 // dispatch tick rather than waiting the TaskTimeout lease. (#243)

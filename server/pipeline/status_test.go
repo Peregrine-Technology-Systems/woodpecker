@@ -129,6 +129,15 @@ func TestStatusValueMerge(t *testing.T) {
 			t: model.StatusPartial,
 			e: model.StatusPartial,
 		},
+		// #270: partial must absorb skipped. skipped is the lowest-priority
+		// status, so before the fix the priority fallback returned skipped and
+		// a [skipped, partial, skipped] pipeline reported `skipped` — masking a
+		// deploy that mutated production.
+		{
+			s: model.StatusPartial,
+			t: model.StatusSkipped,
+			e: model.StatusPartial,
+		},
 		// partial loses to heavier states.
 		{
 			s: model.StatusPartial,

@@ -47,8 +47,11 @@ func New(ctx context.Context, project, topicName string) (*Publisher, error) {
 		})
 		go func() {
 			if _, err := result.Get(context.Background()); err != nil {
+				recordPublishFailure() // #259: alert-able via woodpecker_pubsub_publish_failures_total
 				log.Warn().Err(err).Msg("pubsub publish failed")
+				return
 			}
+			recordPublishSuccess()
 		}()
 	}
 

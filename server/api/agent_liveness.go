@@ -17,8 +17,10 @@ package api
 import (
 	"context"
 	"sync"
+	"time"
 
 	grpcserver "go.woodpecker-ci.org/woodpecker/v3/server/rpc"
+	"go.woodpecker-ci.org/woodpecker/v3/server/store"
 )
 
 // #243: connected-agent registry + owner-liveness reclaim.
@@ -154,4 +156,36 @@ func ReclaimAgentTasks(agentID int64, rpcPeer *grpcserver.RPC) {
 	// currently-dead agents. A reconnect under the same id would re-add via
 	// markAgentConnected; a recycle under a new id (#77) never returns here.
 	forgetDisconnectedAgent(agentID)
+}
+
+// AgentStaleThreshold is how long an agent may go without refreshing
+// LastContact before IsAgentLastContactStale reports it stale. Both transports
+// stamp LastContact on every health beat (gRPC ReportHealth, WS handleHealth),
+// which agents send every reportHealthInterval (10s). Set to 9 missed beats so
+// a momentarily quiet agent is never flagged — fail-safe per #248. Var (not
+// const) so tests can shrink it.
+var AgentStaleThreshold = 90 * time.Second
+
+// IsAgentLastContactStale reports whether an agent's last health beat is older
+// than AgentStaleThreshold. This is the transport-agnostic liveness signal
+// #248 asked for: unlike IsAgentKnownDisconnected (populated only by the WS
+// reconnect-grace path), LastContact is refreshed by BOTH gRPC and WS health
+// beats, so this covers gRPC/local-backend agents the WS-only known-dead
+// registry never sees — the previously-invisible "running task stranded on a
+// dead agent" manifestation (B).
+//
+// It is OBSERVE-ONLY: it feeds the running_owner_stale gauge so a recurrence is
+// measurable; it never drives a reclaim (a reclaim on mere LastContact aging
+// would re-introduce the t+0s kill #246 fixed). Fails safe — an unknown agent,
+// a store error, or LastContact==0 (never reported) returns false, so nothing
+// is ever counted as stranded on weak evidence.
+func IsAgentLastContactStale(agentID int64, s store.Store) bool {
+	if agentID <= 0 || s == nil {
+		return false
+	}
+	agent, err := s.AgentFind(agentID)
+	if err != nil || agent == nil || agent.LastContact <= 0 {
+		return false
+	}
+	return time.Since(time.Unix(agent.LastContact, 0)) > AgentStaleThreshold
 }
