@@ -62,14 +62,15 @@ var eventTypeMap = map[plugin.EventType]string{
 }
 
 var severityMap = map[string]string{
-	"pipeline.created":    "info",
-	"pipeline.pending":    "info",
-	"pipeline.started":    "info",
-	"pipeline.success":    "info",
-	"pipeline.failed":     "critical",
-	"pipeline.killed":     "warning",
-	"pipeline.superseded": "info",
-	"step.completed":      "info",
+	"pipeline.created":     "info",
+	"pipeline.pending":     "info",
+	"pipeline.started":     "info",
+	"pipeline.success":     "info",
+	"pipeline.failed":      "critical",
+	"pipeline.killed":      "warning",
+	"pipeline.superseded":  "info",
+	"step.completed":       "info",
+	"pipeline.tier_bypass": "warning", // #268: deploy-class task on a spot agent (#266 bypassed)
 }
 
 func buildEvent(source string, event plugin.PipelineEvent) pubsubEvent {

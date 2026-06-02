@@ -36,6 +36,14 @@ const (
 	EventPipelineSuperseded EventType = "pipeline.superseded"
 	EventStepCompleted      EventType = "step.completed"
 	EventTaskAvailable      EventType = "task.available"
+
+	// EventTierBypass is an observe-only telemetry signal (#268): a spot-tier
+	// agent is about to claim a deploy-class task. With the #266 submit-time
+	// tier rewrite working this can never happen (deploy-class tasks carry
+	// tier=ondemand and never match a spot agent), so a tier_bypass event on the
+	// bus means the rewrite was bypassed — alert on it before a spot preemption
+	// eats a release pipeline. It does NOT refuse the task.
+	EventTierBypass EventType = "pipeline.tier_bypass"
 )
 
 // PipelineEvent carries data about a pipeline lifecycle transition.

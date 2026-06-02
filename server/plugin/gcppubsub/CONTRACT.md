@@ -85,6 +85,7 @@ The complete set this fork publishes (internal `EventType` → wire `type`):
 | `pipeline.killed`     | warning    | killed (cancel / agent disconnect / preemption) |
 | `pipeline.superseded` | info       | superseded by a newer pipeline on the same ref |
 | `step.completed`      | info       | a single step finished |
+| `pipeline.tier_bypass`| warning    | **telemetry, not a lifecycle event** — a `spot`-tier agent claimed a deploy-class task, i.e. the #266 submit-time tier rewrite was bypassed. With #266 working this never fires (deploy-class tasks carry `tier=ondemand` and never match a spot agent). The pipeline still runs; alert on a non-zero rate. The flat payload identifies the pipeline (`repo`/`pipeline`/`branch`/`commit`/`event`); the offending workflow is in the server log line, resolvable via the pipeline number. The event type itself encodes "agent tier was spot." (#268) |
 
 **Gotchas for subscribers:**
 - The terminal-success event is **`pipeline.success`**, not `pipeline.completed`.
