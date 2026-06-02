@@ -150,7 +150,14 @@ COV_SKIP_REGEX='_test\.go$|/mocks/|wire_gen\.go$|_easyjson\.go$|\.pb\.go$|/fixtu
 #   own package; only the 3-line call site inside Create() is uncovered, and that
 #   orchestration body is the integration seam. Do NOT use this exemption for
 #   incremental changes that don't add tests for the changed function.
-COV_WIRING_REGEX='^pipeline/const\.go$|^cmd/server/setup\.go$|^server/router/api\.go$|^cmd/|^server/store/datastore/migration/migration\.go$|^server/store/store\.go$|^server/api/ws_agent\.go$|^server/rpc/rpc\.go$|^server/rpc/server\.go$|^pipeline/frontend/yaml/compiler/convert\.go$|^server/pipeline/items\.go$|^server/pipeline/create\.go$|^pipeline/backend/types/step\.go$|^server/logdrain/gcp\.go$|^server/config\.go$|^server/plugin/gcppubsub/client\.go$'
+# - server/plugin/interfaces.go: declaration-only file (EventType consts,
+#   PipelineEvent struct, EventHook/StatusHook/DispatchHook interface defs — zero
+#   executable statements), so the cover profile reports NO_DATA, exactly like
+#   pipeline/const.go and server/store/store.go. The EventTierBypass const it
+#   declares (#268) is exercised through server/rpc's emitTierBypassIfSpotDeploy
+#   (tier_telemetry.go, 100%) and the gcppubsub severity map (format.go, 100%).
+#   Do NOT use this exemption for a file that gains executable statements.
+COV_WIRING_REGEX='^pipeline/const\.go$|^cmd/server/setup\.go$|^server/router/api\.go$|^cmd/|^server/store/datastore/migration/migration\.go$|^server/store/store\.go$|^server/api/ws_agent\.go$|^server/rpc/rpc\.go$|^server/rpc/server\.go$|^pipeline/frontend/yaml/compiler/convert\.go$|^server/pipeline/items\.go$|^server/pipeline/create\.go$|^pipeline/backend/types/step\.go$|^server/logdrain/gcp\.go$|^server/config\.go$|^server/plugin/gcppubsub/client\.go$|^server/plugin/interfaces\.go$'
 
 if [ -n "$GO_FILES" ]; then
     # Format

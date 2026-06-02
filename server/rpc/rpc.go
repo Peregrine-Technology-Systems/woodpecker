@@ -100,6 +100,10 @@ func (s *RPC) Next(c context.Context, agentFilter rpc.Filter) (*rpc.Workflow, er
 		}
 
 		if task.ShouldRun() {
+			// #268: observe-only defense-in-depth behind #266. If a spot agent is
+			// claiming a deploy-class task, the submit-time tier rewrite was
+			// bypassed — emit a bus telemetry signal (does not refuse the task).
+			s.emitTierBypassIfSpotDeploy(agent, task)
 			workflow := new(rpc.Workflow)
 			err = json.Unmarshal(task.Data, workflow)
 			return workflow, err
