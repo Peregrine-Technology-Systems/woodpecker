@@ -69,7 +69,23 @@ fi
 echo "==> Creating ${PTS_BUILD_VM} from ci-agent family (pts.${CI_PIPELINE_NUMBER:-0})..."
 CREATED_ZONE=""
 for ZONE in ${ZONE_LIST}; do
-    echo "    Trying zone ${ZONE}..."
+    # #250: pin pts-build-vm to the buildkite-network VPC (NOT the default
+    # network). Every scaler-managed agent runs on buildkite-network; a VM left
+    # on the default network registers but its agent WebSocket to d3ci42 flaps
+    # with `close 1006 (unexpected EOF)` (Mode-C), so it never holds a fresh
+    # last_contact and the registration poll below times out at 180s (the bake
+    # wedge diagnosed for pts.455/456). Matching the working agents' VPC is the
+    # cut-at-source fix. Subnet is per-region: us-central1 uses the legacy
+    # `buildkite-network-subnet-0`, every other region uses
+    # `buildkite-network-<region>` (`gcloud compute networks subnets list
+    # --network=buildkite-network`).
+    REGION="${ZONE%-*}"
+    if [ "${REGION}" = "us-central1" ]; then
+        SUBNET="buildkite-network-subnet-0"
+    else
+        SUBNET="buildkite-network-${REGION}"
+    fi
+    echo "    Trying zone ${ZONE} (network buildkite-network/${SUBNET})..."
     if gcloud compute instances create "${PTS_BUILD_VM}" \
             --project="${PTS_BUILD_PROJECT}" \
             --zone="${ZONE}" \
@@ -80,6 +96,8 @@ for ZONE in ${ZONE_LIST}; do
             --boot-disk-type=pd-ssd \
             --service-account="ci-agent@${PTS_BUILD_PROJECT}.iam.gserviceaccount.com" \
             --scopes=cloud-platform \
+            --network="buildkite-network" \
+            --subnet="${SUBNET}" \
             --tags=pts-build,woodpecker-agent \
             --metadata="agent-label=pts-build,pts-build-pipeline=${CI_PIPELINE_NUMBER:-0},pts-build-zone=${ZONE}" \
             --no-restart-on-failure \
