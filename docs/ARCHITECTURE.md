@@ -350,6 +350,25 @@ Prometheus counter incremented when the RPC layer rejects a step-update because 
 
 The server publishes pipeline lifecycle events to the GCP Pub/Sub topic `ci-events` via the `gcppubsub` plugin. The **authoritative wire contract** — flat payload, `data.pipeline` as an integer, full event-type list with the `pipeline.success`-not-`.completed` gotcha — lives next to the code at [`server/plugin/gcppubsub/CONTRACT.md`](../server/plugin/gcppubsub/CONTRACT.md). Subscribers (scaler, worker-registry, monitoring) adapt to that document; changing the shape requires bumping `schema_version` and updating CONTRACT.md in the same PR. The publisher fail-closes on an empty event type (`ErrEmptyEventType`), so empty-type messages on the topic originate from a different publisher.
 
+The plugin also exports `woodpecker_pubsub_publish_failures_total` and `woodpecker_pubsub_published_total` (#259): the bus is the Slack replacement for CI status, so a *sustained* publish failure silently starves consumers while every pipeline goes green. The publish path is best-effort/async (a failure never affects the pipeline) and was logged-only; the counters make it alert-able — `rate(woodpecker_pubsub_publish_failures_total[15m]) > 0`, with the published total as the ratio denominator.
+
+### Pipeline status rollup invariant (#270)
+
+`MergeStatusValues` (`server/pipeline/status.go`) rolls workflow states up to the pipeline status by priority, with `skipped` deliberately the **lowest** priority. The `partial` status (a workflow where some steps succeeded and some were killed — woodpecker-server#28) must absorb any lighter sibling: a `partial` workflow means real work happened, and a `skipped` sibling can never override it. The load-bearing case is `[ci:skipped, deploy:partial, promote:skipped]` (a deploy that mutated production while its CI/promote siblings were skipped) — it must roll up to `partial`, never `skipped`. A top-level `skipped` is reserved for "nothing ran," so reporting it over a successful deploy step is a silent-OK that reads as "nothing happened" on the dashboard.
+
+### Orphaned-workflow observability gauges (#243/#245/#248)
+
+The dispatcher samples `woodpecker_orphaned_workflows{state=...}` every ~100ms tick (alert on sustained `> 0`). States:
+
+| State | Meaning | Drives a reclaim? |
+|---|---|---|
+| `running_dead_owner` | running task whose owner agent was POSITIVELY observed disconnected (WS reconnect grace expired) | yes — reclaimed within a tick (#243/#246) |
+| `pending_dispatchable` | task in `q.pending`, `ShouldRun()` true, aged past `orphanAgeThreshold` (no matching worker, or a dispatch stall) | no — observe-only |
+| `running_owner_stale` (#248) | running task whose owner's `LastContact` aged past `AgentStaleThreshold`. **Transport-agnostic** (both gRPC and WS stamp `LastContact`), so it makes the gRPC/local "stranded running task" manifestation visible — the WS-only `running_dead_owner` path never saw it | **no — observe-only.** Measure-first: a reclaim on mere `LastContact` aging would re-introduce the t+0s kill #246 fixed |
+| `waiting_on_deps_aged` (#245) | task parked in `q.waitingOnDeps` aged past `orphanAgeThreshold` | no — observe-only |
+
+`running_owner_stale` + `waiting_on_deps_aged` are the measure-first instrumentation for #248/#245: they make the next recurrence of the infra#5265 stuck-workflow pattern self-diagnosing (which bucket was the orphan in?) before any transport-agnostic reclaim is built. The stale oracle is injected observe-only via `Queue.SetAgentStaleFn` (mirrors `SetAgentReclaimFn`) and fails safe — an unknown agent, store error, or `LastContact==0` never reads as stale.
+
 ---
 
 ## GitHub Release Assets

@@ -65,6 +65,16 @@ type fifo struct {
 	agentKnownDead func(agentID int64) bool
 	reclaimOrphan  func(agentID int64)
 	reclaimFiredAt map[int64]time.Time
+
+	// #248: transport-agnostic, OBSERVE-ONLY liveness. agentStale reports whether
+	// a running task's owning agent has not refreshed LastContact within the
+	// staleness window. Unlike agentKnownDead (WS positive-disconnect only), this
+	// also covers gRPC/local-backend agents, so it makes the previously-invisible
+	// "running task stranded on a dead agent" manifestation (B) measurable. It
+	// feeds ONLY the running_owner_stale gauge — it NEVER triggers a reclaim
+	// (reclaiming on mere LastContact aging would re-introduce the t+0s kill #246
+	// fixed). Fails safe: nil, or returning false, simply leaves the gauge at 0.
+	agentStale func(agentID int64) bool
 }
 
 // processTimeInterval is the time till the queue rearranges things,
@@ -312,6 +322,15 @@ func (q *fifo) SetAgentReclaimFn(knownDead func(int64) bool, reclaim func(int64)
 	q.reclaimOrphan = reclaim
 }
 
+// SetAgentStaleFn injects the observe-only LastContact-aged liveness oracle
+// (#248). It feeds the running_owner_stale gauge only — never a reclaim. May be
+// nil (the gauge then stays at zero).
+func (q *fifo) SetAgentStaleFn(stale func(int64) bool) {
+	q.Lock()
+	defer q.Unlock()
+	q.agentStale = stale
+}
+
 // sampleOrphans updates the #243 orphaned-workflow gauges and returns the set
 // of agent IDs that own a running task but are no longer connected and are due
 // for a reclaim re-fire (throttled by reclaimRefireInterval). Caller must hold
@@ -328,37 +347,67 @@ func (q *fifo) sampleOrphans(now time.Time) []int64 {
 	}
 	setOrphanedWorkflows("pending_dispatchable", float64(pendingDispatchable))
 
-	// running_dead_owner: running tasks whose owning agent is positively known
-	// to be gone. Fails safe (#246) — an agent never tracked through the WS path
-	// (e.g. a gRPC/local-backend agent) is NOT known-dead, so it is left alone
-	// and falls back to the TaskTimeout lease rather than being killed at t+0s.
-	deadOwnerRunning := 0
-	var due []int64
-	if q.agentKnownDead != nil {
-		seen := make(map[int64]struct{})
-		for _, e := range q.running {
-			agentID := e.item.AgentID
-			if agentID <= 0 || !q.agentKnownDead(agentID) {
-				continue // unclaimed (dispatch hook) or owner not known dead
-			}
-			deadOwnerRunning++
-			if _, ok := seen[agentID]; ok {
-				continue
-			}
-			seen[agentID] = struct{}{}
-			if last := q.reclaimFiredAt[agentID]; now.Sub(last) >= reclaimRefireInterval {
-				q.reclaimFiredAt[agentID] = now
-				due = append(due, agentID)
-			}
+	// waiting_on_deps_aged (#245): tasks parked in q.waitingOnDeps past the same
+	// threshold. The #243 / infra#5265 incident could not tell — 100 min after
+	// the fact — whether the stuck workflow was pending_dispatchable (deps met,
+	// no matching worker) or stuck in waitingOnDeps (deps looked unsatisfied).
+	// Surfacing both buckets makes the next recurrence self-diagnosing: it
+	// answers "which queue was the orphan in?" directly from metrics instead of
+	// by-eye guessing. Observe-only — no re-dispatch is driven from this.
+	waitingAged := 0
+	for e := q.waitingOnDeps.Front(); e != nil; e = e.Next() {
+		task, _ := e.Value.(*model.Task)
+		if task.Created > 0 && now.Unix()-task.Created > int64(orphanAgeThreshold.Seconds()) {
+			waitingAged++
 		}
-		// drop throttle entries for agents no longer owning running tasks
-		for agentID := range q.reclaimFiredAt {
-			if _, ok := seen[agentID]; !ok {
-				delete(q.reclaimFiredAt, agentID)
-			}
+	}
+	setOrphanedWorkflows("waiting_on_deps_aged", float64(waitingAged))
+
+	// Single pass over q.running computes two independent gauges plus the reclaim
+	// dispatch list:
+	//   - running_dead_owner: owner POSITIVELY known gone via the WS reconnect-
+	//     grace path. Drives the reclaim (released within a tick, not at the
+	//     TaskTimeout lease). Fails safe (#246) — an agent never tracked through
+	//     the WS path (e.g. a gRPC/local-backend agent) is NOT known-dead, so it
+	//     is left alone rather than killed at t+0s.
+	//   - running_owner_stale (#248): owner's LastContact aged past the staleness
+	//     window. TRANSPORT-AGNOSTIC and OBSERVE-ONLY — it covers gRPC/local
+	//     agents the WS registry never sees (manifestation B), but drives NO
+	//     reclaim. Counting it independently is the measure-first step before any
+	//     transport-agnostic reclaim is built.
+	deadOwnerRunning := 0
+	staleOwnerRunning := 0
+	var due []int64
+	seen := make(map[int64]struct{})
+	for _, e := range q.running {
+		agentID := e.item.AgentID
+		if agentID <= 0 {
+			continue // unclaimed (dispatch hook)
+		}
+		if q.agentStale != nil && q.agentStale(agentID) {
+			staleOwnerRunning++
+		}
+		if q.agentKnownDead == nil || !q.agentKnownDead(agentID) {
+			continue // owner not WS-known-dead — the reclaim path does not act
+		}
+		deadOwnerRunning++
+		if _, ok := seen[agentID]; ok {
+			continue
+		}
+		seen[agentID] = struct{}{}
+		if last := q.reclaimFiredAt[agentID]; now.Sub(last) >= reclaimRefireInterval {
+			q.reclaimFiredAt[agentID] = now
+			due = append(due, agentID)
+		}
+	}
+	// drop throttle entries for agents no longer owning running tasks
+	for agentID := range q.reclaimFiredAt {
+		if _, ok := seen[agentID]; !ok {
+			delete(q.reclaimFiredAt, agentID)
 		}
 	}
 	setOrphanedWorkflows("running_dead_owner", float64(deadOwnerRunning))
+	setOrphanedWorkflows("running_owner_stale", float64(staleOwnerRunning))
 	return due
 }
 

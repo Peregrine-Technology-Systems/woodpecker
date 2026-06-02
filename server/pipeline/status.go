@@ -92,8 +92,14 @@ func MergeStatusValues(s, t model.StatusValue) model.StatusValue {
 		if tPartial {
 			other = s
 		}
-		// Partial absorbs further successes and further killed-likes.
-		if other == model.StatusSuccess || other == model.StatusKilled {
+		// Partial absorbs further successes, killed-likes, and skipped. A
+		// skipped sibling does not undo the fact that real work succeeded, and
+		// skipped is the LOWEST-priority status — so without absorbing it here
+		// the priority fallback below wrongly returns it: a pipeline with one
+		// partial workflow (a deploy that mutated production) and one skipped
+		// workflow reported top-level `skipped`, structurally indistinguishable
+		// from "nothing happened." (#270)
+		if other == model.StatusSuccess || other == model.StatusKilled || other == model.StatusSkipped {
 			return model.StatusPartial
 		}
 		// Otherwise the non-partial side is heavier (running, pending, error, failure,

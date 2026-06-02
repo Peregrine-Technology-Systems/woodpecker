@@ -56,6 +56,7 @@ func (q *stubQueue) Resume()                                         {}
 func (q *stubQueue) KickAgentWorkers(int64)                          {}
 func (q *stubQueue) SetDispatchHook(queue.DispatchFunc)              {}
 func (q *stubQueue) SetAgentReclaimFn(func(int64) bool, func(int64)) {}
+func (q *stubQueue) SetAgentStaleFn(func(int64) bool)                {}
 func (q *stubQueue) UpdatePriority(string, int64) (int64, error) {
 	return 0, queue.ErrNotFound
 }

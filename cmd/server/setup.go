@@ -247,6 +247,15 @@ func setupEvilGlobals(ctx context.Context, c *cli.Command, s store.Store) (err e
 		func(agentID int64) { api.ReclaimAgentTasks(agentID, wsAgentRPC) },
 	)
 
+	// #248: observe-only transport-agnostic liveness. The queue counts running
+	// tasks whose owning agent's LastContact has aged out (covering gRPC/local
+	// agents the WS known-dead registry never sees) into the running_owner_stale
+	// gauge. This is the measure-first signal for the "stranded running task"
+	// manifestation; it drives NO reclaim — only observability.
+	server.Config.Services.Queue.SetAgentStaleFn(
+		func(agentID int64) bool { return api.IsAgentLastContactStale(agentID, s) },
+	)
+
 	// plugins
 	if err := setupPlugins(ctx, c); err != nil {
 		return fmt.Errorf("could not setup plugins: %w", err)

@@ -15,14 +15,18 @@
 package api
 
 import (
+	"errors"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 
+	"go.woodpecker-ci.org/woodpecker/v3/server/model"
 	"go.woodpecker-ci.org/woodpecker/v3/server/queue"
 	queue_mocks "go.woodpecker-ci.org/woodpecker/v3/server/queue/mocks"
 	grpcserver "go.woodpecker-ci.org/woodpecker/v3/server/rpc"
+	store_mocks "go.woodpecker-ci.org/woodpecker/v3/server/store/mocks"
 )
 
 func TestMarkAndQueryAgentConnected(t *testing.T) {
@@ -72,6 +76,51 @@ func TestMarkAgentDisconnected_IgnoresNonPositiveID(t *testing.T) {
 	markAgentDisconnected(-1)
 	assert.False(t, IsAgentKnownDisconnected(0))
 	assert.False(t, IsAgentKnownDisconnected(-1))
+}
+
+// TestIsAgentLastContactStale exercises the transport-agnostic, observe-only
+// liveness oracle (#248) across all branches. It must fail SAFE: only a known
+// agent with a positive LastContact aged past the threshold reads as stale;
+// every weaker signal (bad id, nil store, store error, never-contacted,
+// recent contact) returns false so nothing is ever counted on weak evidence.
+func TestIsAgentLastContactStale(t *testing.T) {
+	orig := AgentStaleThreshold
+	AgentStaleThreshold = 90 * time.Second
+	t.Cleanup(func() { AgentStaleThreshold = orig })
+
+	t.Run("non-positive id is never stale", func(t *testing.T) {
+		assert.False(t, IsAgentLastContactStale(0, store_mocks.NewMockStore(t)))
+		assert.False(t, IsAgentLastContactStale(-1, store_mocks.NewMockStore(t)))
+	})
+
+	t.Run("nil store is never stale", func(t *testing.T) {
+		assert.False(t, IsAgentLastContactStale(5, nil))
+	})
+
+	t.Run("store error fails safe", func(t *testing.T) {
+		s := store_mocks.NewMockStore(t)
+		s.On("AgentFind", int64(5)).Return((*model.Agent)(nil), errors.New("boom"))
+		assert.False(t, IsAgentLastContactStale(5, s))
+	})
+
+	t.Run("never-contacted agent (LastContact 0) is not stale", func(t *testing.T) {
+		s := store_mocks.NewMockStore(t)
+		s.On("AgentFind", int64(5)).Return(&model.Agent{ID: 5, LastContact: 0}, nil)
+		assert.False(t, IsAgentLastContactStale(5, s))
+	})
+
+	t.Run("recent contact is not stale", func(t *testing.T) {
+		s := store_mocks.NewMockStore(t)
+		s.On("AgentFind", int64(5)).Return(&model.Agent{ID: 5, LastContact: time.Now().Unix()}, nil)
+		assert.False(t, IsAgentLastContactStale(5, s))
+	})
+
+	t.Run("contact aged past threshold is stale", func(t *testing.T) {
+		s := store_mocks.NewMockStore(t)
+		aged := time.Now().Add(-2 * AgentStaleThreshold).Unix()
+		s.On("AgentFind", int64(5)).Return(&model.Agent{ID: 5, LastContact: aged}, nil)
+		assert.True(t, IsAgentLastContactStale(5, s))
+	})
 }
 
 func TestReclaimAgentTasks_NoOpGuards(t *testing.T) {
