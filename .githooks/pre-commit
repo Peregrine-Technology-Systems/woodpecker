@@ -114,6 +114,14 @@ COV_SKIP_REGEX='_test\.go$|/mocks/|wire_gen\.go$|_easyjson\.go$|\.pb\.go$|/fixtu
 # - server/config.go: declaration-only global Config struct (no executable
 #   statements); the `server` package has no test files so the profile reports
 #   NO_DATA. Like server/store/store.go — nothing to execute.
+# - server/plugin/gcppubsub/client.go: the New() constructor for a live GCP
+#   Pub/Sub publisher (#264). pubsub.NewClient + topic publish-settings + the
+#   async result.Get goroutine can't run without live GCP credentials — the same
+#   shape the gcp.go comment above references. Deliberately split out of
+#   publisher.go so the testable publisher logic (OnEvent, including the #264
+#   empty-type fail-closed guard, plus newPublisher/Name/Close) stays at 100% and
+#   gated; format.go is also 100%. Do NOT use this exemption for incremental
+#   changes that don't add tests for the changed function.
 # - server/logdrain/gcp.go: thin GCP Cloud Logging client constructor (#233).
 #   The Peregrine drain logic is in drain.go (100%); gcp.go's testable
 #   disabled-path (empty project) is covered, but logging.NewClient + the
@@ -142,7 +150,7 @@ COV_SKIP_REGEX='_test\.go$|/mocks/|wire_gen\.go$|_easyjson\.go$|\.pb\.go$|/fixtu
 #   own package; only the 3-line call site inside Create() is uncovered, and that
 #   orchestration body is the integration seam. Do NOT use this exemption for
 #   incremental changes that don't add tests for the changed function.
-COV_WIRING_REGEX='^pipeline/const\.go$|^cmd/server/setup\.go$|^server/router/api\.go$|^cmd/|^server/store/datastore/migration/migration\.go$|^server/store/store\.go$|^server/api/ws_agent\.go$|^server/rpc/rpc\.go$|^server/rpc/server\.go$|^pipeline/frontend/yaml/compiler/convert\.go$|^server/pipeline/items\.go$|^server/pipeline/create\.go$|^pipeline/backend/types/step\.go$|^server/logdrain/gcp\.go$|^server/config\.go$'
+COV_WIRING_REGEX='^pipeline/const\.go$|^cmd/server/setup\.go$|^server/router/api\.go$|^cmd/|^server/store/datastore/migration/migration\.go$|^server/store/store\.go$|^server/api/ws_agent\.go$|^server/rpc/rpc\.go$|^server/rpc/server\.go$|^pipeline/frontend/yaml/compiler/convert\.go$|^server/pipeline/items\.go$|^server/pipeline/create\.go$|^pipeline/backend/types/step\.go$|^server/logdrain/gcp\.go$|^server/config\.go$|^server/plugin/gcppubsub/client\.go$'
 
 if [ -n "$GO_FILES" ]; then
     # Format

@@ -23,6 +23,11 @@ import (
 
 const schemaVersion = "1.0"
 
+// The authoritative wire contract for these events lives in CONTRACT.md in this
+// package. If you change the shape here, bump schemaVersion and update
+// CONTRACT.md in the same PR — downstream subscribers (scaler, worker-registry,
+// monitoring) adapt to that document. Reference: woodpecker#264.
+
 // pubsubEvent matches the webhook sidecar's JSON schema (schema_version "1.0").
 type pubsubEvent struct {
 	SchemaVersion string     `json:"schema_version"`
