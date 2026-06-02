@@ -163,6 +163,35 @@ func TestOnEventMarshalError(t *testing.T) {
 	assert.Empty(t, *messages, "nothing publishes when marshal fails")
 }
 
+// TestPipelineStartedEmitsFlatNumericPipeline is the #269 regression guard: the
+// scaler's consumer choked on `pipeline.started` events with
+// "cannot unmarshal number into Go struct field ...pipeline of type struct{...}"
+// when it briefly expected a NESTED `data.pipeline: {id, ...}` object. The fork
+// has always emitted the FLAT schema (`data.pipeline` is a bare pipeline number)
+// per CONTRACT.md — this locks it at the wire level by decoding into a generic
+// map and asserting `data.pipeline` is a JSON number, never an object. If a
+// future change reintroduces a nested pipeline object, this fails before it can
+// reach the scaler.
+func TestPipelineStartedEmitsFlatNumericPipeline(t *testing.T) {
+	pub, messages := testPublisher("woodpecker-server")
+
+	require.NoError(t, pub.OnEvent(context.Background(), sampleEvent(plugin.EventPipelineStarted)))
+	require.Len(t, *messages, 1)
+
+	var raw map[string]any
+	require.NoError(t, json.Unmarshal((*messages)[0].data, &raw))
+	assert.Equal(t, "pipeline.started", raw["type"])
+
+	data, ok := raw["data"].(map[string]any)
+	require.True(t, ok, "data must be an object")
+
+	// The load-bearing assertion: `pipeline` is a bare JSON number, NOT a nested
+	// object. encoding/json decodes a JSON number into float64.
+	pipeline, ok := data["pipeline"].(float64)
+	require.Truef(t, ok, "data.pipeline must be a bare number, got %T (%v) — a nested object is the #269 regression", data["pipeline"], data["pipeline"])
+	assert.Equal(t, float64(42), pipeline)
+}
+
 func TestSeverityMapping(t *testing.T) {
 	tests := []struct {
 		eventType string
