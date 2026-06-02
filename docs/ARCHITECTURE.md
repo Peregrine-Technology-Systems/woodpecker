@@ -186,6 +186,18 @@ Pipelines route to agents via labels: every non-empty task label must be present
 
 **The validator (`pipeline.ValidateLabelCombination`, [pts] #255/#261)** runs on every workflow in `server/pipeline.Create` before enqueue and governs **only `tier`**: it must be a known scaling class (`pipeline.KnownTiers` — keep in lockstep with the scaler). `backend` and `platform` are free-form constraints and are never gated — `backend` is deliberately extensible (engine → flavor → host pin). `backend: local + tier: spot` ("native step on a spot VM") is the common case, not an error. The only rejection is an unknown/dead `tier` value (notably `tier: local`, which conflated host-identity with scaling class). It converts a silent forever-pending stall into a loud submit-time error (2026-05-31: 14 pending / 0 running on d3ci42 from an unsatisfiable combo).
 
+### Submit-time tier auto-routing (#266)
+
+`tier` is also **rewritten** at submit, in the same `server/pipeline.Create` path, immediately **before** validation (`rewritePipelineTier` → `pipeline.ShouldForceOndemand`). Deploy-class workflows are forced to `tier: ondemand` so no repo needs a per-pipeline `tier:` knob — and none can drift onto spot and lose a release pipeline to a mid-flight preemption (the killed-workflow re-queue, `server/rpc/rpc.go`, deliberately will **not** restart a workflow that already did observable work, so a spot preemption *during* a promote/deploy is fatal).
+
+A workflow is deploy-class when:
+- the pipeline is **tag-triggered** (`event: tag` — production releases are never recoverable on preemption), or
+- its **name contains a deploy pattern** (case-insensitive substring, matching the scaler's `IsDeployPipeline`).
+
+The pattern list is `WOODPECKER_TIER_DEPLOY_PATTERNS` (comma-separated), defaulting to **`deploy,promote,version-bump`** (`pipeline.DefaultDeployPatterns`). `sync-back` is deliberately excluded — idempotent RELEASE_NOTES housekeeping stays in the spot class. The rewrite **always wins** over an explicit label (a `tier: spot` on a `promote` workflow is overridden — the design goal is that a repo cannot route a release pipeline to spot, even by mistake).
+
+This is the precise, central mechanism the spot-default guardrail policy (scaler#1175, global CLAUDE.md tier table) always assumed: ondemand for *exactly* the deploy class, applied automatically, instead of the per-repo manual `tier: ondemand` knob that drifted (repos that forgot it died on preemption) or over-applied (blanket ondemand over-provisioned on-demand VMs). The global-rule table that lists `promote`/`version-bump` as spot describes the pre-classifier stopgap; reconciliation tracked in `global-claude`.
+
 ### Build + Deploy Pipeline (three workflows, #74/#80/#140)
 
 Triggered on every push to `main`. Three decoupled Woodpecker workflows — wake/compile on pts-build-vm (GCP), cleanup on any GCP agent, deploy via standalone systemd timer on d3ci42.

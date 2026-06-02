@@ -118,6 +118,12 @@ func Create(ctx context.Context, _store store.Store, repo *model.Repo, pipeline 
 		return nil, ErrFiltered
 	}
 
+	// [pts] #266 — auto-route deploy/promote/tag workflows to the ondemand tier
+	// BEFORE validation, so no repo needs a per-pipeline `tier:` knob and none can
+	// drift onto spot and die on a mid-flight preemption. Runs first so the forced
+	// value is what gets validated.
+	rewritePipelineTier(pipelineItems, pipeline.Event == model.EventTag)
+
 	// [pts] #255 — reject label combinations no agent can ever satisfy at submit
 	// time, so the author sees the failure now instead of the task sitting pending
 	// forever with no error surface.
@@ -182,6 +188,33 @@ func Create(ctx context.Context, _store store.Store, repo *model.Repo, pipeline 
 	}
 
 	return pipeline, nil
+}
+
+// rewritePipelineTier pins deploy-class workflows to the ondemand tier at submit
+// time ([pts] #266). A workflow is deploy-class when the pipeline is tag-triggered
+// or its name matches a configured deploy pattern (pipeline.ShouldForceOndemand).
+// The rewrite always wins over an explicit tier label — the whole point is that a
+// repo cannot route a release pipeline to spot, even by mistake. Skipped
+// workflows never queue, so they are left untouched. Mutating item.Labels here
+// propagates into the task's routing filter via queue.go's maps.Copy.
+func rewritePipelineTier(items []*stepbuilder.Item, isTagEvent bool) {
+	patterns := corepipeline.DeployPatterns()
+	for _, item := range items {
+		if item.Workflow.State == model.StatusSkipped {
+			continue
+		}
+		if !corepipeline.ShouldForceOndemand(item.Workflow.Name, isTagEvent, patterns) {
+			continue
+		}
+		if item.Labels == nil {
+			item.Labels = map[string]string{}
+		}
+		if prev := item.Labels[corepipeline.LabelFilterTier]; prev != corepipeline.TierOndemand {
+			log.Debug().Str("workflow", item.Workflow.Name).Str("from_tier", prev).
+				Msg("[pts] #266: forcing tier=ondemand for deploy-class workflow")
+		}
+		item.Labels[corepipeline.LabelFilterTier] = corepipeline.TierOndemand
+	}
 }
 
 // validatePipelineLabels runs each workflow's labels through the legal-taxonomy
