@@ -71,3 +71,67 @@ func TestKilledByAgentDisconnect(t *testing.T) {
 		})
 	}
 }
+
+func TestWorkflowStatePredicates(t *testing.T) {
+	if (Workflow{}).TableName() != "workflows" {
+		t.Errorf("TableName() = %q, want workflows", (Workflow{}).TableName())
+	}
+	running := []struct {
+		state StatusValue
+		want  bool
+	}{
+		{StatusPending, true}, {StatusRunning, true},
+		{StatusSuccess, false}, {StatusKilled, false},
+	}
+	for _, tc := range running {
+		if got := (&Workflow{State: tc.state}).Running(); got != tc.want {
+			t.Errorf("Running(%s) = %v, want %v", tc.state, got, tc.want)
+		}
+	}
+	failing := []struct {
+		state StatusValue
+		want  bool
+	}{
+		{StatusError, true}, {StatusKilled, true}, {StatusSuperseded, true}, {StatusFailure, true},
+		{StatusSuccess, false}, {StatusRunning, false},
+	}
+	for _, tc := range failing {
+		if got := (&Workflow{State: tc.state}).Failing(); got != tc.want {
+			t.Errorf("Failing(%s) = %v, want %v", tc.state, got, tc.want)
+		}
+	}
+	if IsThereRunningStage([]*Workflow{{State: StatusSuccess}, {State: StatusKilled}}) {
+		t.Error("IsThereRunningStage with no running stage should be false")
+	}
+	if !IsThereRunningStage([]*Workflow{{State: StatusSuccess}, {State: StatusRunning}}) {
+		t.Error("IsThereRunningStage with a running stage should be true")
+	}
+}
+
+func TestCanceledByAgentShutdown(t *testing.T) {
+	cases := []struct {
+		name     string
+		workflow *Workflow
+		want     bool
+	}{
+		{"nil workflow", nil, false},
+		{"killed with shutdown signature", &Workflow{State: StatusKilled, Error: "agent shutdown"}, true},
+		{"killed with shutdown signature embedded", &Workflow{State: StatusKilled, Error: "workflow canceled: agent shutdown in progress"}, true},
+		// "Canceled" is the server-issued / plain cancel — NOT an agent shutdown.
+		{"killed with plain Canceled (server-issued)", &Workflow{State: StatusKilled, Error: "Canceled"}, false},
+		// A disconnect is a different class and must not read as shutdown.
+		{"killed with disconnect signature", &Workflow{State: StatusKilled, Error: "agent disconnected"}, false},
+		{"killed with empty error", &Workflow{State: StatusKilled, Error: ""}, false},
+		{"running with shutdown text, ignore", &Workflow{State: StatusRunning, Error: "agent shutdown"}, false},
+		{"failure with shutdown text, ignore", &Workflow{State: StatusFailure, Error: "agent shutdown"}, false},
+		{"success, ignore", &Workflow{State: StatusSuccess}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := tc.workflow.CanceledByAgentShutdown()
+			if got != tc.want {
+				t.Errorf("CanceledByAgentShutdown() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}

@@ -20,6 +20,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/rs/zerolog/log"
@@ -98,8 +99,16 @@ func (r *Runner) Run(runnerCtx, shutdownCtx context.Context) error {
 
 	// Add sigterm support for internal context.
 	// Required to be able to terminate the running workflow by external signals.
+	// agentShutdown records that THIS workflow's cancel originated from the
+	// agent terminating (SIGTERM — spot preemption / systemd stop), not from a
+	// server-issued UI/API cancel. The runtime flattens every cancellation to
+	// ErrCancel (pipeline/runtime/executor.go), so this flag is the only thing
+	// that distinguishes a recoverable preemption from a deliberate cancel; the
+	// server uses it to re-queue idempotent, no-work-done workflows (#275).
+	var agentShutdown atomic.Bool
 	workflowCtx = utils.WithContextSigtermCallback(workflowCtx, func() {
 		logger.Error().Msg("received sigterm termination signal")
+		agentShutdown.Store(true)
 		// WithContextSigtermCallback would cancel the context too, but  we want our own custom error
 		cancelWorkflowCtx(pipeline_errors.ErrCancel)
 	})
@@ -177,6 +186,15 @@ func (r *Runner) Run(runnerCtx, shutdownCtx context.Context) error {
 			state.Canceled = true
 			// cleanup joined error messages
 			state.Error = pipeline_errors.ErrCancel.Error()
+			// #275: distinguish an agent-shutdown (SIGTERM/preemption) cancel
+			// from a server-issued cancel via a positive signal on the Error
+			// field, so the server can re-queue a recoverable, no-work-done
+			// workflow instead of finalizing it killed. Only the SIGTERM
+			// callback sets agentShutdown — a workflow timeout or a UI/API
+			// cancel leaves it false and reports the plain "Canceled".
+			if agentShutdown.Load() {
+				state.Error = pipeline_errors.ErrAgentShutdown.Error()
+			}
 		}
 	}
 

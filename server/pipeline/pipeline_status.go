@@ -94,13 +94,22 @@ func UpdateStatusToDone(store store.Store, pipeline model.Pipeline, status model
 
 // killReasonFromWorkflows derives a KillReason string from the rolled-up
 // state of the pipeline's workflows. Inspects each workflow for the
-// canonical agent-disconnect signature; falls back to a generic
-// "agent_done_kill" tag when no disconnect is observed (the agent
-// itself reported a Killed/Canceled state for its own reasons).
+// canonical agent-disconnect signature, then for the agent-shutdown
+// (SIGTERM/preemption) signature (#275); falls back to a generic
+// "agent_done_kill" tag when neither is observed (the agent itself reported a
+// Killed/Canceled state for its own reasons). The agent-shutdown class is
+// broken out from the generic fallback so a recoverable spot preemption is
+// distinguishable from an arbitrary agent-reported kill in forensics and bus
+// telemetry — it is the precondition for the self-heal re-queue follow-up.
 func killReasonFromWorkflows(workflows []*model.Workflow) string {
 	for _, w := range workflows {
 		if w != nil && w.KilledByAgentDisconnect() {
 			return "agent_disconnect"
+		}
+	}
+	for _, w := range workflows {
+		if w != nil && w.CanceledByAgentShutdown() {
+			return "agent_preempted"
 		}
 	}
 	return "agent_done_kill"

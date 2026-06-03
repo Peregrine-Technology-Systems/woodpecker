@@ -174,6 +174,68 @@ func TestKillReasonFromWorkflows_NilSafety(t *testing.T) {
 	assert.Equal(t, "agent_done_kill", killReasonFromWorkflows([]*model.Workflow{nil, nil}))
 }
 
+// TestKillReasonFromWorkflows_AgentPreempted — a workflow the agent canceled
+// because it was shutting down (SIGTERM/preemption, #275) is tagged
+// "agent_preempted", distinct from the generic agent_done_kill fallback. (#275)
+func TestKillReasonFromWorkflows_AgentPreempted(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name      string
+		workflows []*model.Workflow
+		want      string
+	}{
+		{
+			name:      "agent shutdown signature → agent_preempted",
+			workflows: []*model.Workflow{{ID: 1, State: model.StatusKilled, Error: "agent shutdown"}},
+			want:      "agent_preempted",
+		},
+		{
+			name:      "plain Canceled (server-issued) → agent_done_kill, not preempted",
+			workflows: []*model.Workflow{{ID: 1, State: model.StatusKilled, Error: "Canceled"}},
+			want:      "agent_done_kill",
+		},
+		{
+			// Disconnect wins over shutdown — it is checked first and is the
+			// more specific infrastructure-failure class.
+			name: "disconnect takes precedence over shutdown",
+			workflows: []*model.Workflow{
+				{ID: 1, State: model.StatusKilled, Error: "agent shutdown"},
+				{ID: 2, State: model.StatusKilled, Error: "agent disconnected"},
+			},
+			want: "agent_disconnect",
+		},
+		{
+			name: "shutdown among siblings still detected",
+			workflows: []*model.Workflow{
+				{ID: 1, State: model.StatusSuccess},
+				{ID: 2, State: model.StatusKilled, Error: "agent shutdown"},
+			},
+			want: "agent_preempted",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, killReasonFromWorkflows(tc.workflows))
+		})
+	}
+}
+
+// TestUpdateStatusToDone_StampsKillReason_AgentPreempted — end-to-end through
+// the #202 derivation: a killed rollup whose workflow carries the agent-shutdown
+// signature stamps KillReason="agent_preempted". (#275)
+func TestUpdateStatusToDone_StampsKillReason_AgentPreempted(t *testing.T) {
+	t.Parallel()
+	now := time.Now().Unix()
+	pl := model.Pipeline{
+		Workflows: []*model.Workflow{
+			{ID: 1, State: model.StatusKilled, Error: "agent shutdown"},
+		},
+	}
+	updated, _ := UpdateStatusToDone(mockStorePipeline(t), pl, model.StatusKilled, now)
+	assert.Equal(t, "agent_preempted", updated.KillReason)
+	assert.Equal(t, now, updated.KilledAt)
+}
+
 // TestPipelineStatus_Empty / Running / RolledUp — exercise the
 // PipelineStatus rollup so the file climbs above the 95% gate.
 func TestPipelineStatus_EmptyReturnsSuccess(t *testing.T) {
