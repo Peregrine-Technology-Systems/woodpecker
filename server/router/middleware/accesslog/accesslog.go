@@ -22,12 +22,22 @@
 // ErrFiltered (HTTP 204, normal) vs real failures (HTTP 500) because the
 // server had no HTTP access log. A single journalctl grep would have resolved
 // the question in seconds.
+//
+// Level gating (#276): a flat INFO line per request made woodpecker-server
+// ~96.6% of the ci-runners-de fleet's Cloud Logging ingestion (~44 GiB/mo) —
+// ~95% of which is successful high-frequency GET polling of pipeline/queue
+// state (the UI, scaler, and agents). Emitting that flood at INFO buys no
+// signal. We keep the #215 value by selecting the level from the outcome
+// instead of hardwiring INFO (see levelFor): errors and mutating requests
+// stay visible at the default log level, the GET poll flood drops to DEBUG.
 package accesslog
 
 import (
+	"net/http"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 )
 
@@ -36,6 +46,29 @@ import (
 var skipPaths = map[string]bool{
 	"/healthz": true,
 	"/metrics": true,
+}
+
+// levelFor selects the zerolog level for a completed request (#276). The goal
+// is to suppress the high-frequency successful-GET poll flood at the default
+// INFO level while never inferring a result by the absence of a line for any
+// request that carries audit or failure signal:
+//
+//   - status >= 400        → Warn  (every error stays visible — preserves #215)
+//   - mutating method       → Info  (POST/PUT/PATCH/DELETE: webhooks, priority
+//     changes — low volume, high audit value; absence
+//     must never be read as "filtered, not failed")
+//   - successful read (GET/HEAD/…) → Debug (the ~95% poll flood — gated off by
+//     default; flip WOODPECKER_LOG_LEVEL=debug to see it)
+func levelFor(method string, status int) zerolog.Level {
+	if status >= http.StatusBadRequest {
+		return zerolog.WarnLevel
+	}
+	switch method {
+	case http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete:
+		return zerolog.InfoLevel
+	default:
+		return zerolog.DebugLevel
+	}
 }
 
 // Middleware returns a Gin HandlerFunc that logs each completed request.
@@ -53,10 +86,11 @@ func Middleware() gin.HandlerFunc {
 		start := time.Now()
 		c.Next()
 
-		log.Info().
+		status := c.Writer.Status()
+		log.WithLevel(levelFor(c.Request.Method, status)).
 			Str("method", c.Request.Method).
 			Str("path", path).
-			Int("status", c.Writer.Status()).
+			Int("status", status).
 			Int64("latency_ms", time.Since(start).Milliseconds()).
 			Str("remote_ip", c.ClientIP()).
 			Str("user_agent", c.Request.UserAgent()).
