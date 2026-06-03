@@ -27,6 +27,19 @@ var (
 	// ErrCancel is used as a return value when the container execution receives
 	// a cancellation signal from the context.
 	ErrCancel = errors.New("Canceled")
+
+	// ErrAgentShutdown is the WorkflowState.Error an agent reports when it
+	// cancels an in-flight workflow because the AGENT ITSELF is terminating
+	// (SIGTERM — spot preemption / systemd stop), as distinct from a
+	// server-issued cancel (UI/API supersede/user, which reports ErrCancel /
+	// "Canceled"). Both arrive over the wire as Canceled=true with an identical
+	// payload otherwise, so the server cannot tell a recoverable preemption
+	// from a deliberate cancel without this positive signal. The server uses it
+	// to re-queue an idempotent, no-work-done workflow onto a fresh agent
+	// instead of finalizing it killed (#275). It is carried on the existing
+	// Error wire field — same mechanism as the "agent disconnected" signature
+	// the server already matches — so no RPC schema change is required.
+	ErrAgentShutdown = errors.New("agent shutdown")
 )
 
 // An ExitError reports an unsuccessful exit.

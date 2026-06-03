@@ -157,7 +157,17 @@ COV_SKIP_REGEX='_test\.go$|/mocks/|wire_gen\.go$|_easyjson\.go$|\.pb\.go$|/fixtu
 #   declares (#268) is exercised through server/rpc's emitTierBypassIfSpotDeploy
 #   (tier_telemetry.go, 100%) and the gcppubsub severity map (format.go, 100%).
 #   Do NOT use this exemption for a file that gains executable statements.
-COV_WIRING_REGEX='^pipeline/const\.go$|^cmd/server/setup\.go$|^server/router/api\.go$|^cmd/|^server/store/datastore/migration/migration\.go$|^server/store/store\.go$|^server/api/ws_agent\.go$|^server/rpc/rpc\.go$|^server/rpc/server\.go$|^pipeline/frontend/yaml/compiler/convert\.go$|^server/pipeline/items\.go$|^server/pipeline/create\.go$|^pipeline/backend/types/step\.go$|^server/logdrain/gcp\.go$|^server/config\.go$|^server/plugin/gcppubsub/client\.go$|^server/plugin/interfaces\.go$'
+# - agent/runner.go: the agent's Run() workflow-execution orchestrator (fetch
+#   from queue → build cancellation context → run the backend runtime → report
+#   Init/Done over rpc). Run() is 0% under unit tests — it needs a live rpc.Peer
+#   client + a real pipeline backend, exactly the rpc.go/ws_agent.go shape. The
+#   #275 change is 4 lines: a SIGTERM-callback flag (agentShutdown atomic.Bool)
+#   and one branch that swaps the reported Error to ErrAgentShutdown's message;
+#   the sentinel + its server-side detection (model.CanceledByAgentShutdown,
+#   killReasonFromWorkflows) are each at 100% in their own packages. Inherited
+#   from upstream; do NOT use this exemption for incremental changes that don't
+#   add tests for the changed function.
+COV_WIRING_REGEX='^pipeline/const\.go$|^cmd/server/setup\.go$|^server/router/api\.go$|^cmd/|^server/store/datastore/migration/migration\.go$|^server/store/store\.go$|^server/api/ws_agent\.go$|^server/rpc/rpc\.go$|^server/rpc/server\.go$|^pipeline/frontend/yaml/compiler/convert\.go$|^server/pipeline/items\.go$|^server/pipeline/create\.go$|^pipeline/backend/types/step\.go$|^server/logdrain/gcp\.go$|^server/config\.go$|^server/plugin/gcppubsub/client\.go$|^server/plugin/interfaces\.go$|^agent/runner\.go$'
 
 if [ -n "$GO_FILES" ]; then
     # Format

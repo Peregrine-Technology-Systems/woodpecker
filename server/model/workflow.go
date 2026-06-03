@@ -81,6 +81,31 @@ func (p *Workflow) KilledByAgentDisconnect() bool {
 	return false
 }
 
+// agentShutdownSignature is the workflow.Error string an agent reports when it
+// canceled the workflow because IT was terminating (SIGTERM — spot preemption /
+// systemd stop), as opposed to a server-issued cancel. It is set in
+// agent/runner.go from pipeline/errors.ErrAgentShutdown and must stay in lockstep
+// with that sentinel's message. (#275)
+const agentShutdownSignature = "agent shutdown"
+
+// CanceledByAgentShutdown returns true when the workflow was killed because the
+// agent running it was itself shutting down (SIGTERM from a spot preemption or
+// systemd stop) — distinct from a deliberate server-issued cancel (which
+// reports the plain "Canceled") and from a hard agent disconnect (which reports
+// "agent disconnected", see KilledByAgentDisconnect). This is the recoverable
+// preemption class: the work was cut off by infrastructure, not by intent or by
+// a real failure. Conservative read: StatusKilled AND the Error carries the
+// agent-shutdown signature. (#275)
+func (p *Workflow) CanceledByAgentShutdown() bool {
+	if p == nil {
+		return false
+	}
+	if p.State != StatusKilled {
+		return false
+	}
+	return strings.Contains(p.Error, agentShutdownSignature)
+}
+
 // IsThereRunningStage determine if it contains workflows running or pending to run.
 // TODO: return false based on depends_on (https://github.com/woodpecker-ci/woodpecker/pull/730#discussion_r795681697)
 func IsThereRunningStage(workflows []*Workflow) bool {
