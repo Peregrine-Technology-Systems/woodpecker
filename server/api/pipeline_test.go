@@ -122,6 +122,41 @@ func TestGetPipelines(t *testing.T) {
 		})
 		assert.Equal(t, http.StatusOK, c.Writer.Status())
 	})
+
+	t.Run("should normalize cancelled status alias to canceled (#263)", func(t *testing.T) {
+		pipelines := []*model.Pipeline{fakePipeline}
+		mockStore := store_mocks.NewMockStore(t)
+		mockStore.On("GetPipelineList", mock.Anything, mock.Anything, mock.Anything).Return(pipelines, nil)
+
+		w := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+		c.Set("store", mockStore)
+		// British "cancelled" on input must be accepted and folded to the
+		// canonical "canceled" in the filter that reaches the store.
+		c.Request, _ = http.NewRequest(http.MethodGet, "/?status=cancelled", nil)
+
+		GetPipelines(c)
+
+		mockStore.AssertCalled(t, "GetPipelineList", mock.Anything, mock.Anything, &model.PipelineFilter{
+			Statuses: []model.StatusValue{model.StatusCanceled},
+			Status:   model.StatusCanceled,
+		})
+		assert.Equal(t, http.StatusOK, c.Writer.Status())
+	})
+
+	t.Run("should reject an unknown status spelling", func(t *testing.T) {
+		mockStore := store_mocks.NewMockStore(t)
+
+		w := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+		c.Set("store", mockStore)
+		// A typo that is not a documented alias must still 400 (no silent accept).
+		c.Request, _ = http.NewRequest(http.MethodGet, "/?status=cancelledd", nil)
+
+		GetPipelines(c)
+
+		assert.Equal(t, http.StatusBadRequest, c.Writer.Status())
+	})
 }
 
 func TestDeletePipeline(t *testing.T) {
