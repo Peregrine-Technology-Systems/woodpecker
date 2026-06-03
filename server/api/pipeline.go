@@ -145,7 +145,7 @@ func GetPipelines(c *gin.Context) {
 
 	if statuses := c.QueryArray("status"); len(statuses) > 0 {
 		for _, s := range statuses {
-			ps := model.StatusValue(s)
+			ps := model.StatusValue(s).Normalize() // accept "cancelled" alias → "canceled" (#263)
 			if err := ps.Validate(); err != nil {
 				_ = c.AbortWithError(http.StatusBadRequest, err)
 				return
