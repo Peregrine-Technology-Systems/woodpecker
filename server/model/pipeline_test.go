@@ -54,3 +54,25 @@ func TestPipeline_IsPullRequest(t *testing.T) {
 		})
 	}
 }
+
+func TestCancelTrigger(t *testing.T) {
+	cases := []struct {
+		name string
+		ci   *CancelInfo
+		want string
+	}{
+		{"nil → system", nil, CancelTriggerSystem},
+		{"empty → system", &CancelInfo{}, CancelTriggerSystem},
+		{"supersede", &CancelInfo{SupersededBy: 6042}, CancelTriggerSuperseded},
+		{"user", &CancelInfo{CanceledByUser: "amalc"}, CancelTriggerUser},
+		{"step", &CancelInfo{CanceledByStep: "deploy"}, CancelTriggerStep},
+		// Precedence: supersede outranks a coincidentally-set user field.
+		{"supersede outranks user", &CancelInfo{SupersededBy: 7, CanceledByUser: "amalc"}, CancelTriggerSuperseded},
+		{"user outranks step", &CancelInfo{CanceledByUser: "amalc", CanceledByStep: "x"}, CancelTriggerUser},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, CancelTrigger(tc.ci))
+		})
+	}
+}

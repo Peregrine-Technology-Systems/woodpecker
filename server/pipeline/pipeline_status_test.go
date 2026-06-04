@@ -106,6 +106,22 @@ func TestUpdateToStatusKilled(t *testing.T) {
 	assert.LessOrEqual(t, now, pipeline.Finished)
 	assert.Equal(t, "user_initiated", pipeline.KillReason, "#202: KillReason must be stamped")
 	assert.LessOrEqual(t, now, pipeline.KilledAt)
+	// #263 part 2: the orthogonal trigger is derived from the evidence field —
+	// here SupersededBy>0 → superseded, even though KillReason was passed as
+	// "user_initiated" (the masking case this field defends against).
+	assert.Equal(t, model.CancelTriggerSuperseded, pipeline.CancelInfo.Trigger,
+		"#263: trigger derived from supersede evidence, independent of KillReason")
+}
+
+// TestUpdateToStatusKilled_NilCancelInfo covers the nil-guard branch of the
+// #263 trigger stamp: a nil CancelInfo is left nil (no panic, no struct minted).
+func TestUpdateToStatusKilled_NilCancelInfo(t *testing.T) {
+	t.Parallel()
+
+	pipeline, err := UpdateToStatusKilled(mockStorePipeline(t), model.Pipeline{}, nil, model.StatusKilled, "reconciler_orphan")
+	assert.NoError(t, err)
+	assert.Nil(t, pipeline.CancelInfo, "nil cancelInfo stays nil")
+	assert.Equal(t, "reconciler_orphan", pipeline.KillReason)
 }
 
 // TestUpdateStatusToDone_StampsKillReason_AgentDisconnect verifies the
