@@ -50,6 +50,7 @@ func EmitEvent(eventType plugin.EventType, repo *model.Repo, p *model.Pipeline, 
 		Author:     p.Author,
 		Message:    p.Message,
 		Event:      string(p.Event),
+		KillReason: p.KillReason,
 		StepName:   stepName,
 		Timestamp:  time.Now(),
 	}

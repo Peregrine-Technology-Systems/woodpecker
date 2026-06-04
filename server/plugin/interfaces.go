@@ -58,6 +58,7 @@ type PipelineEvent struct {
 	Branch     string            `json:"branch"`
 	Commit     string            `json:"commit"`
 	Author     string            `json:"author"`
+	KillReason string            `json:"kill_reason,omitempty"` // #202 attribution (agent_disconnect / agent_preempted / user_initiated / …); empty for non-kill states
 	Message    string            `json:"message"`
 	Event      string            `json:"event"`
 	StepName   string            `json:"step_name,omitempty"`

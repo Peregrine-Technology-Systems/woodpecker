@@ -46,6 +46,12 @@ type pubsubData struct {
 	Author   string `json:"author"`
 	Message  string `json:"message"`
 	Event    string `json:"event"`
+	// KillReason is the #202 kill attribution (agent_disconnect / agent_preempted
+	// / user_initiated / superseded_by_newer_push / pending_only_canceled /
+	// agent_done_kill / …). omitempty so it appears only on terminal-kill events;
+	// surfaced on the bus so monitoring can land it in BigQuery and split a
+	// killed-pipeline count by cause (the analytical path #245/#248/#275 needs).
+	KillReason string `json:"kill_reason,omitempty"`
 }
 
 // eventTypeMap maps internal event types to sidecar-compatible Pub/Sub types.
@@ -80,14 +86,15 @@ func buildEvent(source string, event plugin.PipelineEvent) pubsubEvent {
 		Source:        source,
 		Timestamp:     event.Timestamp.UTC().Format(time.RFC3339Nano),
 		Data: pubsubData{
-			Repo:     event.RepoName,
-			Pipeline: event.Number,
-			Status:   string(event.Status),
-			Branch:   event.Branch,
-			Commit:   truncate(event.Commit, 8),
-			Author:   event.Author,
-			Message:  firstLine(event.Message, 80),
-			Event:    event.Event,
+			Repo:       event.RepoName,
+			Pipeline:   event.Number,
+			Status:     string(event.Status),
+			Branch:     event.Branch,
+			Commit:     truncate(event.Commit, 8),
+			Author:     event.Author,
+			Message:    firstLine(event.Message, 80),
+			Event:      event.Event,
+			KillReason: event.KillReason,
 		},
 	}
 }
