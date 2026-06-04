@@ -4,7 +4,18 @@ when:
 
 labels:
   platform: linux
-  tier: ondemand
+  # Pin the lightweight orchestration (wake: gcloud provision + register-poll)
+  # to the persistent d3ci42-local box, which the scaler never scales down and
+  # spot never preempts. The previous `tier: ondemand` did not protect this:
+  # ondemand agents are still scaled down mid-job by the scaler (the
+  # `agent shutdown` kills on pts #471/#473 that skipped compile → no deploy),
+  # and the label wasn't even taking effect (the killed wake ran on a ci-spot
+  # agent). The HEAVY compile stays on the ephemeral on-demand pts-build-vm
+  # (pts-build-compile.yaml, `agent: pts-build`), so the "no heavy CI on the
+  # local box" rule holds — only the light provision/poll runs here.
+  # Requires d3ci42-local to advertise `backend: local-d3ci42`
+  # (peregrine-infrastructure#3114); must land together or this hangs pending.
+  backend: local-d3ci42
 
 steps:
   - name: wake

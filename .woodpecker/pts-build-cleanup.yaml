@@ -4,7 +4,12 @@ when:
     status: [success, failure, killed]
 
 labels:
-  backend: local
+  # Host-pin the cleanup (delete-vm: a single gcloud call) to the persistent
+  # d3ci42-local box, same as the wake step. `backend: local` alone no longer
+  # isolates — the whole fleet advertises it post-infra#1357, so cleanup could
+  # land on a preemptible spot agent. `backend: local-d3ci42` pins it to the
+  # never-preempted box (requires peregrine-infrastructure#3114).
+  backend: local-d3ci42
 
 depends_on: [pts-build-compile]
 
