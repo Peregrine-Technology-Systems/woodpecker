@@ -142,6 +142,13 @@ func UpdateToStatusKilled(store store.Store, pipeline model.Pipeline, cancelInfo
 	pipeline.Status = state
 	now := time.Now().Unix()
 	pipeline.Finished = now
+	// #263 part 2: stamp the orthogonal cancel trigger from the evidence fields
+	// before persisting, so it survives the pending-only masking that KillReason
+	// (below) may apply. Derived here, the single storage choke point for every
+	// Cancel() path, so callers don't each have to set it.
+	if cancelInfo != nil {
+		cancelInfo.Trigger = model.CancelTrigger(cancelInfo)
+	}
 	pipeline.CancelInfo = cancelInfo
 	pipeline.KillReason = killReason
 	pipeline.KilledAt = now

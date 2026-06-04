@@ -105,4 +105,41 @@ type CancelInfo struct {
 	CanceledByUser string `json:"canceled_by_user,omitempty"`
 	SupersededBy   int64  `json:"superseded_by,omitempty"`
 	CanceledByStep string `json:"canceled_by_step,omitempty"`
+	// Trigger names WHO/WHAT initiated the cancel, derived from the populated
+	// evidence field(s) above. It is ORTHOGONAL to Pipeline.KillReason: a
+	// pending-only cancel masks KillReason to the "pending_only_canceled" STATE,
+	// discarding the trigger, so KillReason read alone cannot tell a user cancel
+	// from a supersede from a step-cancel of an all-pending pipeline. Trigger
+	// always carries the true trigger, so a forensic or SSE reader never has to
+	// infer it from which evidence field happens to be set. (#263 part 2)
+	Trigger string `json:"trigger,omitempty"`
 } //	@name	CancelInfo
+
+// Cancel trigger taxonomy — names WHO/WHAT initiated a cancel. Orthogonal to the
+// state descriptors that KillReason can carry (e.g. pending_only_canceled). (#263)
+const (
+	CancelTriggerUser       = "user_initiated"
+	CancelTriggerSuperseded = "superseded_by_newer_push"
+	CancelTriggerStep       = "canceled_by_step"
+	CancelTriggerSystem     = "system"
+)
+
+// CancelTrigger derives the cancel trigger from the populated evidence field on
+// a CancelInfo, independent of the pending-only state masking applied to
+// KillReason. Precedence: supersede > user > step > system. A nil CancelInfo, or
+// one with no evidence field set, is "system" — no human and no newer push drove
+// it (e.g. a reconciler-orphan sweep that routes outside the Cancel() path). (#263)
+func CancelTrigger(ci *CancelInfo) string {
+	switch {
+	case ci == nil:
+		return CancelTriggerSystem
+	case ci.SupersededBy > 0:
+		return CancelTriggerSuperseded
+	case ci.CanceledByUser != "":
+		return CancelTriggerUser
+	case ci.CanceledByStep != "":
+		return CancelTriggerStep
+	default:
+		return CancelTriggerSystem
+	}
+}
