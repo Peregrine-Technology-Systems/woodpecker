@@ -226,6 +226,28 @@ func setupEvilGlobals(ctx context.Context, c *cli.Command, s store.Store) (err e
 		}
 	}()
 
+	// #254: orphan-agent reaper — the durable, transport-agnostic backstop that
+	// deletes registration rows of agents that died WITHOUT unregistering
+	// (ungraceful spot preemption / OOM / crash on any transport, plus deaths the
+	// in-memory WS disconnect set lost to a restart). In-process tick, NOT a
+	// Woodpecker cron (a reaper that fixes broken CI must not depend on working
+	// CI — global rule #11). Keyed on LastContact staleness; a live agent
+	// (including d3ci42-local) is never stale, so it is never reaped. The
+	// observable-WS-disconnect case is handled promptly by the #283 fast-path;
+	// this sweeps the rest.
+	go func() {
+		ticker := time.NewTicker(5 * time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				api.ReapOrphanAgents(s)
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
 	// WebSocket agent transport (#474) — shares business logic with gRPC
 	wsAgentRPC := woodpeckerGrpc.NewRPC(
 		server.Config.Services.Queue,

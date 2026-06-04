@@ -174,3 +174,74 @@ func TestReclaimAgentTasks_DedupesConcurrentForSameAgent(t *testing.T) {
 
 	ReclaimAgentTasks(id, rpcPeer) // must be skipped by the guard
 }
+
+func sysAgent(id, lastContact int64) *model.Agent {
+	return &model.Agent{ID: id, OwnerID: model.IDNotSet, LastContact: lastContact}
+}
+
+func TestAgentReapableAt(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	staleLC := now.Add(-AgentReapThreshold - time.Minute).Unix()
+	cases := []struct {
+		name  string
+		agent *model.Agent
+		want  bool
+	}{
+		{"nil", nil, false},
+		{"never reported (lc=0)", sysAgent(1, 0), false},
+		{"fresh system agent", sysAgent(1, now.Add(-time.Minute).Unix()), false},
+		{"exactly at threshold (not past)", sysAgent(1, now.Add(-AgentReapThreshold).Unix()), false},
+		{"stale system agent", sysAgent(1, staleLC), true},
+		// An individually-tokened (owned) agent is never reaped, even when stale —
+		// mirrors UnregisterAgent's system-only delete.
+		{"individual agent, stale", &model.Agent{ID: 2, OwnerID: 7, LastContact: staleLC}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, agentReapableAt(tc.agent, now))
+		})
+	}
+}
+
+func TestReapOrphanAgents(t *testing.T) {
+	orig := AgentReapThreshold
+	AgentReapThreshold = 30 * time.Minute
+	t.Cleanup(func() { AgentReapThreshold = orig })
+
+	now := time.Now()
+	stale := now.Add(-time.Hour).Unix()
+	fresh := now.Add(-time.Minute).Unix()
+	agents := []*model.Agent{
+		sysAgent(1, stale),                      // reapable
+		sysAgent(2, fresh),                      // alive — keep
+		{ID: 3, OwnerID: 9, LastContact: stale}, // individual — keep
+		sysAgent(4, 0),                          // never reported — keep
+		sysAgent(5, stale),                      // reapable
+	}
+	s := store_mocks.NewMockStore(t)
+	s.On("AgentList", mock.Anything).Return(agents, nil)
+	s.On("AgentDelete", mock.MatchedBy(func(a *model.Agent) bool { return a.ID == 1 || a.ID == 5 })).Return(nil)
+
+	assert.Equal(t, 2, ReapOrphanAgents(s))
+	s.AssertNotCalled(t, "AgentDelete", mock.MatchedBy(func(a *model.Agent) bool { return a.ID == 2 || a.ID == 3 || a.ID == 4 }))
+}
+
+func TestReapOrphanAgents_Guards(t *testing.T) {
+	assert.Equal(t, 0, ReapOrphanAgents(nil))
+
+	t.Run("AgentList error", func(t *testing.T) {
+		s := store_mocks.NewMockStore(t)
+		s.On("AgentList", mock.Anything).Return(([]*model.Agent)(nil), errors.New("boom"))
+		assert.Equal(t, 0, ReapOrphanAgents(s))
+	})
+
+	t.Run("delete error is skipped, not counted", func(t *testing.T) {
+		orig := AgentReapThreshold
+		AgentReapThreshold = 30 * time.Minute
+		t.Cleanup(func() { AgentReapThreshold = orig })
+		s := store_mocks.NewMockStore(t)
+		s.On("AgentList", mock.Anything).Return([]*model.Agent{sysAgent(1, time.Now().Add(-time.Hour).Unix())}, nil)
+		s.On("AgentDelete", mock.Anything).Return(errors.New("db down"))
+		assert.Equal(t, 0, ReapOrphanAgents(s))
+	})
+}

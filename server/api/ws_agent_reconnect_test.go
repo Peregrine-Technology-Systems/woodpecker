@@ -9,6 +9,7 @@
 package api
 
 import (
+	"errors"
 	"testing"
 	"time"
 
@@ -16,6 +17,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 
+	"go.woodpecker-ci.org/woodpecker/v3/server/model"
 	"go.woodpecker-ci.org/woodpecker/v3/server/queue"
 	queue_mocks "go.woodpecker-ci.org/woodpecker/v3/server/queue/mocks"
 	grpcserver "go.woodpecker-ci.org/woodpecker/v3/server/rpc"
@@ -39,6 +41,11 @@ func newTestRPC(t *testing.T) *grpcserver.RPC {
 	// flagged for unmet expectations.
 	q.On("Info", mock.Anything).Return(queue.InfoT{}).Maybe()
 	s := store_mocks.NewMockStore(t)
+	// #283: the grace-expiry path now also calls RemoveAgent (AgentFind +
+	// AgentDelete on a system agent). .Maybe() so tests that cancel before grace
+	// expiry don't get flagged for unmet expectations.
+	s.On("AgentFind", mock.Anything).Return(&model.Agent{OwnerID: model.IDNotSet}, nil).Maybe()
+	s.On("AgentDelete", mock.Anything).Return(nil).Maybe()
 	return grpcserver.NewRPCForTesting(q, s)
 }
 
@@ -134,4 +141,54 @@ func TestScheduleAgentRelease_ReplacesPriorTimer(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatalf("pending release entry not cleared after grace")
+}
+
+// graceRPC builds an RPC whose mock store drives the #283 RemoveAgent path:
+// AgentFind returns (agent, findErr); AgentDelete returns nil. Returns the
+// store so a test can assert AgentDelete was / was not called.
+func graceRPC(t *testing.T, agent *model.Agent, findErr error) (*grpcserver.RPC, *store_mocks.MockStore) {
+	t.Helper()
+	q := queue_mocks.NewMockQueue(t)
+	q.On("Info", mock.Anything).Return(queue.InfoT{}).Maybe()
+	s := store_mocks.NewMockStore(t)
+	s.On("AgentFind", mock.Anything).Return(agent, findErr).Maybe()
+	s.On("AgentDelete", mock.Anything).Return(nil).Maybe()
+	return grpcserver.NewRPCForTesting(q, s), s
+}
+
+func TestRemoveAgentIfStillGone_DeletesWhenGone(t *testing.T) {
+	const agentID int64 = 7101
+	markAgentDisconnected(agentID) // not connected
+	rpc, s := graceRPC(t, &model.Agent{ID: agentID, OwnerID: model.IDNotSet}, nil)
+	removeAgentIfStillGone(agentID, rpc)
+	s.AssertCalled(t, "AgentDelete", mock.MatchedBy(func(a *model.Agent) bool { return a.ID == agentID }))
+}
+
+func TestRemoveAgentIfStillGone_SkipsWhenReconnected(t *testing.T) {
+	const agentID int64 = 7102
+	markAgentConnected(agentID) // a re-register raced in → keep the fresh row
+	// Strict mock: no AgentFind/AgentDelete stubbed, so any call fails the test.
+	q := queue_mocks.NewMockQueue(t)
+	s := store_mocks.NewMockStore(t)
+	rpc := grpcserver.NewRPCForTesting(q, s)
+	removeAgentIfStillGone(agentID, rpc)
+	s.AssertNotCalled(t, "AgentFind", mock.Anything)
+	s.AssertNotCalled(t, "AgentDelete", mock.Anything)
+}
+
+func TestRemoveAgentIfStillGone_FindErrorIsBestEffort(t *testing.T) {
+	const agentID int64 = 7103
+	markAgentDisconnected(agentID)
+	rpc, _ := graceRPC(t, nil, errors.New("not found"))
+	// Must not panic; the error is logged and swallowed.
+	removeAgentIfStillGone(agentID, rpc)
+}
+
+func TestOnReconnectGraceExpired_FullPath(t *testing.T) {
+	const agentID int64 = 7104
+	markAgentConnected(agentID)
+	rpc, s := graceRPC(t, &model.Agent{ID: agentID, OwnerID: model.IDNotSet}, nil)
+	onReconnectGraceExpired(agentID, rpc)
+	assert.True(t, IsAgentKnownDisconnected(agentID)) // marked disconnected
+	s.AssertCalled(t, "AgentDelete", mock.MatchedBy(func(a *model.Agent) bool { return a.ID == agentID }))
 }

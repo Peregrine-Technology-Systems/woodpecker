@@ -19,6 +19,11 @@ import (
 	"sync"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
+	"github.com/rs/zerolog/log"
+
+	"go.woodpecker-ci.org/woodpecker/v3/server/model"
 	grpcserver "go.woodpecker-ci.org/woodpecker/v3/server/rpc"
 	"go.woodpecker-ci.org/woodpecker/v3/server/store"
 )
@@ -188,4 +193,88 @@ func IsAgentLastContactStale(agentID int64, s store.Store) bool {
 		return false
 	}
 	return time.Since(time.Unix(agent.LastContact, 0)) > AgentStaleThreshold
+}
+
+// agentsReapedTotal counts orphan agent registrations deleted by the #254
+// reaper — alert on a sustained non-zero rate (it means agents keep dying
+// without unregistering; the dominant fixable source is a scaler scale-down
+// without graceful drain, peregrine-ci-scaler#1426).
+var agentsReapedTotal = promauto.NewCounter(prometheus.CounterOpts{
+	Namespace: "woodpecker",
+	Name:      "agents_reaped_total",
+	Help:      "Orphan agent registrations deleted by the last_contact reaper (#254).",
+})
+
+// AgentReapThreshold is how long an agent may go without refreshing LastContact
+// before the orphan-agent reaper (ReapOrphanAgents, #254) deletes its
+// registration row. Far more generous than AgentStaleThreshold (which only
+// drives an observe-only gauge): deleting a row is irreversible, so the window
+// is set past shared/constant.TaskTimeout (15m) — a reaped agent's tasks are
+// already released/timed-out, so it owns nothing live. Staleness past this
+// window IS the protection: any agent that is up — including the persistent
+// d3ci42-local box — refreshes LastContact every health beat (~10s) and is
+// therefore NEVER reapable, so no name-based carve-out is needed. Var (not
+// const) so tests can shrink it.
+var AgentReapThreshold = 30 * time.Minute
+
+// agentReapableAt reports whether an agent's registration row is an orphan safe
+// to delete at time `now`. All three must hold:
+//   - it is a SYSTEM agent (auto-registered via the shared agent token,
+//     OwnerID==IDNotSet) — mirrors UnregisterAgent, which likewise never deletes
+//     an individually-tokened, pre-provisioned agent. This is the explicit
+//     protection for such agents, independent of staleness;
+//   - it has reported at least once (LastContact > 0) — a never-reported row
+//     (e.g. mid-registration) is left alone, fail-safe;
+//   - its last health beat is older than AgentReapThreshold.
+//
+// The staleness gate is a second, independent protection: any live agent
+// (including a system-token d3ci42-local) heartbeats every ~10s and is never
+// stale, so it is never reaped even though it is a system agent. Pure, for
+// testability.
+func agentReapableAt(agent *model.Agent, now time.Time) bool {
+	if agent == nil || !agent.IsSystemAgent() || agent.LastContact <= 0 {
+		return false
+	}
+	return now.Sub(time.Unix(agent.LastContact, 0)) > AgentReapThreshold
+}
+
+// ReapOrphanAgents deletes the registration rows of agents whose LastContact is
+// stale past AgentReapThreshold — the #254 durable, transport-agnostic backstop
+// for agents that died WITHOUT unregistering: ungraceful spot preemption / OOM
+// / crash on any transport (the irreducible floor), plus deaths the in-memory
+// WS disconnect set lost to a server restart. It is the GC for the missing
+// registration lease — reconciliation against LastContact (source of truth),
+// not suppression. Returns the count reaped. Best-effort: a per-agent delete
+// error is logged and skipped, never aborts the sweep. Wired to an in-process
+// ticker in cmd/server/setup.go (NOT a Woodpecker cron — global rule #11).
+func ReapOrphanAgents(s store.Store) int {
+	if s == nil {
+		return 0
+	}
+	agents, err := s.AgentList(&model.ListOptions{All: true})
+	if err != nil {
+		log.Error().Err(err).Msg("agent-reaper: AgentList failed")
+		return 0
+	}
+	now := time.Now()
+	reaped := 0
+	for _, a := range agents {
+		if !agentReapableAt(a, now) {
+			continue
+		}
+		if err := s.AgentDelete(a); err != nil {
+			log.Warn().Err(err).Int64("agent_id", a.ID).Str("name", a.Name).
+				Msg("agent-reaper: failed to delete orphan agent registration")
+			continue
+		}
+		reaped++
+		agentsReapedTotal.Inc()
+		forgetDisconnectedAgent(a.ID) // keep the in-memory known-dead set bounded
+		log.Info().Int64("agent_id", a.ID).Str("name", a.Name).Int64("last_contact", a.LastContact).
+			Msg("agent-reaper: deleted orphan agent registration (#254)")
+	}
+	if reaped > 0 {
+		log.Info().Int("reaped", reaped).Int("scanned", len(agents)).Msg("agent-reaper: sweep complete")
+	}
+	return reaped
 }
