@@ -88,6 +88,16 @@ func (p *Workflow) KilledByAgentDisconnect() bool {
 // with that sentinel's message. (#275)
 const agentShutdownSignature = "agent shutdown"
 
+// IsAgentShutdownError reports whether an error string carries the
+// agent-shutdown (spot-preemption / systemd-stop) self-report signature. It is
+// exported so the Done() completion path can key the #275 part-2 self-heal
+// re-queue on the rpc.WorkflowState.Error reported by the agent directly —
+// before the workflow's own Error field has been finalized by
+// UpdateWorkflowStatusToDone. (#275)
+func IsAgentShutdownError(errStr string) bool {
+	return strings.Contains(errStr, agentShutdownSignature)
+}
+
 // CanceledByAgentShutdown returns true when the workflow was killed because the
 // agent running it was itself shutting down (SIGTERM from a spot preemption or
 // systemd stop) — distinct from a deliberate server-issued cancel (which
@@ -103,7 +113,7 @@ func (p *Workflow) CanceledByAgentShutdown() bool {
 	if p.State != StatusKilled {
 		return false
 	}
-	return strings.Contains(p.Error, agentShutdownSignature)
+	return IsAgentShutdownError(p.Error)
 }
 
 // IsThereRunningStage determine if it contains workflows running or pending to run.
