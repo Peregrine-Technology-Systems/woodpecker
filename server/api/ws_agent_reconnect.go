@@ -85,19 +85,45 @@ func scheduleAgentRelease(agentID int64, rpcPeer *grpcserver.RPC) {
 		pendingReleasesMu.Lock()
 		delete(pendingReleases, agentID)
 		pendingReleasesMu.Unlock()
-
-		log.Warn().Int64("agent_id", agentID).
-			Msg("ws-agent: reconnect grace expired, releasing tasks")
-		wsReconnectTotal.WithLabelValues("abandoned").Inc()
-		// #243: the agent never came back within the grace window — drop it
-		// from the connected set so the queue's owner-liveness reclaim treats
-		// any task still (or newly) stranded on this id as orphaned. This
-		// closes the post-release assignment race: a task that lands in
-		// q.running for this dead id AFTER this one-shot release ran is then
-		// reclaimed by the next dispatch tick instead of leaking to TaskTimeout.
-		markAgentDisconnected(agentID)
-		rpcPeer.ReleaseAgentTasks(context.Background(), agentID)
+		onReconnectGraceExpired(agentID, rpcPeer)
 	})
+}
+
+// onReconnectGraceExpired runs when an agent fails to reconnect within the #208
+// grace window. The agent is positively gone: it (1) is dropped from the
+// connected set so the queue's owner-liveness reclaim treats any task still (or
+// newly) stranded on this id as orphaned (#243), (2) has its tasks released, and
+// (3) — the #283 fast-path — has its now-orphan registration row removed, unless
+// a re-register raced in after the grace fired (IsAgentConnected), in which case
+// the fresh row is kept. RemoveAgent is best-effort and only deletes system
+// agents, so a failure or a pre-provisioned agent simply falls through to the
+// #254 last_contact reaper. Extracted from the AfterFunc so every branch is
+// directly testable without driving the timer.
+func onReconnectGraceExpired(agentID int64, rpcPeer *grpcserver.RPC) {
+	log.Warn().Int64("agent_id", agentID).
+		Msg("ws-agent: reconnect grace expired, releasing tasks")
+	wsReconnectTotal.WithLabelValues("abandoned").Inc()
+	markAgentDisconnected(agentID)
+	rpcPeer.ReleaseAgentTasks(context.Background(), agentID)
+	removeAgentIfStillGone(agentID, rpcPeer)
+}
+
+// removeAgentIfStillGone is the #283 fast-path: delete the now-orphan
+// registration row of an agent whose grace expired. Skips the delete if a
+// re-register raced in after the grace fired (IsAgentConnected) — that fresh row
+// must be kept. RemoveAgent is best-effort and only deletes system agents, so a
+// failure or a pre-provisioned agent falls through to the #254 reaper. Separate
+// function so both the skip and the delete branches are deterministically
+// testable (within onReconnectGraceExpired, markAgentDisconnected has already
+// cleared the connected set, so only a concurrent reconnect re-sets it).
+func removeAgentIfStillGone(agentID int64, rpcPeer *grpcserver.RPC) {
+	if IsAgentConnected(agentID) {
+		return
+	}
+	if err := rpcPeer.RemoveAgent(agentID); err != nil {
+		log.Warn().Err(err).Int64("agent_id", agentID).
+			Msg("ws-agent: failed to remove registration on disconnect (#254 reaper will retry)")
+	}
 }
 
 // cancelPendingAgentRelease stops a pending release for agentID, if

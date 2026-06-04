@@ -885,6 +885,26 @@ func (s *RPC) UnregisterAgent(ctx context.Context) error {
 	return err
 }
 
+// RemoveAgent deletes a positively-dead agent's registration row by id (#283).
+// Called from the WS reconnect-grace-expiry path once an agent has failed to
+// reconnect within the #208 grace: the server has already concluded it is gone
+// and reclaimed its tasks, so the lingering registration is an orphan — remove
+// it now (the obvious-disconnect fast-path) instead of waiting for the #254
+// last_contact reaper. Mirrors UnregisterAgent's guard: only SYSTEM agents
+// (auto-registered fleet) are deleted; an individually-tokened, pre-provisioned
+// agent is preserved. Best-effort — a not-found / non-system / delete error
+// just leaves the row for the reaper.
+func (s *RPC) RemoveAgent(agentID int64) error {
+	agent, err := s.store.AgentFind(agentID)
+	if err != nil {
+		return err
+	}
+	if !agent.IsSystemAgent() {
+		return nil
+	}
+	return s.store.AgentDelete(agent)
+}
+
 func (s *RPC) ReportHealth(ctx context.Context, status string) error {
 	agent, err := s.getAgentFromContext(ctx)
 	if err != nil {
