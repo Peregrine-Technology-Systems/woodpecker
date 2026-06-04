@@ -3,8 +3,18 @@ when:
     branch: main
 
 labels:
-  platform: linux
-  tier: ondemand
+  # Host-pin the lightweight orchestration (wake: gcloud provision + register-
+  # poll) to the persistent d3ci42-local box, which the scaler never scales down
+  # and spot never preempts — fixing the `agent shutdown` kills on pts #471/#473
+  # that skipped compile → no deploy. `tier: ondemand` did NOT protect this
+  # (ondemand agents are scaled down mid-job; the killed wake even ran on a
+  # ci-spot agent). The HEAVY compile stays on the ephemeral on-demand
+  # pts-build-vm (pts-build-compile.yaml, `agent: pts-build`), so "no heavy CI on
+  # the local box" holds — only the light provision/poll runs here.
+  # `backend: local-d3ci42` is a CUSTOM label the box advertises (distinct from
+  # its core `backend: local` field); verified to route to d3ci42-local by the
+  # #285 controlled probe (pipeline 479 dispatched to agent 27897 = d3ci42-local).
+  backend: local-d3ci42
 
 steps:
   - name: wake

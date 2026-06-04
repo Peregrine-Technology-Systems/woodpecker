@@ -4,7 +4,12 @@ when:
     status: [success, failure, killed]
 
 labels:
-  backend: local
+  # Host-pin cleanup (delete-vm: a single gcloud call) to d3ci42-local, same as
+  # wake. Generic `backend: local` no longer isolates — the whole fleet
+  # advertises it post-infra#1357, so cleanup could land on a preemptible spot
+  # agent. `backend: local-d3ci42` pins it to the never-preempted box (the custom
+  # label verified by the #285 probe).
+  backend: local-d3ci42
 
 depends_on: [pts-build-compile]
 
