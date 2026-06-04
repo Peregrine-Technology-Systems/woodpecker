@@ -80,6 +80,31 @@ func TestOnEventPublishesCorrectJSON(t *testing.T) {
 	assert.Equal(t, "alice", got.Data.Author)
 	assert.Equal(t, "feat: add feature", got.Data.Message)
 	assert.Equal(t, "push", got.Data.Event)
+	// A successful pipeline has no kill attribution — the field must be
+	// omitted from the wire JSON entirely, not emitted empty (#202/#275).
+	assert.Empty(t, got.Data.KillReason)
+	assert.NotContains(t, string((*messages)[0].data), "kill_reason")
+}
+
+func TestKilledEventCarriesKillReason(t *testing.T) {
+	pub, messages := testPublisher("woodpecker-server")
+
+	ev := sampleEvent(plugin.EventPipelineKilled)
+	ev.Status = model.StatusKilled
+	ev.KillReason = "agent_preempted" // #275 graceful-preemption attribution
+
+	require.NoError(t, pub.OnEvent(context.Background(), ev))
+	require.Len(t, *messages, 1)
+
+	// Present in the decoded struct...
+	var got pubsubEvent
+	require.NoError(t, json.Unmarshal((*messages)[0].data, &got))
+	assert.Equal(t, "pipeline.killed", got.Type)
+	assert.Equal(t, "killed", got.Data.Status)
+	assert.Equal(t, "agent_preempted", got.Data.KillReason)
+	// ...and present as a flat sibling key in the raw JSON, so monitoring can
+	// land it in BigQuery (#3331).
+	assert.Contains(t, string((*messages)[0].data), `"kill_reason":"agent_preempted"`)
 }
 
 func TestOnEventAttributes(t *testing.T) {
