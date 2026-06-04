@@ -135,3 +135,24 @@ func TestCanceledByAgentShutdown(t *testing.T) {
 		})
 	}
 }
+
+func TestIsAgentShutdownError(t *testing.T) {
+	cases := []struct {
+		name string
+		err  string
+		want bool
+	}{
+		{"exact signature", "agent shutdown", true},
+		{"embedded signature", "workflow canceled: agent shutdown in progress", true},
+		{"plain Canceled (server-issued)", "Canceled", false},
+		{"disconnect is a different class", "agent disconnected", false},
+		{"empty", "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := IsAgentShutdownError(tc.err); got != tc.want {
+				t.Errorf("IsAgentShutdownError(%q) = %v, want %v", tc.err, got, tc.want)
+			}
+		})
+	}
+}

@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"maps"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -56,6 +57,12 @@ type RPC struct {
 	ciPipelineCount          *prometheus.CounterVec // ci_* alias (#226)
 	ciRPCUpdateRejectedTotal prometheus.Counter     // ci_* alias (#226)
 	deployPatterns           []string               // workflow names that should prefer on-demand agents
+	// preemptRequeues bounds the #275 agent-preempt self-heal: workflowID →
+	// count of re-queues triggered by a graceful spot preemption this process.
+	// In-memory by design (a restart resets the budget, at worst allowing a few
+	// extra requeues of an idempotent workflow). Guarded by preemptRequeuesMu.
+	preemptRequeues   map[int64]int
+	preemptRequeuesMu sync.Mutex
 }
 
 // Next blocks until it provides the next workflow to execute.
@@ -681,6 +688,27 @@ func (s *RPC) Done(c context.Context, strWorkflowID string, state rpc.WorkflowSt
 
 	logger.Debug().Msgf("workflow state in store: %#v", workflow)
 	logger.Debug().Msgf("gRPC Done with state: %#v", state)
+
+	// #275 part 2: graceful spot-preemption self-heal. When the agent reports a
+	// cancel that originated from ITS OWN shutdown (SIGTERM on spot preemption,
+	// positively signalled via Error="agent shutdown", #279) — not a
+	// server-issued cancel (supersede / user / pending-only, which report a
+	// plain "Canceled") — re-queue an idempotent non-deploy workflow for a fresh
+	// agent instead of leaving a red killed status that never self-heals (the
+	// 6041 gap). Hooked BEFORE the workflow is finalized: a successful re-queue
+	// returns early, leaving the pipeline running and the workflow back in
+	// pending. Every guard inside fails closed to the normal finalize-as-killed
+	// path below, so this can only ever turn a would-be-red into a re-run.
+	if state.Canceled && model.IsAgentShutdownError(state.Error) {
+		isTagEvent := currentPipeline.Event == model.EventTag
+		if s.maybeRequeueOnAgentShutdown(c, workflow, strWorkflowID, isTagEvent) {
+			return s.updateAgentLastWork(agent)
+		}
+	}
+	// Reached here ⇒ this workflow is completing terminally (not re-queued).
+	// Release any self-heal budget it accumulated so the map does not leak and a
+	// later re-use of the workflow id starts fresh. (#275)
+	s.clearPreemptRequeue(workflow.ID)
 
 	// Mark pending/running children as skipped before computing workflow status,
 	// so steps with when:status:[failure] that were never dispatched don't keep

@@ -40,7 +40,10 @@ import (
 // WoodpeckerServer is a grpc server implementation.
 type WoodpeckerServer struct {
 	proto.UnimplementedWoodpeckerServer
-	peer RPC
+	// peer is a pointer (not a value) so the single NewRPC() instance is shared
+	// rather than copied — required since RPC now carries a sync.Mutex guarding
+	// the #275 self-heal budget; copying it would split the lock and the map.
+	peer *RPC
 }
 
 // NewRPC creates the business logic peer for both gRPC and WebSocket transports.
@@ -92,13 +95,14 @@ func NewRPC(queue queue.Queue, logger logging.Log, pubsub *pubsub.Publisher, sto
 		ciPipelineCount:          ciPipelineCount,
 		ciRPCUpdateRejectedTotal: ciRPCUpdateRejectedTotal,
 		deployPatterns:           loadDeployPatterns(),
+		preemptRequeues:          make(map[int64]int), // #275 self-heal budget
 	}
 }
 
 // NewWoodpeckerServer wraps an existing RPC peer as a gRPC server.
 // Use NewRPC() first to create the shared peer, then pass it here.
 func NewWoodpeckerServer(peer *RPC) proto.WoodpeckerServer {
-	return &WoodpeckerServer{peer: *peer}
+	return &WoodpeckerServer{peer: peer}
 }
 
 // loadDeployPatterns reads WOODPECKER_DEPLOY_PATTERNS env var.
