@@ -26,7 +26,15 @@ import (
 	"go.woodpecker-ci.org/woodpecker/v3/server/pipeline/stepbuilder"
 )
 
-func queuePipeline(ctx context.Context, repo *model.Repo, pipelineItems []*stepbuilder.Item) error {
+func queuePipeline(ctx context.Context, repo *model.Repo, isTagEvent bool, pipelineItems []*stepbuilder.Item) error {
+	// [pts] #293 — queuePipeline is the single chokepoint every queueable
+	// pipeline passes through (Create, Restart, Approve, and any future path
+	// all funnel here via start()). Rewriting the tier HERE — not only in
+	// Create() — guarantees no path can enqueue a deploy-class workflow onto a
+	// spot agent. Create() still rewrites before validatePipelineLabels to keep
+	// the repair-before-validate property (#266); this call is idempotent with it.
+	rewritePipelineTier(pipelineItems, isTagEvent)
+
 	var tasks []*model.Task
 	for _, item := range pipelineItems {
 		if item.Workflow.State == model.StatusSkipped {
