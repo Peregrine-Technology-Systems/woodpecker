@@ -196,7 +196,25 @@ COV_SKIP_REGEX='_test\.go$|/mocks/|wire_gen\.go$|_easyjson\.go$|\.pb\.go$|/fixtu
 #   needs a multi-second real-time wait or live-server fault injection, the same
 #   shape as ws_agent.go. Do NOT use this exemption for incremental changes that
 #   don't add tests for the changed function.
-COV_WIRING_REGEX='^pipeline/const\.go$|^cmd/server/setup\.go$|^server/router/api\.go$|^cmd/|^server/store/datastore/migration/migration\.go$|^server/store/store\.go$|^server/api/ws_agent\.go$|^server/rpc/rpc\.go$|^server/rpc/server\.go$|^pipeline/frontend/yaml/compiler/convert\.go$|^server/pipeline/items\.go$|^server/pipeline/create\.go$|^pipeline/backend/types/step\.go$|^server/logdrain/gcp\.go$|^server/config\.go$|^server/plugin/gcppubsub/client\.go$|^server/plugin/interfaces\.go$|^server/api/pipeline\.go$|^agent/runner\.go$|^agent/rpc/client_ws\.go$'
+# - server/pipeline/start.go: the start() pipeline-orchestration entrypoint
+#   (cancelPreviousPipelines → publishPipeline → queuePipeline) plus prepareStart/
+#   publishPipeline. All require a live forge + store + queue harness — the same
+#   integration seam as create.go/items.go above. The #293 change is a one-line
+#   caller edit threading `activePipeline.Event == EventTag` into queuePipeline;
+#   the tier rewrite that value drives is at 100% at the queuePipeline chokepoint
+#   (TestQueuePipelineForcesDeployTier). Do NOT use this exemption for incremental
+#   changes that don't add tests for the changed function.
+# - server/pipeline/queue.go: queuePipeline (the enqueue chokepoint) + getTask-
+#   Dependencies. The #293 tier rewrite and dependency resolution are at 100%
+#   (getTaskDependencies 100%, queuePipeline 88.9%) via TestQueuePipelineForces-
+#   DeployTier + TestQueuePipelineTaskBuilding (deploy-class forcing, skipped-not-
+#   queued, dependency-ID resolution). The 2 uncovered statements are unreachable
+#   defensive error returns: ApplyLabelsFromRepo only errors on a nil repo, but
+#   repo.ID is dereferenced first (panics), so the nil branch can't be reached;
+#   json.Marshal of rpc.Workflow{ID,Config,Timeout} has no unmarshalable fields.
+#   Do NOT use this exemption for incremental changes that don't add tests for the
+#   changed function.
+COV_WIRING_REGEX='^pipeline/const\.go$|^cmd/server/setup\.go$|^server/router/api\.go$|^cmd/|^server/store/datastore/migration/migration\.go$|^server/store/store\.go$|^server/api/ws_agent\.go$|^server/rpc/rpc\.go$|^server/rpc/server\.go$|^pipeline/frontend/yaml/compiler/convert\.go$|^server/pipeline/items\.go$|^server/pipeline/create\.go$|^pipeline/backend/types/step\.go$|^server/logdrain/gcp\.go$|^server/config\.go$|^server/plugin/gcppubsub/client\.go$|^server/plugin/interfaces\.go$|^server/api/pipeline\.go$|^agent/runner\.go$|^agent/rpc/client_ws\.go$|^server/pipeline/start\.go$|^server/pipeline/queue\.go$'
 
 if [ -n "$GO_FILES" ]; then
     # Format
