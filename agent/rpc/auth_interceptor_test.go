@@ -16,6 +16,7 @@ package rpc
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"testing"
@@ -24,6 +25,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
 
 	"go.woodpecker-ci.org/woodpecker/v3/rpc/proto"
@@ -68,19 +70,20 @@ func (f *fakeAuthClient) callCount() int {
 // breaks with it.
 func TestAuthInterceptorRefreshesJWTInPlaceKeepingAgentID(t *testing.T) {
 	const agentID int64 = 23000
-	authClient := &AuthClient{client: &fakeAuthClient{}, agentToken: "durable-secret", agentID: agentID}
+	authClient := &AuthClient{client: &fakeAuthClient{}, agentToken: "durable-secret"}
+	authClient.agentID.Store(agentID)
 	interceptor := &AuthInterceptor{authClient: authClient}
 
 	require.NoError(t, interceptor.refreshToken(context.Background()))
-	first := interceptor.accessToken
+	first := *interceptor.accessToken.Load()
 	assert.Equal(t, "jwt-1", first)
-	assert.Equal(t, agentID, authClient.agentID, "agent_id must be unchanged after the first refresh")
+	assert.Equal(t, agentID, authClient.agentID.Load(), "agent_id must be unchanged after the first refresh")
 
 	require.NoError(t, interceptor.refreshToken(context.Background()))
-	second := interceptor.accessToken
+	second := *interceptor.accessToken.Load()
 	assert.Equal(t, "jwt-2", second)
 	assert.NotEqual(t, first, second, "each refresh swaps in a new access token in place")
-	assert.Equal(t, agentID, authClient.agentID, "agent_id must STILL be unchanged after a second refresh (#252)")
+	assert.Equal(t, agentID, authClient.agentID.Load(), "agent_id must STILL be unchanged after a second refresh (#252)")
 }
 
 // TestAuthInterceptorScheduleRefreshesOnInterval proves the in-place refresh is
@@ -89,7 +92,8 @@ func TestAuthInterceptorRefreshesJWTInPlaceKeepingAgentID(t *testing.T) {
 // provide already exists here.
 func TestAuthInterceptorScheduleRefreshesOnInterval(t *testing.T) {
 	fake := &fakeAuthClient{}
-	authClient := &AuthClient{client: fake, agentToken: "durable-secret", agentID: 42}
+	authClient := &AuthClient{client: fake, agentToken: "durable-secret"}
+	authClient.agentID.Store(42)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -100,13 +104,14 @@ func TestAuthInterceptorScheduleRefreshesOnInterval(t *testing.T) {
 
 	assert.Eventually(t, func() bool { return fake.callCount() >= 3 },
 		2*time.Second, 10*time.Millisecond, "interceptor must refresh the token on its schedule")
-	assert.Equal(t, int64(42), authClient.agentID, "scheduled refreshes never change the agent_id")
+	assert.Equal(t, int64(42), authClient.agentID.Load(), "scheduled refreshes never change the agent_id")
 }
 
 // TestAuthInterceptorAttachesCurrentToken confirms the refreshed token is the
 // one attached to outgoing RPCs.
 func TestAuthInterceptorAttachesCurrentToken(t *testing.T) {
-	authClient := &AuthClient{client: &fakeAuthClient{}, agentToken: "s", agentID: 1}
+	authClient := &AuthClient{client: &fakeAuthClient{}, agentToken: "s"}
+	authClient.agentID.Store(1)
 	interceptor := &AuthInterceptor{authClient: authClient}
 	require.NoError(t, interceptor.refreshToken(context.Background()))
 
@@ -114,4 +119,120 @@ func TestAuthInterceptorAttachesCurrentToken(t *testing.T) {
 	md, ok := metadata.FromOutgoingContext(ctx)
 	require.True(t, ok)
 	assert.Equal(t, []string{"jwt-1"}, md.Get("token"))
+}
+
+// TestAuthInterceptorConcurrentRefreshAndAttach is the #297 race regression
+// guard: the refresh goroutine writes accessToken/agentID while many goroutines
+// read them via attachToken + Auth. Must be clean under `go test -race`.
+func TestAuthInterceptorConcurrentRefreshAndAttach(t *testing.T) {
+	authClient := &AuthClient{client: &fakeAuthClient{}, agentToken: "durable-secret"}
+	authClient.agentID.Store(7)
+	interceptor := &AuthInterceptor{authClient: authClient}
+	require.NoError(t, interceptor.refreshToken(context.Background()))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	var wg sync.WaitGroup
+
+	// Writer: continuously refresh (writes accessToken + agentID).
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+				_ = interceptor.refreshToken(context.Background())
+			}
+		}
+	}()
+
+	// Readers: continuously attach the token + read agentID.
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				default:
+					interceptor.attachToken(context.Background())
+					_ = authClient.agentID.Load()
+				}
+			}
+		}()
+	}
+
+	time.Sleep(1 * time.Second)
+	cancel()
+	wg.Wait()
+
+	// Identity is preserved throughout the storm.
+	assert.Equal(t, int64(7), authClient.agentID.Load(), "agent_id stays stable under concurrent refresh")
+}
+
+// TestAuthInterceptorUnaryAttachesToken covers the Unary() client interceptor:
+// it must attach the current token to the outgoing context before invoking.
+func TestAuthInterceptorUnaryAttachesToken(t *testing.T) {
+	authClient := &AuthClient{client: &fakeAuthClient{}, agentToken: "s"}
+	authClient.agentID.Store(1)
+	interceptor := &AuthInterceptor{authClient: authClient}
+	require.NoError(t, interceptor.refreshToken(context.Background()))
+
+	var got []string
+	invoker := func(ctx context.Context, _ string, _, _ any, _ *grpc.ClientConn, _ ...grpc.CallOption) error {
+		md, _ := metadata.FromOutgoingContext(ctx)
+		got = md.Get("token")
+		return nil
+	}
+	err := interceptor.Unary()(context.Background(), "/svc/Method", nil, nil, nil, invoker)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"jwt-1"}, got)
+}
+
+// TestAuthInterceptorStreamAttachesToken covers the Stream() client interceptor.
+func TestAuthInterceptorStreamAttachesToken(t *testing.T) {
+	authClient := &AuthClient{client: &fakeAuthClient{}, agentToken: "s"}
+	authClient.agentID.Store(1)
+	interceptor := &AuthInterceptor{authClient: authClient}
+	require.NoError(t, interceptor.refreshToken(context.Background()))
+
+	var got []string
+	streamer := func(ctx context.Context, _ *grpc.StreamDesc, _ *grpc.ClientConn, _ string, _ ...grpc.CallOption) (grpc.ClientStream, error) {
+		md, _ := metadata.FromOutgoingContext(ctx)
+		got = md.Get("token")
+		return nil, nil
+	}
+	_, err := interceptor.Stream()(context.Background(), &grpc.StreamDesc{}, nil, "/svc/Stream", streamer)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"jwt-1"}, got)
+}
+
+// TestAuthInterceptorRefreshErrorPropagates covers the error paths of
+// refreshToken, Auth, and NewAuthInterceptor (first-refresh failure).
+func TestAuthInterceptorRefreshErrorPropagates(t *testing.T) {
+	authErr := errors.New("auth backend down")
+	authClient := &AuthClient{client: &fakeAuthClient{err: authErr}, agentToken: "s"}
+	authClient.agentID.Store(1)
+	interceptor := &AuthInterceptor{authClient: authClient}
+
+	// refreshToken surfaces the Auth error...
+	assert.ErrorIs(t, interceptor.refreshToken(context.Background()), authErr)
+
+	// ...and NewAuthInterceptor fails closed when the first refresh errors.
+	_, err := NewAuthInterceptor(context.Background(), authClient, time.Minute)
+	assert.ErrorIs(t, err, authErr)
+}
+
+// TestNewAuthGrpcClientStoresAgentID covers the real gRPC constructor with a
+// non-dialing client conn (grpc.NewClient defers connection until first RPC).
+func TestNewAuthGrpcClientStoresAgentID(t *testing.T) {
+	conn, err := grpc.NewClient("passthrough:///bufnet", grpc.WithTransportCredentials(insecure.NewCredentials()))
+	require.NoError(t, err)
+	defer conn.Close()
+
+	c := NewAuthGrpcClient(conn, "durable-secret", 99)
+	assert.Equal(t, int64(99), c.agentID.Load())
+	assert.Equal(t, "durable-secret", c.agentToken)
 }
