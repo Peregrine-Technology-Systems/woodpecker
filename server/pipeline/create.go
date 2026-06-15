@@ -121,7 +121,10 @@ func Create(ctx context.Context, _store store.Store, repo *model.Repo, pipeline 
 	// [pts] #266 — auto-route deploy/promote/tag workflows to the ondemand tier
 	// BEFORE validation, so no repo needs a per-pipeline `tier:` knob and none can
 	// drift onto spot and die on a mid-flight preemption. Runs first so the forced
-	// value is what gets validated.
+	// value is what gets validated (repair-before-validate). The authoritative
+	// enqueue-time rewrite that covers ALL paths (Create/Restart/Approve) lives in
+	// queuePipeline (#293); this Create-path call only preserves the ordering vs
+	// validatePipelineLabels below and is idempotent with it.
 	rewritePipelineTier(pipelineItems, pipeline.Event == model.EventTag)
 
 	// [pts] #255 — reject label combinations no agent can ever satisfy at submit
