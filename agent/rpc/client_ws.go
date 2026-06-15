@@ -20,12 +20,18 @@ import (
 
 const (
 	wsWriteTimeout   = 5 * time.Second
-	wsReadTimeout    = 0 // no read timeout — server pushes async
-	wsReconnectMin   = 5 * time.Second
-	wsReconnectMax   = 60 * time.Second
+	wsReadTimeout    = 0               // no read timeout — server pushes async
 	wsLogBatchSize   = 1 * 1024 * 1024 // 1 MiB
 	wsLogFlushPeriod = time.Second
 	wsHealthInterval = 10 * time.Second
+)
+
+// Reconnect backoff bounds. var (not const) only so tests can shrink them to
+// drive the ensureConnected/sendWithRetry reconnect loops without real-time
+// waits; production never mutates these.
+var (
+	wsReconnectMin = 5 * time.Second
+	wsReconnectMax = 60 * time.Second
 )
 
 // Envelope matches server/api/ws_protocol.go
@@ -202,7 +208,12 @@ func (c *WSClient) readPump() {
 			continue
 		}
 
-		// Route by ref (response to a request) or by type (server push)
+		// Ref-bearing envelopes are responses to a request — deliver to the
+		// waiting caller via pending[ref] and stop. They must NOT also be fanned
+		// into the inbox: the inbox's only steady-state reader is Version() (once,
+		// at connect), so after ~64 ref-bearing responses it fills permanently and
+		// every subsequent one warns "inbox full" forever (#295). pending[ref] is
+		// the real delivery path; the inbox copy was always a dropped duplicate.
 		if env.Ref != "" {
 			c.pendingMu.Lock()
 			if ch, ok := c.pending[env.Ref]; ok {
@@ -210,9 +221,10 @@ func (c *WSClient) readPump() {
 				delete(c.pending, env.Ref)
 			}
 			c.pendingMu.Unlock()
+			continue
 		}
 
-		// Also handle server-push messages
+		// Unsolicited server pushes (no ref) only.
 		switch env.Type {
 		case "task.cancel":
 			var p struct {

@@ -13,6 +13,7 @@ PACKAGES=(
   go.woodpecker-ci.org/woodpecker/v3/server/plugin/externaldispatch/...
   go.woodpecker-ci.org/woodpecker/v3/server/rpc
   go.woodpecker-ci.org/woodpecker/v3/server/forge/github
+  go.woodpecker-ci.org/woodpecker/v3/agent/rpc
 )
 
 # Skip-CI: if code tree matches main, tests already passed
