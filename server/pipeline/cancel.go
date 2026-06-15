@@ -21,6 +21,7 @@ import (
 
 	"github.com/rs/zerolog/log"
 
+	corepipeline "go.woodpecker-ci.org/woodpecker/v3/pipeline"
 	"go.woodpecker-ci.org/woodpecker/v3/server"
 	"go.woodpecker-ci.org/woodpecker/v3/server/forge"
 	"go.woodpecker-ci.org/woodpecker/v3/server/model"
@@ -176,6 +177,26 @@ func findIndependentWorkflows(workflows []*model.Workflow) map[int64]bool {
 	return result
 }
 
+// hasInflightDeployWorkflow reports whether any not-yet-finished (running or
+// pending) workflow is deploy-class (#294). Such a pipeline must not be
+// cancelled by a successor push: deploy/promote/version-bump work isn't
+// re-runnable, so it can be neither preemptible (#266) nor cancellable-by-
+// successor (this). Uses the exact #266 deploy-pattern signal
+// (corepipeline.ShouldForceOndemand) so the two stay in lockstep — a workflow
+// the server forces to ondemand is also one it refuses to reap.
+func hasInflightDeployWorkflow(workflows []*model.Workflow, isTagEvent bool) bool {
+	patterns := corepipeline.DeployPatterns()
+	for _, w := range workflows {
+		if w.State != model.StatusRunning && w.State != model.StatusPending {
+			continue
+		}
+		if corepipeline.ShouldForceOndemand(w.Name, isTagEvent, patterns) {
+			return true
+		}
+	}
+	return false
+}
+
 func cancelPreviousPipelines(
 	ctx context.Context,
 	_forge forge.Forge,
@@ -220,6 +241,30 @@ func cancelPreviousPipelines(
 		cancel := pipelineNeedsCancel(active)
 
 		if !cancel {
+			continue
+		}
+
+		// [pts] #294 — never let a successor push reap an in-flight deploy-class
+		// pipeline. Deploy/promote/version-bump work is not safely re-runnable
+		// (the killed-workflow re-queue, #224/#225/#235, deliberately won't
+		// restart a workflow that did observable work), so — mirroring #266's
+		// ondemand force — a pipeline with a pending/running deploy-class
+		// workflow is preserved, not cancelled. Same deploy-pattern signal as
+		// #266 (corepipeline.ShouldForceOndemand), kept in lockstep by reuse.
+		// This is broader than the #822 independent-workflow preservation: it
+		// spares the WHOLE pipeline (deploy workflows commonly DO have deps).
+		activeWorkflows, werr := _store.WorkflowGetTree(active)
+		if werr != nil {
+			// Fail-safe: if we can't inspect the pipeline, do NOT cancel it. A
+			// wrongly-reaped deploy is silent and unrecoverable; a wrongly-spared
+			// CI run merely finishes on its own. Preserve on uncertainty.
+			log.Warn().Err(werr).Int64("id", active.ID).
+				Msg("cancel-previous: cannot load workflows, preserving pipeline (#294)")
+			continue
+		}
+		if hasInflightDeployWorkflow(activeWorkflows, active.Event == model.EventTag) {
+			log.Info().Int64("id", active.ID).Int64("superseded_by", pipeline.Number).
+				Msg("cancel-previous: preserving pipeline with in-flight deploy-class workflow (#294)")
 			continue
 		}
 

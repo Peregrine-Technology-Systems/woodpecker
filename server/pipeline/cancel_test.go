@@ -716,9 +716,12 @@ func TestCancelPreviousPipelines_CancelError(t *testing.T) {
 	user := &model.User{ID: 1}
 	prior := &model.Pipeline{ID: 7000, Status: model.StatusRunning, Event: model.EventPush, Branch: "main"}
 	mockStore.On("GetActivePipelineList", repo).Return([]*model.Pipeline{prior}, nil)
-	// Cancel(prior) fails because WorkflowGetTree errors → log.Error but
-	// cancelPreviousPipelines does NOT bubble the failure (just logs it).
-	mockStore.On("WorkflowGetTree", prior).Return(nil, assert.AnError)
+	// First WorkflowGetTree is the #294 pre-check: a non-deploy workflow → proceed
+	// to Cancel. The second call (inside Cancel) errors → Cancel returns ErrNotFound,
+	// which cancelPreviousPipelines logs but does NOT bubble.
+	mockStore.On("WorkflowGetTree", prior).
+		Return([]*model.Workflow{{ID: 70, Name: "ci", State: model.StatusRunning}}, nil).Once()
+	mockStore.On("WorkflowGetTree", prior).Return(nil, assert.AnError).Once()
 	err := cancelPreviousPipelines(context.Background(), nil, mockStore, newPL, repo, user)
 	assert.NoError(t, err)
 }
@@ -752,4 +755,87 @@ func TestCancel_AuditLog_UserInitiated(t *testing.T) {
 		assert.Equal(t, "killed", rec["new_status"])
 		assert.Equal(t, "user_initiated", rec["reason"])
 	}
+}
+
+// =============================================================================
+// #294: deploy-class pipelines are not reaped by a successor push
+// =============================================================================
+
+// TestHasInflightDeployWorkflow is the pure-logic guard for the #294 decision.
+func TestHasInflightDeployWorkflow(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name       string
+		workflows  []*model.Workflow
+		isTagEvent bool
+		want       bool
+	}{
+		{"running version-bump is deploy-class", []*model.Workflow{{Name: "version-bump", State: model.StatusRunning}}, false, true},
+		{"pending promote is deploy-class", []*model.Workflow{{Name: "promote", State: model.StatusPending}}, false, true},
+		{"running deploy-server-config matches deploy pattern", []*model.Workflow{{Name: "deploy-server-config", State: model.StatusRunning}}, false, true},
+		{"finished deploy is NOT in-flight", []*model.Workflow{{Name: "deploy", State: model.StatusSuccess}}, false, false},
+		{"running ci is not deploy-class", []*model.Workflow{{Name: "ci", State: model.StatusRunning}}, false, false},
+		{"tag event makes any running workflow deploy-class", []*model.Workflow{{Name: "ci", State: model.StatusRunning}}, true, true},
+		{"empty set is not deploy-class", nil, false, false},
+		{"mixed: one in-flight deploy among finished CI", []*model.Workflow{
+			{Name: "ci", State: model.StatusSuccess},
+			{Name: "version-bump", State: model.StatusPending},
+		}, false, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tc.want, hasInflightDeployWorkflow(tc.workflows, tc.isTagEvent))
+		})
+	}
+}
+
+// TestCancelPreviousPipelines_PreservesInflightDeploy is the #294 regression
+// guard: a successor push must NOT cancel a pipeline whose deploy-class workflow
+// is still in flight (infra#3649 — version-bump's release-merge push reaped its
+// own pipeline's deploy-server-config). The pipeline is preserved before Cancel
+// is ever entered, so no eviction/kill happens.
+func TestCancelPreviousPipelines_PreservesInflightDeploy(t *testing.T) {
+	mockStore, mockQueue := setupCancelTest(t)
+	repo := &model.Repo{ID: 1, FullName: "org/repo", CancelPreviousPipelineEvents: []model.WebhookEvent{model.EventPush}}
+	newPL := &model.Pipeline{ID: 2100, Number: 90, Event: model.EventPush, Branch: "main"}
+	user := &model.User{ID: 1}
+
+	priorPL := &model.Pipeline{ID: 2099, Number: 89, Event: model.EventPush, Branch: "main", Status: model.StatusRunning}
+	mockStore.On("GetActivePipelineList", repo).Return([]*model.Pipeline{priorPL}, nil)
+	// DependsOn is non-empty so the deploy is NOT an "independent" workflow —
+	// #822 would NOT spare it; only the #294 whole-pipeline preserve does. This
+	// isolates the #294 behavior from the pre-existing #822 path: without #294,
+	// Cancel would evict this dependent running workflow.
+	mockStore.On("WorkflowGetTree", priorPL).Return([]*model.Workflow{
+		{ID: 900, Name: "deploy-server-config", State: model.StatusRunning, DependsOn: []string{"build"}},
+	}, nil)
+
+	err := cancelPreviousPipelines(context.Background(), nil, mockStore, newPL, repo, user)
+	assert.NoError(t, err)
+
+	// Preserved: never entered Cancel — no queue eviction, no status update.
+	mockQueue.AssertNotCalled(t, "ErrorAtOnce", mock.Anything, mock.Anything, mock.Anything)
+	mockStore.AssertNotCalled(t, "UpdatePipeline", mock.Anything)
+}
+
+// TestCancelPreviousPipelines_FailSafeOnWorkflowTreeError asserts the fail-safe:
+// if the active pipeline's workflows can't be loaded, it is preserved (a
+// wrongly-reaped deploy is silent and unrecoverable; a wrongly-spared CI run
+// just finishes).
+func TestCancelPreviousPipelines_FailSafeOnWorkflowTreeError(t *testing.T) {
+	mockStore, mockQueue := setupCancelTest(t)
+	repo := &model.Repo{ID: 1, FullName: "org/repo", CancelPreviousPipelineEvents: []model.WebhookEvent{model.EventPush}}
+	newPL := &model.Pipeline{ID: 2200, Number: 91, Event: model.EventPush, Branch: "main"}
+	user := &model.User{ID: 1}
+
+	priorPL := &model.Pipeline{ID: 2199, Number: 88, Event: model.EventPush, Branch: "main", Status: model.StatusRunning}
+	mockStore.On("GetActivePipelineList", repo).Return([]*model.Pipeline{priorPL}, nil)
+	mockStore.On("WorkflowGetTree", priorPL).Return(nil, assert.AnError)
+
+	err := cancelPreviousPipelines(context.Background(), nil, mockStore, newPL, repo, user)
+	assert.NoError(t, err, "a tree-load error preserves the pipeline and does not bubble")
+
+	mockQueue.AssertNotCalled(t, "ErrorAtOnce", mock.Anything, mock.Anything, mock.Anything)
+	mockStore.AssertNotCalled(t, "UpdatePipeline", mock.Anything)
 }
