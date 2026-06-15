@@ -180,7 +180,23 @@ COV_SKIP_REGEX='_test\.go$|/mocks/|wire_gen\.go$|_easyjson\.go$|\.pb\.go$|/fixtu
 #   killReasonFromWorkflows) are each at 100% in their own packages. Inherited
 #   from upstream; do NOT use this exemption for incremental changes that don't
 #   add tests for the changed function.
-COV_WIRING_REGEX='^pipeline/const\.go$|^cmd/server/setup\.go$|^server/router/api\.go$|^cmd/|^server/store/datastore/migration/migration\.go$|^server/store/store\.go$|^server/api/ws_agent\.go$|^server/rpc/rpc\.go$|^server/rpc/server\.go$|^pipeline/frontend/yaml/compiler/convert\.go$|^server/pipeline/items\.go$|^server/pipeline/create\.go$|^pipeline/backend/types/step\.go$|^server/logdrain/gcp\.go$|^server/config\.go$|^server/plugin/gcppubsub/client\.go$|^server/plugin/interfaces\.go$|^server/api/pipeline\.go$|^agent/runner\.go$'
+# - agent/rpc/client_ws.go: the agent-side WebSocket rpc.Peer — counterpart to
+#   the server-side ws_agent.go above, with the identical structural constraint.
+#   The #295 change (stop fanning ref-bearing envelopes into the inbox) is in
+#   readPump, which is at 100% — covered by a dedicated 100-envelope regression
+#   (TestWSClient_RefBearingEnvelopesDoNotFillInbox) plus task.cancel / invalid-
+#   JSON / disconnect-cleanup / inbox-overflow branch tests. The file was raised
+#   44.1% → 86.0% (matching ws_agent.go's 86.8%) via 20 deterministic mock-WS
+#   tests covering every RPC method's happy path, ack-error, ctx-cancel, and
+#   connection-lost branch, plus the reconnect loop (sendWithRetry retry +
+#   ensureConnected backoff, driven by shrinking the wsReconnectMin/Max test
+#   vars). The remaining ~14% is the hardcoded real-time timeout branches
+#   (Version 10s, sendAndWait 30s ack-timeout, RegisterAgent 10s), Next's
+#   send-error reconnect, and processLogs' never-closed-channel shutdown — each
+#   needs a multi-second real-time wait or live-server fault injection, the same
+#   shape as ws_agent.go. Do NOT use this exemption for incremental changes that
+#   don't add tests for the changed function.
+COV_WIRING_REGEX='^pipeline/const\.go$|^cmd/server/setup\.go$|^server/router/api\.go$|^cmd/|^server/store/datastore/migration/migration\.go$|^server/store/store\.go$|^server/api/ws_agent\.go$|^server/rpc/rpc\.go$|^server/rpc/server\.go$|^pipeline/frontend/yaml/compiler/convert\.go$|^server/pipeline/items\.go$|^server/pipeline/create\.go$|^pipeline/backend/types/step\.go$|^server/logdrain/gcp\.go$|^server/config\.go$|^server/plugin/gcppubsub/client\.go$|^server/plugin/interfaces\.go$|^server/api/pipeline\.go$|^agent/runner\.go$|^agent/rpc/client_ws\.go$'
 
 if [ -n "$GO_FILES" ]; then
     # Format
