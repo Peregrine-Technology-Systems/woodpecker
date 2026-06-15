@@ -16,6 +16,7 @@ package rpc
 
 import (
 	"context"
+	"sync/atomic"
 	"time"
 
 	"google.golang.org/grpc"
@@ -29,7 +30,9 @@ type AuthClient struct {
 	client     proto.WoodpeckerAuthClient
 	conn       *grpc.ClientConn
 	agentToken string
-	agentID    int64
+	// agentID is written by the scheduled refresh goroutine (Auth) and read on
+	// every outgoing RPC, so it is atomic to avoid a data race (#297).
+	agentID atomic.Int64
 }
 
 func NewAuthGrpcClient(conn *grpc.ClientConn, agentToken string, agentID int64) *AuthClient {
@@ -37,7 +40,7 @@ func NewAuthGrpcClient(conn *grpc.ClientConn, agentToken string, agentID int64) 
 	client.client = proto.NewWoodpeckerAuthClient(conn)
 	client.conn = conn
 	client.agentToken = agentToken
-	client.agentID = agentID
+	client.agentID.Store(agentID)
 	return client
 }
 
@@ -47,7 +50,7 @@ func (c *AuthClient) Auth(ctx context.Context) (string, int64, error) {
 
 	req := &proto.AuthRequest{
 		AgentToken: c.agentToken,
-		AgentId:    c.agentID,
+		AgentId:    c.agentID.Load(),
 	}
 
 	res, err := c.client.Auth(ctx, req)
@@ -55,7 +58,7 @@ func (c *AuthClient) Auth(ctx context.Context) (string, int64, error) {
 		return "", -1, err
 	}
 
-	c.agentID = res.GetAgentId()
+	c.agentID.Store(res.GetAgentId())
 
-	return res.GetAccessToken(), c.agentID, nil
+	return res.GetAccessToken(), c.agentID.Load(), nil
 }

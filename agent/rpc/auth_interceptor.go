@@ -16,6 +16,7 @@ package rpc
 
 import (
 	"context"
+	"sync/atomic"
 	"time"
 
 	"github.com/rs/zerolog/log"
@@ -25,8 +26,11 @@ import (
 
 // AuthInterceptor is a client interceptor for authentication.
 type AuthInterceptor struct {
-	authClient  *AuthClient
-	accessToken string
+	authClient *AuthClient
+	// accessToken is refreshed by a background goroutine (refreshToken) and read
+	// on every outgoing RPC (attachToken), so it is atomic to avoid a data race
+	// (#297). nil until the first refresh completes.
+	accessToken atomic.Pointer[string]
 }
 
 // NewAuthInterceptor returns a new auth interceptor.
@@ -72,7 +76,11 @@ func (interceptor *AuthInterceptor) Stream() grpc.StreamClientInterceptor {
 }
 
 func (interceptor *AuthInterceptor) attachToken(ctx context.Context) context.Context {
-	return metadata.AppendToOutgoingContext(ctx, "token", interceptor.accessToken)
+	var token string
+	if p := interceptor.accessToken.Load(); p != nil {
+		token = *p
+	}
+	return metadata.AppendToOutgoingContext(ctx, "token", token)
 }
 
 func (interceptor *AuthInterceptor) scheduleRefreshToken(ctx context.Context, refreshInterval time.Duration) error {
@@ -108,7 +116,7 @@ func (interceptor *AuthInterceptor) refreshToken(ctx context.Context) error {
 		return err
 	}
 
-	interceptor.accessToken = accessToken
+	interceptor.accessToken.Store(&accessToken)
 	log.Trace().Msg("token refreshed")
 
 	return nil
