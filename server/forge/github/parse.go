@@ -16,10 +16,11 @@
 package github
 
 import (
-	"bytes"
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/google/go-github/v84/github"
@@ -28,6 +29,12 @@ import (
 	"go.woodpecker-ci.org/woodpecker/v3/server/forge/types"
 	"go.woodpecker-ci.org/woodpecker/v3/server/model"
 )
+
+// GitHub caps webhook JSON payloads at 25MB. A form-mode delivery ("content_type: form")
+// percent-encodes that JSON into a "payload=" field, which can inflate the wire size ~3x —
+// so this ceiling sits comfortably above GitHub's own cap rather than relying on net/http's
+// silent, error-swallowing default (ParseForm/FormValue drop to 10MB and hide the failure; #301).
+var maxHookBodySize int64 = 80 << 20 // 80MB
 
 const (
 	hookField = "payload"
@@ -56,15 +63,25 @@ const (
 // parseHook parses a GitHub hook from an http.Request request and returns
 // Repo and Pipeline detail. If a hook type is unsupported nil values are returned.
 func parseHook(r *http.Request, merge bool) (_ *github.PullRequest, _ *model.Repo, _ *model.Pipeline, currCommit, prevCommit string, _ error) {
-	var reader io.Reader = r.Body
-
-	if payload := r.FormValue(hookField); payload != "" {
-		reader = bytes.NewBufferString(payload)
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxHookBodySize+1))
+	if err != nil {
+		return nil, nil, nil, "", "", fmt.Errorf("failed to read webhook request body: %w", err)
+	}
+	if int64(len(body)) > maxHookBodySize {
+		return nil, nil, nil, "", "", fmt.Errorf("webhook request body exceeds max size of %d bytes", maxHookBodySize)
 	}
 
-	raw, err := io.ReadAll(reader)
-	if err != nil {
-		return nil, nil, nil, "", "", err
+	raw := body
+	if contentType, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type")); contentType == "application/x-www-form-urlencoded" {
+		values, err := url.ParseQuery(string(body))
+		if err != nil {
+			return nil, nil, nil, "", "", fmt.Errorf("failed to parse form-encoded webhook body: %w", err)
+		}
+		payload := values.Get(hookField)
+		if payload == "" {
+			return nil, nil, nil, "", "", fmt.Errorf("form-encoded webhook body missing %q field", hookField)
+		}
+		raw = []byte(payload)
 	}
 
 	payload, err := github.ParseWebHook(github.WebHookType(r), raw)

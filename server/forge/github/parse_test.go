@@ -17,11 +17,17 @@ package github
 
 import (
 	"bytes"
+	"errors"
+	"fmt"
+	"io"
 	"net/http"
+	"net/url"
 	"sort"
 	"strings"
 	"testing"
+	"testing/iotest"
 
+	"github.com/google/go-github/v84/github"
 	"github.com/stretchr/testify/assert"
 
 	"go.woodpecker-ci.org/woodpecker/v3/server/forge/github/fixtures"
@@ -464,5 +470,219 @@ func Test_parseHook(t *testing.T) {
 				assert.Equal(t, "67012991d6c69b1c58378346fca366b864d8d1a1", *p.Base.SHA)
 			}
 		}
+	})
+}
+
+// testHookRequestForm builds a request the way GitHub sends it when the webhook
+// is configured with content_type: form — the JSON payload percent-encoded into
+// a single "payload" application/x-www-form-urlencoded field (#301).
+func testHookRequestForm(payload []byte, event string) *http.Request {
+	form := url.Values{}
+	form.Set(hookField, string(payload))
+	body := form.Encode()
+	req, _ := http.NewRequest(http.MethodPost, "/hook", strings.NewReader(body))
+	req.Header = http.Header{}
+	req.Header.Set(hookEvent, event)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	return req
+}
+
+func Test_parseHook_formEncoding(t *testing.T) {
+	t.Run("form-encoded payload parses same as raw JSON", func(t *testing.T) {
+		req := testHookRequestForm([]byte(fixtures.HookPush), hookPush)
+		p, r, b, cc, pc, err := parseHook(req, false)
+		assert.NoError(t, err)
+		assert.Nil(t, p)
+		assert.NotNil(t, r)
+		assert.NotNil(t, b)
+		assert.Equal(t, model.EventPush, b.Event)
+		assert.Equal(t, "2f780193b136b72bfea4eeb640786a8c4450c7a2", pc)
+		assert.Equal(t, "366701fde727cb7a9e7f21eb88264f59f6f9b89c", cc)
+	})
+
+	t.Run("form-encoded body missing the payload field fails loudly", func(t *testing.T) {
+		req, _ := http.NewRequest(http.MethodPost, "/hook", strings.NewReader("not_payload=whatever"))
+		req.Header = http.Header{}
+		req.Header.Set(hookEvent, hookPush)
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+		p, r, b, cc, pc, err := parseHook(req, false)
+		assert.Empty(t, pc)
+		assert.Empty(t, cc)
+		assert.Nil(t, r)
+		assert.Nil(t, b)
+		assert.Nil(t, p)
+		if assert.Error(t, err) {
+			assert.Contains(t, err.Error(), `missing "payload" field`)
+		}
+	})
+
+	t.Run("malformed percent-encoding fails loudly instead of silently falling through", func(t *testing.T) {
+		req, _ := http.NewRequest(http.MethodPost, "/hook", strings.NewReader("payload=%zz"))
+		req.Header = http.Header{}
+		req.Header.Set(hookEvent, hookPush)
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+		p, r, b, cc, pc, err := parseHook(req, false)
+		assert.Empty(t, pc)
+		assert.Empty(t, cc)
+		assert.Nil(t, r)
+		assert.Nil(t, b)
+		assert.Nil(t, p)
+		if assert.Error(t, err) {
+			assert.Contains(t, err.Error(), "failed to parse form-encoded webhook body")
+		}
+	})
+
+	t.Run("oversized body fails loudly instead of being silently truncated", func(t *testing.T) {
+		orig := maxHookBodySize
+		maxHookBodySize = 16
+		defer func() { maxHookBodySize = orig }()
+
+		req := testHookRequestForm([]byte(fixtures.HookPush), hookPush)
+		p, r, b, cc, pc, err := parseHook(req, false)
+		assert.Empty(t, pc)
+		assert.Empty(t, cc)
+		assert.Nil(t, r)
+		assert.Nil(t, b)
+		assert.Nil(t, p)
+		if assert.Error(t, err) {
+			assert.Contains(t, err.Error(), "exceeds max size")
+		}
+	})
+
+	t.Run("oversized raw JSON body fails loudly (non-form content type)", func(t *testing.T) {
+		orig := maxHookBodySize
+		maxHookBodySize = 16
+		defer func() { maxHookBodySize = orig }()
+
+		req := testHookRequest([]byte(fixtures.HookPush), hookPush)
+		p, r, b, cc, pc, err := parseHook(req, false)
+		assert.Empty(t, pc)
+		assert.Empty(t, cc)
+		assert.Nil(t, r)
+		assert.Nil(t, b)
+		assert.Nil(t, p)
+		if assert.Error(t, err) {
+			assert.Contains(t, err.Error(), "exceeds max size")
+		}
+	})
+
+	t.Run("body read failure fails loudly", func(t *testing.T) {
+		req, _ := http.NewRequest(http.MethodPost, "/hook", io.NopCloser(iotest.ErrReader(errors.New("connection reset"))))
+		req.Header = http.Header{}
+		req.Header.Set(hookEvent, hookPush)
+
+		p, r, b, cc, pc, err := parseHook(req, false)
+		assert.Empty(t, pc)
+		assert.Empty(t, cc)
+		assert.Nil(t, r)
+		assert.Nil(t, b)
+		assert.Nil(t, p)
+		if assert.Error(t, err) {
+			assert.Contains(t, err.Error(), "failed to read webhook request body")
+		}
+	})
+}
+
+// The helper-function tests below cover pre-existing branches in this file that
+// were not exercised by the fixture-driven Test_parseHook cases above. Touching
+// this file for #301/#302 puts it under the 95% per-file coverage gate, so these
+// close gaps in parsePushHook/parseDeployHook/parsePullHook/parseReleaseHook that
+// predate this change.
+
+func Test_parsePushHook_authorFallback(t *testing.T) {
+	hook := &github.PushEvent{
+		Ref:        github.Ptr("refs/heads/main"),
+		Before:     github.Ptr("aaa"),
+		Repo:       &github.PushEventRepository{FullName: github.Ptr("octocat/hello")},
+		Sender:     &github.User{Login: github.Ptr("")}, // no sender login -> fall back to commit author
+		HeadCommit: &github.HeadCommit{ID: github.Ptr("bbb"), Author: &github.CommitAuthor{Login: github.Ptr("commit-author")}},
+	}
+	repo, pipeline, curr, prev := parsePushHook(hook)
+	assert.NotNil(t, repo)
+	assert.Equal(t, "commit-author", pipeline.Author)
+	assert.Equal(t, "bbb", curr)
+	assert.Equal(t, "aaa", prev)
+}
+
+func Test_parseDeployHook_refNormalization(t *testing.T) {
+	t.Run("sha-like ref falls back to repo default branch", func(t *testing.T) {
+		hook := &github.DeploymentEvent{
+			Deployment: &github.Deployment{
+				SHA: github.Ptr("deadbeef"),
+				Ref: github.Ptr("deadbeef"), // ref == commit -> reconstruct from default branch
+			},
+			Repo: &github.Repository{DefaultBranch: github.Ptr("main")},
+		}
+		_, pipeline := parseDeployHook(hook)
+		assert.Equal(t, "main", pipeline.Branch)
+		assert.Equal(t, "refs/heads/main", pipeline.Ref)
+	})
+
+	t.Run("bare branch name gets refs/heads prefix", func(t *testing.T) {
+		hook := &github.DeploymentEvent{
+			Deployment: &github.Deployment{
+				SHA: github.Ptr("deadbeef"),
+				Ref: github.Ptr("staging"), // not a sha match, not already refs/-prefixed
+			},
+			Repo: &github.Repository{DefaultBranch: github.Ptr("main")},
+		}
+		_, pipeline := parseDeployHook(hook)
+		assert.Equal(t, "refs/heads/staging", pipeline.Ref)
+	})
+}
+
+func Test_parsePullHook_unsupportedAction(t *testing.T) {
+	hook := &github.PullRequestEvent{
+		Action:      github.Ptr("review_request_removed"),
+		PullRequest: &github.PullRequest{Number: github.Ptr(1)},
+		Repo:        &github.Repository{FullName: github.Ptr("octocat/hello")},
+	}
+	pr, repo, pipeline, err := parsePullHook(hook, false)
+	assert.Nil(t, pr)
+	assert.Nil(t, repo)
+	assert.Nil(t, pipeline)
+	assert.ErrorIs(t, err, &types.ErrIgnoreEvent{})
+}
+
+func Test_parsePullHook_merge(t *testing.T) {
+	hook := &github.PullRequestEvent{
+		Action: github.Ptr(actionOpen),
+		PullRequest: &github.PullRequest{
+			Number: github.Ptr(42),
+			Head:   &github.PullRequestBranch{Ref: github.Ptr("feature"), SHA: github.Ptr("abc"), Repo: &github.Repository{ID: github.Ptr(int64(1))}},
+			Base:   &github.PullRequestBranch{Ref: github.Ptr("main"), Repo: &github.Repository{ID: github.Ptr(int64(1))}},
+		},
+		Repo: &github.Repository{FullName: github.Ptr("octocat/hello")},
+	}
+	_, _, pipeline, err := parsePullHook(hook, true)
+	assert.NoError(t, err)
+	assert.Equal(t, fmt.Sprintf(mergeRefs, 42), pipeline.Ref)
+}
+
+func Test_parseReleaseHook(t *testing.T) {
+	t.Run("non-released action is ignored", func(t *testing.T) {
+		hook := &github.ReleaseEvent{
+			Action:  github.Ptr("edited"),
+			Release: &github.RepositoryRelease{TagName: github.Ptr("v1.0.0")},
+		}
+		repo, pipeline := parseReleaseHook(hook)
+		assert.Nil(t, repo)
+		assert.Nil(t, pipeline)
+	})
+
+	t.Run("empty release name falls back to tag name", func(t *testing.T) {
+		hook := &github.ReleaseEvent{
+			Action: github.Ptr(actionReleased),
+			Release: &github.RepositoryRelease{
+				TagName: github.Ptr("v1.0.0"),
+				Name:    github.Ptr(""),
+			},
+			Repo: &github.Repository{FullName: github.Ptr("octocat/hello")},
+		}
+		repo, pipeline := parseReleaseHook(hook)
+		assert.NotNil(t, repo)
+		assert.Equal(t, "created release v1.0.0", pipeline.Message)
 	})
 }

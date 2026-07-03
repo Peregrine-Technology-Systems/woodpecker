@@ -105,7 +105,10 @@ func PostHook(c *gin.Context) {
 
 		webhooksDropped.WithLabelValues("parse_hook_error").Inc()
 		msg := "failure to parse hook"
-		log.Debug().Err(err).Msg(msg)
+		// A real forge delivery failed to parse (as opposed to the expected/ignored
+		// event types above) — this drops a CI trigger, so it must be visible at
+		// server default log level, not buried at Debug (#301).
+		log.Error().Err(err).Msg(msg)
 		c.String(http.StatusBadRequest, msg)
 		return
 	}
