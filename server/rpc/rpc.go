@@ -57,6 +57,11 @@ type RPC struct {
 	ciPipelineCount          *prometheus.CounterVec // ci_* alias (#226)
 	ciRPCUpdateRejectedTotal prometheus.Counter     // ci_* alias (#226)
 	deployPatterns           []string               // workflow names that should prefer on-demand agents
+	// noScheduleOverrideLabel is the task label key (default "backend") that, when
+	// its value exactly matches a NoSchedule agent's own custom label of the same
+	// key, lets that specific task bypass the NoSchedule cordon (#305). Empty
+	// disables the override. See loadNoScheduleOverrideLabel.
+	noScheduleOverrideLabel string
 	// preemptRequeues bounds the #275 agent-preempt self-heal: workflowID →
 	// count of re-queues triggered by a graceful spot preemption this process.
 	// In-memory by design (a restart resets the budget, at worst allowing a few
@@ -77,7 +82,10 @@ func (s *RPC) Next(c context.Context, agentFilter rpc.Filter) (*rpc.Workflow, er
 		return nil, err
 	}
 
-	if agent.NoSchedule {
+	// A NoSchedule agent with no override-label match must not even reach the
+	// queue -- same fast-path as before #305 (avoids waking the queue's Poll
+	// machinery for an agent that categorically can't take general work).
+	if agent.NoSchedule && !s.hasNoScheduleOverride(agent) {
 		time.Sleep(1 * time.Second)
 		return nil, nil
 	}
@@ -98,6 +106,27 @@ func (s *RPC) Next(c context.Context, agentFilter rpc.Filter) (*rpc.Workflow, er
 	log.Trace().Msgf("Agent %s[%d] tries to pull task with labels: %v", agent.Name, agent.ID, agentFilter.Labels)
 
 	filterFn := createFilterFuncWithDeploy(agentFilter, s.deployPatterns)
+
+	if agent.NoSchedule {
+		// #305: NoSchedule blocks general/untargeted work, but a task that
+		// EXPLICITLY host-pins to this exact agent (its task label at
+		// noScheduleOverrideLabel equals this agent's own custom label of the
+		// same key -- e.g. `backend: local-d3ci42`) is still allowed through.
+		// This isn't a bypass of the cordon: it narrows the filter so ONLY
+		// such exactly-targeted tasks can match; everything else -- including
+		// tasks with no such label at all, or a different value -- keeps
+		// failing exactly as before. We don't know which task (if any) is
+		// pending until we ask the queue, so the gate has to live in the
+		// filter function, not as an early return.
+		overrideValue := agent.CustomLabels[s.noScheduleOverrideLabel]
+		baseFilterFn := filterFn
+		filterFn = func(task *model.Task) (bool, int) {
+			if task.Labels[s.noScheduleOverrideLabel] != overrideValue {
+				return false, 0
+			}
+			return baseFilterFn(task)
+		}
+	}
 
 	for {
 		// poll blocks until a task is available or the context is canceled / worker is kicked
@@ -123,6 +152,18 @@ func (s *RPC) Next(c context.Context, agentFilter rpc.Filter) (*rpc.Workflow, er
 			log.Error().Err(err).Msgf("marking workflow task '%s' as done failed", task.ID)
 		}
 	}
+}
+
+// hasNoScheduleOverride reports whether agent carries a non-empty custom label
+// at s.noScheduleOverrideLabel, i.e. whether it's even possible for some task to
+// explicitly host-pin to this agent and bypass its NoSchedule cordon (#305). An
+// agent with no such label (or an empty value) can never be explicitly targeted,
+// so NoSchedule blocks it unconditionally -- same as before #305.
+func (s *RPC) hasNoScheduleOverride(agent *model.Agent) bool {
+	if s.noScheduleOverrideLabel == "" || agent.CustomLabels == nil {
+		return false
+	}
+	return agent.CustomLabels[s.noScheduleOverrideLabel] != ""
 }
 
 // Wait blocks until the workflow with the given ID is completed or got canceled.

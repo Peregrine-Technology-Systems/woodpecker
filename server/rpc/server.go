@@ -95,6 +95,7 @@ func NewRPC(queue queue.Queue, logger logging.Log, pubsub *pubsub.Publisher, sto
 		ciPipelineCount:          ciPipelineCount,
 		ciRPCUpdateRejectedTotal: ciRPCUpdateRejectedTotal,
 		deployPatterns:           loadDeployPatterns(),
+		noScheduleOverrideLabel:  loadNoScheduleOverrideLabel(),
 		preemptRequeues:          make(map[int64]int), // #275 self-heal budget
 	}
 }
@@ -126,6 +127,20 @@ func loadDeployPatterns() []string {
 		log.Info().Msgf("Deploy auto-routing patterns: %v", patterns)
 	}
 	return patterns
+}
+
+// loadNoScheduleOverrideLabel reads WOODPECKER_NO_SCHEDULE_OVERRIDE_LABEL env var.
+// Default: "backend". This is the task label key that, when it exactly matches an
+// agent's own custom label of the same key, lets a task bypass that agent's
+// NoSchedule cordon (#305) -- e.g. a task requiring `backend: local-d3ci42` can
+// still dispatch to an agent named that, even while NoSchedule=true blocks every
+// other (untargeted) task. Set to empty to disable the override entirely (restore
+// the pre-#305 behavior: NoSchedule blocks unconditionally).
+func loadNoScheduleOverrideLabel() string {
+	if raw, ok := os.LookupEnv("WOODPECKER_NO_SCHEDULE_OVERRIDE_LABEL"); ok {
+		return strings.TrimSpace(raw)
+	}
+	return "backend"
 }
 
 // Version returns the server- & grpc-version.
