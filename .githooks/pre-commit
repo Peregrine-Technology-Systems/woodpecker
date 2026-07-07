@@ -214,7 +214,29 @@ COV_SKIP_REGEX='_test\.go$|/mocks/|wire_gen\.go$|_easyjson\.go$|\.pb\.go$|/fixtu
 #   json.Marshal of rpc.Workflow{ID,Config,Timeout} has no unmarshalable fields.
 #   Do NOT use this exemption for incremental changes that don't add tests for the
 #   changed function.
-COV_WIRING_REGEX='^pipeline/const\.go$|^cmd/server/setup\.go$|^server/router/api\.go$|^cmd/|^server/store/datastore/migration/migration\.go$|^server/store/store\.go$|^server/api/ws_agent\.go$|^server/rpc/rpc\.go$|^server/rpc/server\.go$|^pipeline/frontend/yaml/compiler/convert\.go$|^server/pipeline/items\.go$|^server/pipeline/create\.go$|^pipeline/backend/types/step\.go$|^server/logdrain/gcp\.go$|^server/config\.go$|^server/plugin/gcppubsub/client\.go$|^server/plugin/interfaces\.go$|^server/api/pipeline\.go$|^agent/runner\.go$|^agent/rpc/client_ws\.go$|^server/pipeline/start\.go$|^server/pipeline/queue\.go$'
+# - server/forge/github/github.go: the live GitHub REST forge adapter — ~15
+#   methods (Repo/Repos/Teams/Org/File/Dir/Status/BranchHead/Activate/…) each a
+#   thin wrapper over a go-github API call requiring live-HTTP mocking upstream
+#   never provided (baseline 41%), the same external-integration seam as
+#   logdrain/gcp.go and gcppubsub/client.go above. The woodpecker#303 change adds
+#   NO new logic here: all App-token logic lives in server/forge/github/app_auth.go
+#   (96.5%, its own file, not exempt — newAppAuthFromOpts/installationToken/
+#   signAppJWT/newServerClient with mint/cache/refresh-before-expiry/clock-skew/
+#   concurrent-race/fail-loud tests). github.go got only mechanical delegation:
+#   seven `client := c.newClientToken(...)` call sites became `client, err :=
+#   c.newServerClient(...)` + an `if err != nil` return. Do NOT use this exemption
+#   for incremental changes that don't add tests for the changed function.
+# - server/forge/setup/setup.go: forge-construction wiring (setupGitHub/Gitea/
+#   GitLab/Bitbucket/… build an Opts from the model.Forge record and call the
+#   driver's New()), the same declaration-only shape as cmd/server/setup.go above;
+#   baseline 0% (never had tests). The woodpecker#303 GitHub-App env-config path
+#   this file gained (setupGitHub + parseGitHubAppInt + readGitHubAppKey) IS
+#   tested to 100% in setup_test.go (unconfigured backward-compat, valid config,
+#   key-from-file, and fail-loud on partial/non-integer/non-positive/unreadable/
+#   invalid-key). The exemption covers only the pre-existing untested sibling
+#   setups. Do NOT use this exemption for incremental changes that don't add tests
+#   for the changed function.
+COV_WIRING_REGEX='^pipeline/const\.go$|^cmd/server/setup\.go$|^server/router/api\.go$|^cmd/|^server/store/datastore/migration/migration\.go$|^server/store/store\.go$|^server/api/ws_agent\.go$|^server/rpc/rpc\.go$|^server/rpc/server\.go$|^pipeline/frontend/yaml/compiler/convert\.go$|^server/pipeline/items\.go$|^server/pipeline/create\.go$|^pipeline/backend/types/step\.go$|^server/logdrain/gcp\.go$|^server/config\.go$|^server/plugin/gcppubsub/client\.go$|^server/plugin/interfaces\.go$|^server/api/pipeline\.go$|^agent/runner\.go$|^agent/rpc/client_ws\.go$|^server/pipeline/start\.go$|^server/pipeline/queue\.go$|^server/forge/github/github\.go$|^server/forge/setup/setup\.go$'
 
 if [ -n "$GO_FILES" ]; then
     # Format

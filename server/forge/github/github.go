@@ -59,6 +59,14 @@ type Opts struct {
 	MergeRef          bool   // Clone pull requests using the merge ref.
 	OnlyPublic        bool   // Only obtain OAuth tokens with access to public repos.
 	OAuthHost         string // Public url for oauth if different from url.
+
+	// [pts] GitHub-App installation auth for server-initiated ops (woodpecker#303).
+	// When all three are set, background forge calls authenticate as the App
+	// installation instead of the activating user's PAT. When all three are
+	// empty, behavior is unchanged (user-token auth).
+	AppID             int64  // GitHub App id (JWT issuer).
+	AppInstallationID int64  // GitHub App installation id to mint tokens for.
+	AppPrivateKey     []byte // GitHub App private key (PEM). Secret — env-only, never persisted.
 }
 
 // New returns a Forge implementation that integrates with a GitHub Cloud or
@@ -80,6 +88,18 @@ func New(id int64, opts Opts) (forge.Forge, error) {
 		r.API = r.url + "/api/v3/"
 	}
 
+	// [pts] woodpecker#303: build the App installation-token source when
+	// configured. A partial or unparseable config returns an error here so a
+	// broken deploy fails at startup rather than silently reverting to the
+	// shared user PAT this path exists to relieve.
+	appAuth, err := newAppAuthFromOpts(opts, r.API, &http.Client{Transport: &http.Transport{
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: opts.SkipVerify}, //nolint:gosec
+	}})
+	if err != nil {
+		return nil, err
+	}
+	r.appAuth = appAuth
+
 	return r, nil
 }
 
@@ -93,6 +113,7 @@ type client struct {
 	MergeRef   bool
 	OnlyPublic bool
 	oAuthHost  string
+	appAuth    *appAuth // [pts] non-nil when GitHub-App auth is configured (woodpecker#303)
 }
 
 // Name returns the string name of this driver.
@@ -262,7 +283,10 @@ func (c *client) Repos(ctx context.Context, u *model.User, p *model.ListOptions)
 
 // File fetches the file from the GitHub repository and returns its contents.
 func (c *client) File(ctx context.Context, u *model.User, r *model.Repo, b *model.Pipeline, f string) ([]byte, error) {
-	client := c.newClientToken(ctx, u.AccessToken)
+	client, err := c.newServerClient(ctx, u.AccessToken)
+	if err != nil {
+		return nil, err
+	}
 
 	opts := new(github.RepositoryContentGetOptions)
 	opts.Ref = b.Commit
@@ -281,7 +305,10 @@ func (c *client) File(ctx context.Context, u *model.User, r *model.Repo, b *mode
 }
 
 func (c *client) Dir(ctx context.Context, u *model.User, r *model.Repo, b *model.Pipeline, f string) ([]*forge_types.FileMeta, error) {
-	client := c.newClientToken(ctx, u.AccessToken)
+	client, err := c.newServerClient(ctx, u.AccessToken)
+	if err != nil {
+		return nil, err
+	}
 
 	opts := new(github.RepositoryContentGetOptions)
 	opts.Ref = b.Commit
@@ -555,7 +582,10 @@ var reDeploy = regexp.MustCompile(`.+/deployments/(\d+)`)
 // Status sends the commit status to the forge.
 // An example would be the GitHub pull request status.
 func (c *client) Status(ctx context.Context, user *model.User, repo *model.Repo, pipeline *model.Pipeline, workflow *model.Workflow) error {
-	client := c.newClientToken(ctx, user.AccessToken)
+	client, err := c.newServerClient(ctx, user.AccessToken)
+	if err != nil {
+		return err
+	}
 
 	if pipeline.Event == model.EventDeploy {
 		// Get id from url. If not found, skip.
@@ -566,7 +596,7 @@ func (c *client) Status(ctx context.Context, user *model.User, repo *model.Repo,
 		}
 		id, _ := strconv.Atoi(matches[1])
 
-		_, _, err := client.Repositories.CreateDeploymentStatus(ctx, repo.Owner, repo.Name, int64(id), &github.DeploymentStatusRequest{
+		_, _, err = client.Repositories.CreateDeploymentStatus(ctx, repo.Owner, repo.Name, int64(id), &github.DeploymentStatusRequest{
 			State:       github.Ptr(convertStatus(pipeline.Status)),
 			Description: github.Ptr(common.GetPipelineStatusDescription(pipeline.Status)),
 			LogURL:      github.Ptr(common.GetPipelineStatusURL(repo, pipeline, nil)),
@@ -574,7 +604,7 @@ func (c *client) Status(ctx context.Context, user *model.User, repo *model.Repo,
 		return err
 	}
 
-	_, _, err := client.Repositories.CreateStatus(ctx, repo.Owner, repo.Name, pipeline.Commit, github.RepoStatus{
+	_, _, err = client.Repositories.CreateStatus(ctx, repo.Owner, repo.Name, pipeline.Commit, github.RepoStatus{
 		Context:     github.Ptr(common.GetPipelineStatusContext(repo, pipeline, workflow)),
 		State:       github.Ptr(convertStatus(workflow.State)),
 		Description: github.Ptr(common.GetPipelineStatusDescription(workflow.State)),
@@ -631,8 +661,11 @@ func (c *client) Branches(ctx context.Context, u *model.User, r *model.Repo, p *
 
 // BranchHead returns the sha of the head (latest commit) of the specified branch.
 func (c *client) BranchHead(ctx context.Context, u *model.User, r *model.Repo, branch string) (*model.Commit, error) {
-	token := common.UserToken(ctx, r, u)
-	b, _, err := c.newClientToken(ctx, token).Repositories.GetBranch(ctx, r.Owner, r.Name, branch, 1)
+	client, err := c.newServerClient(ctx, common.UserToken(ctx, r, u))
+	if err != nil {
+		return nil, err
+	}
+	b, _, err := client.Repositories.GetBranch(ctx, r.Owner, r.Name, branch, 1)
 	if err != nil {
 		return nil, err
 	}
@@ -697,7 +730,10 @@ func (c *client) loadChangedFilesFromPullRequest(ctx context.Context, pull *gith
 	// would fail with an authentication error.
 	forge.Refresh(ctx, c, _store, user)
 
-	gh := c.newClientToken(ctx, user.AccessToken)
+	gh, err := c.newServerClient(ctx, user.AccessToken)
+	if err != nil {
+		return nil, err
+	}
 	fileList := make([]string, 0, 16)
 
 	opts := &github.ListOptions{Page: 1}
@@ -740,7 +776,10 @@ func (c *client) getTagCommitSHA(ctx context.Context, repo *model.Repo, tagName 
 	// would fail with an authentication error.
 	forge.Refresh(ctx, c, _store, user)
 
-	gh := c.newClientToken(ctx, user.AccessToken)
+	gh, err := c.newServerClient(ctx, user.AccessToken)
+	if err != nil {
+		return "", err
+	}
 
 	page := 1
 	var tag *github.RepositoryTag
@@ -800,7 +839,10 @@ func (c *client) loadChangedFilesFromCommits(ctx context.Context, tmpRepo *model
 	// would fail with an authentication error.
 	forge.Refresh(ctx, c, _store, user)
 
-	gh := c.newClientToken(ctx, user.AccessToken)
+	gh, err := c.newServerClient(ctx, user.AccessToken)
+	if err != nil {
+		return nil, err
+	}
 	fileList := make([]string, 0, 16)
 
 	if prev == "" {
