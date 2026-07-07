@@ -137,14 +137,12 @@ func setupGitHub(forge *model.Forge) (forge.Forge, error) {
 	// forge calls. Read from env, not the forge DB record: the private key is
 	// a secret and model.Forge.AdditionalOptions is exposed via the forge API
 	// (json:"additional_options"), so persisting the key there would leak it.
-	// Env is written by infra's deploy from GCP SM. All three unset =>
+	// Env is written by infra's deploy from GCP SM. Both unset =>
 	// unchanged user-token behavior; a partial/invalid config fails loudly in
-	// github.New.
+	// github.New. The installation id is NOT configured here — it is resolved
+	// per repo owner at call time (see app_auth.go), so a fleet spanning
+	// multiple GitHub accounts is handled without a fixed id.
 	appID, err := parseGitHubAppInt("WOODPECKER_GITHUB_APP_ID")
-	if err != nil {
-		return nil, err
-	}
-	appInstallationID, err := parseGitHubAppInt("WOODPECKER_GITHUB_APP_INSTALLATION_ID")
 	if err != nil {
 		return nil, err
 	}
@@ -162,7 +160,6 @@ func setupGitHub(forge *model.Forge) (forge.Forge, error) {
 		OnlyPublic:        publicOnly,
 		OAuthHost:         forge.OAuthHost,
 		AppID:             appID,
-		AppInstallationID: appInstallationID,
 		AppPrivateKey:     appKey,
 	}
 	log.Debug().
@@ -173,7 +170,7 @@ func setupGitHub(forge *model.Forge) (forge.Forge, error) {
 		Bool("skip-verify", opts.SkipVerify).
 		Bool("oauth-client-id-set", opts.OAuthClientID != "").
 		Bool("oauth-client-secret-set", opts.OAuthClientSecret != "").
-		Bool("app-auth-configured", opts.AppID != 0 && opts.AppInstallationID != 0 && len(opts.AppPrivateKey) > 0).
+		Bool("app-auth-configured", opts.AppID != 0 && len(opts.AppPrivateKey) > 0).
 		Str("type", string(forge.Type)).
 		Msg("setting up forge")
 	return github.New(forge.ID, opts)

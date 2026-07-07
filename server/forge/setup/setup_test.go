@@ -56,7 +56,6 @@ func TestSetupGitHub_AppAuthUnconfigured(t *testing.T) {
 
 func TestSetupGitHub_AppAuthValid(t *testing.T) {
 	t.Setenv("WOODPECKER_GITHUB_APP_ID", "123")
-	t.Setenv("WOODPECKER_GITHUB_APP_INSTALLATION_ID", "42")
 	t.Setenv("WOODPECKER_GITHUB_APP_KEY", string(testAppKeyPEM(t)))
 
 	f, err := setupGitHub(githubForge())
@@ -69,7 +68,6 @@ func TestSetupGitHub_AppAuthKeyFromFile(t *testing.T) {
 	require.NoError(t, os.WriteFile(keyPath, testAppKeyPEM(t), 0o600))
 
 	t.Setenv("WOODPECKER_GITHUB_APP_ID", "123")
-	t.Setenv("WOODPECKER_GITHUB_APP_INSTALLATION_ID", "42")
 	t.Setenv("WOODPECKER_GITHUB_APP_KEY_FILE", keyPath)
 
 	f, err := setupGitHub(githubForge())
@@ -80,7 +78,13 @@ func TestSetupGitHub_AppAuthKeyFromFile(t *testing.T) {
 func TestSetupGitHub_AppAuthFailsLoud(t *testing.T) {
 	t.Run("partial config (id without key)", func(t *testing.T) {
 		t.Setenv("WOODPECKER_GITHUB_APP_ID", "123")
-		t.Setenv("WOODPECKER_GITHUB_APP_INSTALLATION_ID", "42")
+		_, err := setupGitHub(githubForge())
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "partially configured")
+	})
+
+	t.Run("partial config (key without id)", func(t *testing.T) {
+		t.Setenv("WOODPECKER_GITHUB_APP_KEY", string(testAppKeyPEM(t)))
 		_, err := setupGitHub(githubForge())
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "partially configured")
@@ -93,8 +97,8 @@ func TestSetupGitHub_AppAuthFailsLoud(t *testing.T) {
 		assert.Contains(t, err.Error(), "WOODPECKER_GITHUB_APP_ID")
 	})
 
-	t.Run("non-positive installation id", func(t *testing.T) {
-		t.Setenv("WOODPECKER_GITHUB_APP_INSTALLATION_ID", "0")
+	t.Run("non-positive app id", func(t *testing.T) {
+		t.Setenv("WOODPECKER_GITHUB_APP_ID", "0")
 		_, err := setupGitHub(githubForge())
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "positive")
@@ -102,7 +106,6 @@ func TestSetupGitHub_AppAuthFailsLoud(t *testing.T) {
 
 	t.Run("unreadable key file", func(t *testing.T) {
 		t.Setenv("WOODPECKER_GITHUB_APP_ID", "123")
-		t.Setenv("WOODPECKER_GITHUB_APP_INSTALLATION_ID", "42")
 		t.Setenv("WOODPECKER_GITHUB_APP_KEY_FILE", "/nonexistent/path/app.pem")
 		_, err := setupGitHub(githubForge())
 		require.Error(t, err)
@@ -111,7 +114,6 @@ func TestSetupGitHub_AppAuthFailsLoud(t *testing.T) {
 
 	t.Run("invalid key content", func(t *testing.T) {
 		t.Setenv("WOODPECKER_GITHUB_APP_ID", "123")
-		t.Setenv("WOODPECKER_GITHUB_APP_INSTALLATION_ID", "42")
 		t.Setenv("WOODPECKER_GITHUB_APP_KEY", "-----BEGIN RSA PRIVATE KEY-----\nnope\n-----END RSA PRIVATE KEY-----")
 		_, err := setupGitHub(githubForge())
 		require.Error(t, err)

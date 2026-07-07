@@ -61,12 +61,11 @@ type Opts struct {
 	OAuthHost         string // Public url for oauth if different from url.
 
 	// [pts] GitHub-App installation auth for server-initiated ops (woodpecker#303).
-	// When all three are set, background forge calls authenticate as the App
-	// installation instead of the activating user's PAT. When all three are
-	// empty, behavior is unchanged (user-token auth).
-	AppID             int64  // GitHub App id (JWT issuer).
-	AppInstallationID int64  // GitHub App installation id to mint tokens for.
-	AppPrivateKey     []byte // GitHub App private key (PEM). Secret — env-only, never persisted.
+	// When both are set, background forge calls authenticate as the App
+	// installation (resolved per repo owner) instead of the activating user's
+	// PAT. When both are empty, behavior is unchanged (user-token auth).
+	AppID         int64  // GitHub App id (JWT issuer).
+	AppPrivateKey []byte // GitHub App private key (PEM). Secret — env-only, never persisted.
 }
 
 // New returns a Forge implementation that integrates with a GitHub Cloud or
@@ -283,7 +282,7 @@ func (c *client) Repos(ctx context.Context, u *model.User, p *model.ListOptions)
 
 // File fetches the file from the GitHub repository and returns its contents.
 func (c *client) File(ctx context.Context, u *model.User, r *model.Repo, b *model.Pipeline, f string) ([]byte, error) {
-	client, err := c.newServerClient(ctx, u.AccessToken)
+	client, err := c.newServerClient(ctx, r.Owner, r.Name, u.AccessToken)
 	if err != nil {
 		return nil, err
 	}
@@ -305,7 +304,7 @@ func (c *client) File(ctx context.Context, u *model.User, r *model.Repo, b *mode
 }
 
 func (c *client) Dir(ctx context.Context, u *model.User, r *model.Repo, b *model.Pipeline, f string) ([]*forge_types.FileMeta, error) {
-	client, err := c.newServerClient(ctx, u.AccessToken)
+	client, err := c.newServerClient(ctx, r.Owner, r.Name, u.AccessToken)
 	if err != nil {
 		return nil, err
 	}
@@ -582,7 +581,7 @@ var reDeploy = regexp.MustCompile(`.+/deployments/(\d+)`)
 // Status sends the commit status to the forge.
 // An example would be the GitHub pull request status.
 func (c *client) Status(ctx context.Context, user *model.User, repo *model.Repo, pipeline *model.Pipeline, workflow *model.Workflow) error {
-	client, err := c.newServerClient(ctx, user.AccessToken)
+	client, err := c.newServerClient(ctx, repo.Owner, repo.Name, user.AccessToken)
 	if err != nil {
 		return err
 	}
@@ -661,7 +660,7 @@ func (c *client) Branches(ctx context.Context, u *model.User, r *model.Repo, p *
 
 // BranchHead returns the sha of the head (latest commit) of the specified branch.
 func (c *client) BranchHead(ctx context.Context, u *model.User, r *model.Repo, branch string) (*model.Commit, error) {
-	client, err := c.newServerClient(ctx, common.UserToken(ctx, r, u))
+	client, err := c.newServerClient(ctx, r.Owner, r.Name, common.UserToken(ctx, r, u))
 	if err != nil {
 		return nil, err
 	}
@@ -730,7 +729,7 @@ func (c *client) loadChangedFilesFromPullRequest(ctx context.Context, pull *gith
 	// would fail with an authentication error.
 	forge.Refresh(ctx, c, _store, user)
 
-	gh, err := c.newServerClient(ctx, user.AccessToken)
+	gh, err := c.newServerClient(ctx, repo.Owner, repo.Name, user.AccessToken)
 	if err != nil {
 		return nil, err
 	}
@@ -776,7 +775,7 @@ func (c *client) getTagCommitSHA(ctx context.Context, repo *model.Repo, tagName 
 	// would fail with an authentication error.
 	forge.Refresh(ctx, c, _store, user)
 
-	gh, err := c.newServerClient(ctx, user.AccessToken)
+	gh, err := c.newServerClient(ctx, repo.Owner, repo.Name, user.AccessToken)
 	if err != nil {
 		return "", err
 	}
@@ -839,7 +838,7 @@ func (c *client) loadChangedFilesFromCommits(ctx context.Context, tmpRepo *model
 	// would fail with an authentication error.
 	forge.Refresh(ctx, c, _store, user)
 
-	gh, err := c.newServerClient(ctx, user.AccessToken)
+	gh, err := c.newServerClient(ctx, repo.Owner, repo.Name, user.AccessToken)
 	if err != nil {
 		return nil, err
 	}
