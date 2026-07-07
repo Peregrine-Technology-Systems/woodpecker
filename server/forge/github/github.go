@@ -628,8 +628,14 @@ func (c *client) Activate(ctx context.Context, u *model.User, r *model.Repo, lin
 			"deployment",
 		},
 		Config: &github.HookConfig{
-			URL:         &link,
-			ContentType: github.Ptr("form"),
+			URL: &link,
+			// [pts] woodpecker#307: create json webhooks, not form. The /api/hook
+			// parser is JSON-first (form is only a back-compat path, #302); every
+			// other forge driver (gitea/forgejo) creates json. Emitting form here
+			// meant activation + repair (both funnel through Activate) drifted repos
+			// back to form after the estate was migrated to json — undoing the
+			// migration one repo at a time.
+			ContentType: github.Ptr("json"),
 		},
 	}
 	_, _, err := client.Repositories.CreateHook(ctx, r.Owner, r.Name, hook)

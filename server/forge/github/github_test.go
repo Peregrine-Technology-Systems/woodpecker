@@ -17,6 +17,9 @@ package github
 
 import (
 	"context"
+	"encoding/json"
+	"io"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -26,6 +29,7 @@ import (
 	gh_mock "github.com/migueleliasweb/go-github-mock/src/mock"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
 
 	"go.woodpecker-ci.org/woodpecker/v3/server/forge/github/fixtures"
 	"go.woodpecker-ci.org/woodpecker/v3/server/model"
@@ -271,4 +275,53 @@ func TestHook(t *testing.T) {
 		assert.Equal(t, "6543@obermui.de", pipeline.Email)
 		assert.Empty(t, pipeline.ChangedFiles)
 	})
+}
+
+// [pts] woodpecker#307: repo activation (and repair, which funnels through
+// Activate) must create json webhooks, not form — otherwise a new/repaired repo
+// drifts back to form after the estate was migrated to json. Guards against a
+// regression to the pre-#307 `content_type: form`.
+func TestActivateCreatesJSONWebhook(t *testing.T) {
+	var captured struct {
+		Events []string `json:"events"`
+		Config struct {
+			URL         string `json:"url"`
+			ContentType string `json:"content_type"`
+		} `json:"config"`
+	}
+
+	mockedHTTPClient := gh_mock.NewMockedHTTPClient(
+		// Deactivate() first looks up the repo (empty ForgeRemoteID -> Get by owner/name)...
+		gh_mock.WithRequestMatch(
+			gh_mock.GetReposByOwnerByRepo,
+			github.Repository{Owner: &github.User{Login: github.Ptr("acme")}, Name: github.Ptr("widgets")},
+		),
+		// ...then lists hooks; empty => no matching hook to delete, Deactivate is a no-op.
+		gh_mock.WithRequestMatch(
+			gh_mock.GetReposHooksByOwnerByRepo,
+			[]*github.Hook{},
+		),
+		// Activate() then creates the hook — capture the body and assert content_type.
+		gh_mock.WithRequestMatchHandler(
+			gh_mock.PostReposHooksByOwnerByRepo,
+			http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				body, _ := io.ReadAll(r.Body)
+				require.NoError(t, json.Unmarshal(body, &captured))
+				w.WriteHeader(http.StatusCreated)
+				_, _ = w.Write([]byte(`{"id":1}`))
+			}),
+		),
+	)
+
+	ctx := context.WithValue(context.Background(), githubClientKey, github.NewClient(mockedHTTPClient))
+	c := &client{API: defaultAPI, url: defaultURL}
+	user := &model.User{AccessToken: "tok"}
+	repo := &model.Repo{Owner: "acme", Name: "widgets", FullName: "acme/widgets"}
+
+	err := c.Activate(ctx, user, repo, "https://woodpecker.example/api/hook")
+	require.NoError(t, err)
+
+	assert.Equal(t, "json", captured.Config.ContentType, "activation must create json webhooks, not form (woodpecker#307)")
+	assert.Equal(t, "https://woodpecker.example/api/hook", captured.Config.URL)
+	assert.Contains(t, captured.Events, "push")
 }
