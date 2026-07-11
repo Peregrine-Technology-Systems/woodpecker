@@ -20,6 +20,8 @@ import (
 	"time"
 
 	"github.com/urfave/cli/v3"
+
+	"go.woodpecker-ci.org/woodpecker/v3/shared/constant"
 )
 
 //nolint:mnd
@@ -99,6 +101,9 @@ var flags = []cli.Flag{
 		Sources: cli.EnvVars("WOODPECKER_KEEPALIVE_TIME"),
 		Name:    "keepalive-time",
 		Usage:   "after a duration of this time of no activity, the agent pings the server to check if the transport is still alive",
+		// Must stay >= the server's keepalive-min-time floor or the server re-issues
+		// the too_many_pings GoAway that wedges idle gRPC agents (woodpecker#312).
+		Value: constant.GRPCKeepaliveTime,
 	},
 	&cli.DurationFlag{
 		Sources: cli.EnvVars("WOODPECKER_KEEPALIVE_TIMEOUT"),

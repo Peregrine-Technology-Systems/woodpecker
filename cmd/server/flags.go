@@ -272,6 +272,10 @@ var flags = append([]cli.Flag{
 		Sources: cli.EnvVars("WOODPECKER_KEEPALIVE_MIN_TIME"),
 		Name:    "keepalive-min-time",
 		Usage:   "server-side enforcement policy on the minimum amount of time a client should wait before sending a keepalive ping.",
+		// 0 (the previous default) let the gRPC EnforcementPolicy GoAway idle agents
+		// with too_many_pings; pin the floor <= the agent's keepalive-time so a
+		// conforming agent is never rejected (woodpecker#312).
+		Value: constant.GRPCKeepaliveMinTime,
 	},
 	&cli.StringFlag{
 		Sources: cli.EnvVars("WOODPECKER_CONFIG_SERVICE_ENDPOINT"),
