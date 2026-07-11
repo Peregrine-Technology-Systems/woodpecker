@@ -17,11 +17,14 @@ package github
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -324,4 +327,58 @@ func TestActivateCreatesJSONWebhook(t *testing.T) {
 	assert.Equal(t, "json", captured.Config.ContentType, "activation must create json webhooks, not form (woodpecker#307)")
 	assert.Equal(t, "https://woodpecker.example/api/hook", captured.Config.URL)
 	assert.Contains(t, captured.Events, "push")
+}
+
+// TestDirFetchesOnlyPipelineConfigFiles is the woodpecker#316 regression: Dir()
+// must filter the config-folder listing to .yaml/.yml BEFORE fetching content, so
+// a non-config entry (e.g. *.disabled, README.md) is never fetched — it can never
+// be valid config, and fetching it needlessly exposed the whole config load to a
+// transient GitHub 502 on a file that would have been discarded anyway.
+func TestDirFetchesOnlyPipelineConfigFiles(t *testing.T) {
+	dirListing := []map[string]any{
+		{"name": "pts-ci.yaml", "path": ".woodpecker/pts-ci.yaml", "type": "file"},
+		{"name": "pts-build.yml", "path": ".woodpecker/pts-build.yml", "type": "file"},
+		{"name": "links.yaml.disabled", "path": ".woodpecker/links.yaml.disabled", "type": "file"},
+		{"name": "README.md", "path": ".woodpecker/README.md", "type": "file"},
+	}
+
+	var mu sync.Mutex
+	var fetched []string
+
+	mockedHTTPClient := gh_mock.NewMockedHTTPClient(
+		gh_mock.WithRequestMatchHandler(
+			gh_mock.GetReposContentsByOwnerByRepoByPath,
+			http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				idx := strings.Index(r.URL.Path, "/contents/")
+				p := r.URL.Path[idx+len("/contents/"):]
+				if p == ".woodpecker" {
+					_ = json.NewEncoder(w).Encode(dirListing)
+					return
+				}
+				name := strings.TrimPrefix(p, ".woodpecker/")
+				mu.Lock()
+				fetched = append(fetched, name)
+				mu.Unlock()
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"name": name, "path": p, "type": "file",
+					"encoding": "base64",
+					"content":  base64.StdEncoding.EncodeToString([]byte("steps: {}\n")),
+				})
+			}),
+		),
+	)
+
+	ctx := context.WithValue(context.Background(), githubClientKey, github.NewClient(mockedHTTPClient))
+	c := &client{API: defaultAPI, url: defaultURL}
+	user := &model.User{AccessToken: "tok"}
+	repo := &model.Repo{Owner: "acme", Name: "widgets", FullName: "acme/widgets"}
+	pipeline := &model.Pipeline{Commit: "deadbeef"}
+
+	files, err := c.Dir(ctx, user, repo, pipeline, ".woodpecker")
+	require.NoError(t, err)
+
+	sort.Strings(fetched)
+	assert.Equal(t, []string{"pts-build.yml", "pts-ci.yaml"}, fetched,
+		"Dir must fetch content only for .yaml/.yml files, never .disabled/README (woodpecker#316)")
+	assert.Len(t, files, 2, "only the two config files are returned")
 }

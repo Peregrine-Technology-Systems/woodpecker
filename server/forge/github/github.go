@@ -319,10 +319,24 @@ func (c *client) Dir(ctx context.Context, u *model.User, r *model.Repo, b *model
 		return nil, err
 	}
 
+	// Only fetch content for entries that could be a pipeline config (.yaml/.yml).
+	// GetContents already returned the directory listing (names), so filtering here —
+	// before the content fan-out — means we never fetch, and never expose the whole
+	// config load to a transient GitHub 502 on, a file we'd discard anyway (e.g.
+	// `*.disabled`). The config service filters to the same set downstream
+	// (filterPipelineFiles), via the same shared predicate, so this is
+	// behaviour-identical for valid config (woodpecker#316).
+	var configEntries []*github.RepositoryContent
+	for _, file := range data {
+		if file.Name != nil && forge_types.IsPipelineConfigFile(*file.Name) {
+			configEntries = append(configEntries, file)
+		}
+	}
+
 	fc := make(chan *forge_types.FileMeta)
 	errChan := make(chan error)
 
-	for _, file := range data {
+	for _, file := range configEntries {
 		go func(path string) {
 			content, err := c.File(ctx, u, r, b, path)
 			if err != nil {
@@ -341,7 +355,7 @@ func (c *client) Dir(ctx context.Context, u *model.User, r *model.Repo, b *model
 
 	var files []*forge_types.FileMeta
 
-	for range data {
+	for range configEntries {
 		select {
 		case err := <-errChan:
 			return nil, err
