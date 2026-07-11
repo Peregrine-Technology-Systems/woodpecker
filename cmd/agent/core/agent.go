@@ -149,8 +149,19 @@ func run(ctx context.Context, c *cli.Command, backends []types.Backend) error {
 			c.String("server"),
 			transport,
 			grpc.WithKeepaliveParams(keepalive.ClientParameters{
-				Time:    c.Duration("grpc-keepalive-time"),
-				Timeout: c.Duration("grpc-keepalive-timeout"),
+				// Read the actual flag names ("keepalive-time"/"keepalive-timeout",
+				// env WOODPECKER_KEEPALIVE_TIME/_TIMEOUT). These sites previously read
+				// "grpc-keepalive-time"/"grpc-keepalive-timeout", which are defined
+				// nowhere, so c.Duration returned 0 and the client keepalive was
+				// silently unconfigured regardless of flag/env — part of the #312
+				// too_many_pings wedge.
+				Time:    c.Duration("keepalive-time"),
+				Timeout: c.Duration("keepalive-timeout"),
+				// Keep pinging (and so keep detecting a dead connection + reconnecting)
+				// even while idle with no active stream. Paired with the server's
+				// PermitWithoutStream + keepalive-min-time floor so these idle pings are
+				// not rejected as too_many_pings (woodpecker#312).
+				PermitWithoutStream: true,
 			}),
 		)
 		if err != nil {
@@ -170,8 +181,19 @@ func run(ctx context.Context, c *cli.Command, backends []types.Backend) error {
 			c.String("server"),
 			transport,
 			grpc.WithKeepaliveParams(keepalive.ClientParameters{
-				Time:    c.Duration("grpc-keepalive-time"),
-				Timeout: c.Duration("grpc-keepalive-timeout"),
+				// Read the actual flag names ("keepalive-time"/"keepalive-timeout",
+				// env WOODPECKER_KEEPALIVE_TIME/_TIMEOUT). These sites previously read
+				// "grpc-keepalive-time"/"grpc-keepalive-timeout", which are defined
+				// nowhere, so c.Duration returned 0 and the client keepalive was
+				// silently unconfigured regardless of flag/env — part of the #312
+				// too_many_pings wedge.
+				Time:    c.Duration("keepalive-time"),
+				Timeout: c.Duration("keepalive-timeout"),
+				// Keep pinging (and so keep detecting a dead connection + reconnecting)
+				// even while idle with no active stream. Paired with the server's
+				// PermitWithoutStream + keepalive-min-time floor so these idle pings are
+				// not rejected as too_many_pings (woodpecker#312).
+				PermitWithoutStream: true,
 			}),
 			grpc.WithUnaryInterceptor(authInterceptor.Unary()),
 			grpc.WithStreamInterceptor(authInterceptor.Stream()),

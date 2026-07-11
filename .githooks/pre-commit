@@ -236,7 +236,16 @@ COV_SKIP_REGEX='_test\.go$|/mocks/|wire_gen\.go$|_easyjson\.go$|\.pb\.go$|/fixtu
 #   invalid-key). The exemption covers only the pre-existing untested sibling
 #   setups. Do NOT use this exemption for incremental changes that don't add tests
 #   for the changed function.
-COV_WIRING_REGEX='^pipeline/const\.go$|^cmd/server/setup\.go$|^server/router/api\.go$|^cmd/|^server/store/datastore/migration/migration\.go$|^server/store/store\.go$|^server/api/ws_agent\.go$|^server/rpc/rpc\.go$|^server/rpc/server\.go$|^pipeline/frontend/yaml/compiler/convert\.go$|^server/pipeline/items\.go$|^server/pipeline/create\.go$|^pipeline/backend/types/step\.go$|^server/logdrain/gcp\.go$|^server/config\.go$|^server/plugin/gcppubsub/client\.go$|^server/plugin/interfaces\.go$|^server/api/pipeline\.go$|^agent/runner\.go$|^agent/rpc/client_ws\.go$|^server/pipeline/start\.go$|^server/pipeline/queue\.go$|^server/forge/github/github\.go$|^server/forge/setup/setup\.go$'
+# - shared/constant/constant.go: declaration-only file (DefaultConfigOrder,
+#   DefaultClonePlugin/TrustedClonePlugins, TaskTimeout, and the woodpecker#312
+#   GRPCKeepaliveTime/GRPCKeepaliveMinTime consts — zero executable statements), so
+#   the cover profile reports NO_DATA, exactly like pipeline/const.go and
+#   server/store/store.go above. The keepalive constants' load-bearing invariant
+#   (agent interval >= server floor, both > 0) IS tested to 100% of what's testable
+#   in constant_test.go (TestGRPCKeepaliveInvariant), and their wiring into the flag
+#   defaults is guarded by cmd/agent/core/flags_test.go (TestKeepaliveFlagsWired).
+#   Do NOT use this exemption for a file that gains executable statements.
+COV_WIRING_REGEX='^pipeline/const\.go$|^cmd/server/setup\.go$|^server/router/api\.go$|^cmd/|^server/store/datastore/migration/migration\.go$|^server/store/store\.go$|^server/api/ws_agent\.go$|^server/rpc/rpc\.go$|^server/rpc/server\.go$|^pipeline/frontend/yaml/compiler/convert\.go$|^server/pipeline/items\.go$|^server/pipeline/create\.go$|^pipeline/backend/types/step\.go$|^server/logdrain/gcp\.go$|^server/config\.go$|^server/plugin/gcppubsub/client\.go$|^server/plugin/interfaces\.go$|^server/api/pipeline\.go$|^agent/runner\.go$|^agent/rpc/client_ws\.go$|^server/pipeline/start\.go$|^server/pipeline/queue\.go$|^server/forge/github/github\.go$|^server/forge/setup/setup\.go$|^shared/constant/constant\.go$'
 
 if [ -n "$GO_FILES" ]; then
     # Format

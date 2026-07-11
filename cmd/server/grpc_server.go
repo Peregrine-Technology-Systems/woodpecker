@@ -45,6 +45,11 @@ func runGrpcServer(ctx context.Context, c *cli.Command, _store store.Store) erro
 		grpc.UnaryInterceptor(authorizer.UnaryInterceptor),
 		grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{
 			MinTime: c.Duration("keepalive-min-time"),
+			// Tolerate keepalive pings from a connected-but-idle agent (no active
+			// stream). Without this the server GoAway'd idle gRPC agents with
+			// ENHANCE_YOUR_CALM/too_many_pings and their workflow-RPC channel wedged
+			// while the heartbeat stayed alive — claim-but-can't-report (woodpecker#312).
+			PermitWithoutStream: true,
 		}),
 	)
 
