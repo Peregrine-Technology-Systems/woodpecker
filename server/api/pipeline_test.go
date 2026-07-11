@@ -34,6 +34,7 @@ import (
 	"go.woodpecker-ci.org/woodpecker/v3/server/pubsub"
 	queue_mocks "go.woodpecker-ci.org/woodpecker/v3/server/queue/mocks"
 	config_mocks "go.woodpecker-ci.org/woodpecker/v3/server/services/config/mocks"
+	log_mocks "go.woodpecker-ci.org/woodpecker/v3/server/services/log/mocks"
 	manager_mocks "go.woodpecker-ci.org/woodpecker/v3/server/services/mocks"
 	registry_mocks "go.woodpecker-ci.org/woodpecker/v3/server/services/registry/mocks"
 	secret_mocks "go.woodpecker-ci.org/woodpecker/v3/server/services/secret/mocks"
@@ -504,5 +505,111 @@ func TestCreatePipeline(t *testing.T) {
 		mockStore.AssertCalled(t, "GetUser", int64(1))
 		mockStore.AssertCalled(t, "CreatePipeline", mock.Anything)
 		mockStore.AssertCalled(t, "UpdatePipeline", mock.Anything)
+	})
+}
+
+// TestGetStepLogs covers the woodpecker#313 fix: the step path segment accepts
+// both the step's global DB id (the web UI path, unchanged) and — as a fallback
+// scoped to THIS pipeline — the per-pipeline step pid (the human/CLI mental
+// model). When neither resolves, the 404 must carry a descriptive BODY rather
+// than the silent empty 404 that reads as "route does not exist".
+func TestGetStepLogs(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	fakeRepo := &model.Repo{ID: 1, FullName: "octocat/hello"}
+	pl := &model.Pipeline{ID: 900, Number: 42}
+
+	setup := func(mockStore *store_mocks.MockStore, mockLog *log_mocks.MockService, stepIDParam string) (*httptest.ResponseRecorder, *gin.Context) {
+		w := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+		c.Params = gin.Params{{Key: "number", Value: "42"}, {Key: "stepId", Value: stepIDParam}}
+		c.Set("store", mockStore)
+		c.Set("repo", fakeRepo)
+		if mockLog != nil {
+			server.Config.Services.LogStore = mockLog
+		}
+		return w, c
+	}
+
+	t.Run("resolves by DB id (web UI path)", func(t *testing.T) {
+		step := &model.Step{ID: 5000, PipelineID: 900, PID: 11}
+		mockStore := store_mocks.NewMockStore(t)
+		mockStore.On("GetPipelineNumber", fakeRepo, int64(42)).Return(pl, nil)
+		mockStore.On("StepLoad", int64(5000)).Return(step, nil)
+		mockLog := log_mocks.NewMockService(t)
+		mockLog.On("LogFind", step).Return([]*model.LogEntry{{StepID: 5000, Line: 1}}, nil)
+
+		w, c := setup(mockStore, mockLog, "5000")
+		GetStepLogs(c)
+
+		assert.Equal(t, http.StatusOK, w.Code)
+		mockStore.AssertNotCalled(t, "StepFind", mock.Anything, mock.Anything)
+	})
+
+	t.Run("falls back to pid within the pipeline (human/CLI path)", func(t *testing.T) {
+		step := &model.Step{ID: 5000, PipelineID: 900, PID: 11}
+		mockStore := store_mocks.NewMockStore(t)
+		mockStore.On("GetPipelineNumber", fakeRepo, int64(42)).Return(pl, nil)
+		// 11 is a pid, not a DB id — StepLoad(11) misses.
+		mockStore.On("StepLoad", int64(11)).Return((*model.Step)(nil), types.ErrRecordNotExist)
+		mockStore.On("StepFind", pl, 11).Return(step, nil)
+		mockLog := log_mocks.NewMockService(t)
+		mockLog.On("LogFind", step).Return([]*model.LogEntry{{StepID: 5000, Line: 1}}, nil)
+
+		w, c := setup(mockStore, mockLog, "11")
+		GetStepLogs(c)
+
+		assert.Equal(t, http.StatusOK, w.Code)
+	})
+
+	t.Run("a DB id belonging to another pipeline is reinterpreted as this pipeline's pid", func(t *testing.T) {
+		foreign := &model.Step{ID: 11, PipelineID: 111, PID: 3} // real step, wrong pipeline
+		mine := &model.Step{ID: 6000, PipelineID: 900, PID: 11}
+		mockStore := store_mocks.NewMockStore(t)
+		mockStore.On("GetPipelineNumber", fakeRepo, int64(42)).Return(pl, nil)
+		mockStore.On("StepLoad", int64(11)).Return(foreign, nil)
+		mockStore.On("StepFind", pl, 11).Return(mine, nil)
+		mockLog := log_mocks.NewMockService(t)
+		mockLog.On("LogFind", mine).Return([]*model.LogEntry{}, nil)
+
+		w, c := setup(mockStore, mockLog, "11")
+		GetStepLogs(c)
+
+		// never serves the foreign pipeline's step
+		assert.Equal(t, http.StatusOK, w.Code)
+	})
+
+	t.Run("unresolved id returns a DESCRIPTIVE 404, not a silent empty one", func(t *testing.T) {
+		mockStore := store_mocks.NewMockStore(t)
+		mockStore.On("GetPipelineNumber", fakeRepo, int64(42)).Return(pl, nil)
+		mockStore.On("StepLoad", int64(999)).Return((*model.Step)(nil), types.ErrRecordNotExist)
+		mockStore.On("StepFind", pl, 999).Return((*model.Step)(nil), types.ErrRecordNotExist)
+
+		w, c := setup(mockStore, nil, "999")
+		GetStepLogs(c)
+
+		assert.Equal(t, http.StatusNotFound, w.Code)
+		assert.Contains(t, w.Body.String(), "no step with db-id or pid 999",
+			"the 404 body must name what was not found, not be empty (woodpecker#313)")
+	})
+
+	t.Run("invalid stepId is a bad request", func(t *testing.T) {
+		mockStore := store_mocks.NewMockStore(t)
+		mockStore.On("GetPipelineNumber", fakeRepo, int64(42)).Return(pl, nil)
+
+		w, c := setup(mockStore, nil, "not-an-int")
+		GetStepLogs(c)
+
+		assert.Equal(t, http.StatusBadRequest, w.Code)
+	})
+
+	t.Run("non-existent pipeline is not found", func(t *testing.T) {
+		mockStore := store_mocks.NewMockStore(t)
+		mockStore.On("GetPipelineNumber", fakeRepo, int64(42)).Return((*model.Pipeline)(nil), types.ErrRecordNotExist)
+
+		w, c := setup(mockStore, nil, "11")
+		GetStepLogs(c)
+
+		assert.Equal(t, http.StatusNotFound, w.Code)
 	})
 }

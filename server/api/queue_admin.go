@@ -123,10 +123,18 @@ func processQueueTasks(store store.Store, tasks []*model.Task, agentNameMap map[
 		if task.AgentID != 0 {
 			name, ok := getAgentName(store, agentNameMap, task.AgentID)
 			if !ok {
-				// Agent disappeared (server restart, pruned). Task is still
-				// valid — use placeholder name, don't error. The queue will
-				// reassign it when the deadline expires.
-				taskResponse.AgentName = fmt.Sprintf("agent-%d (disconnected)", task.AgentID)
+				// Name resolution failed — the agent row was missing (agent-row
+				// churn: the fork's WS delete-on-disconnect fast-path #283 /
+				// last_contact reaper #254 can drop/rewrite the row during a
+				// brief WS blip while the agent is still, or again, connected)
+				// or its Name was empty. Report the id we have, but do NOT
+				// assert a connection state we never checked: getAgentName only
+				// resolves names, it never verified the agent is disconnected.
+				// The old "(disconnected)" suffix was a lie that fed
+				// ci-scaler#1723's false orphan-kills of live pipelines — bare
+				// "agent-<id>" is the honest "id known, name unresolved" signal
+				// (woodpecker#311).
+				taskResponse.AgentName = fmt.Sprintf("agent-%d", task.AgentID)
 			} else {
 				taskResponse.AgentName = name
 			}

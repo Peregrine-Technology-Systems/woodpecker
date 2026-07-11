@@ -82,13 +82,18 @@ func TestProcessQueueTasks_ZeroAgentZeroPipeline(t *testing.T) {
 	assert.Equal(t, "", out[0].AgentName)
 }
 
-func TestProcessQueueTasks_AgentDisconnectedPlaceholder(t *testing.T) {
+func TestProcessQueueTasks_UnresolvedAgentUsesHonestIDPlaceholder(t *testing.T) {
+	// woodpecker#311: name resolution failing must NOT fabricate a
+	// "(disconnected)" status the handler never verified — that lie fed
+	// ci-scaler#1723's false orphan-kills. The honest label is the bare id.
 	mockStore := store_mocks.NewMockStore(t)
 	mockStore.On("AgentFind", int64(50)).Return(nil, assert.AnError)
 	tasks := []*model.Task{{ID: "t2", AgentID: 50, PipelineID: 0}}
 	out, err := processQueueTasks(mockStore, tasks, map[int64]string{})
 	assert.NoError(t, err)
-	assert.Equal(t, "agent-50 (disconnected)", out[0].AgentName)
+	assert.Equal(t, "agent-50", out[0].AgentName)
+	assert.NotContains(t, out[0].AgentName, "disconnected",
+		"must not assert a connection state name resolution never checked")
 }
 
 func TestProcessQueueTasks_AgentResolved(t *testing.T) {

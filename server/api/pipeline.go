@@ -314,15 +314,31 @@ func GetStepLogs(c *gin.Context) {
 		return
 	}
 
+	// The path segment is documented only as "the step id". The web UI passes
+	// the step's global DB id (StepLoad); humans and CLI/debug tooling naturally
+	// pass the per-pipeline step number (pid) — the same mental model as the
+	// pipeline `number` earlier in the path. Accept both: DB id first (the UI
+	// path, unchanged), then fall back to a pid lookup scoped to THIS pipeline.
+	// Both paths guarantee the returned step belongs to `pl` (hence `repo`), so
+	// neither can read arbitrary logs across pipeline/repo boundaries.
 	step, err := _store.StepLoad(stepID)
-	if err != nil {
-		handleDBError(c, err)
-		return
+	if err != nil || step.PipelineID != pl.ID {
+		// Not a valid DB id for this pipeline — reinterpret the number as this
+		// pipeline's step pid before giving up.
+		step, err = _store.StepFind(pl, int(stepID))
 	}
-
-	if step.PipelineID != pl.ID {
-		// make sure we cannot read arbitrary logs by id
-		_ = c.AbortWithError(http.StatusBadRequest, fmt.Errorf("step with id %d is not part of repo %s", stepID, repo.FullName))
+	if err != nil {
+		if errors.Is(err, types.ErrRecordNotExist) {
+			// Describe what was actually not found — and write it to the BODY.
+			// handleDBError/AbortWithError only set the status (the message goes
+			// to c.Errors, which is logged server-side, never returned), so a
+			// bare not-found here is a silent empty 404 indistinguishable from
+			// "this route does not exist" (woodpecker#313, the #27 unknown-path
+			// disease). The route matched; the id did not — say so.
+			c.String(http.StatusNotFound, "no step with db-id or pid %d in pipeline %d of repo %s", stepID, pl.Number, repo.FullName)
+			return
+		}
+		handleDBError(c, err)
 		return
 	}
 
