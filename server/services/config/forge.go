@@ -114,7 +114,9 @@ func filterPipelineFiles(files []*types.FileMeta) []*types.FileMeta {
 	var res []*types.FileMeta
 
 	for _, file := range files {
-		if strings.HasSuffix(file.Name, ".yml") || strings.HasSuffix(file.Name, ".yaml") {
+		// Same predicate a forge adapter may use to filter a directory listing
+		// before fetching content — shared so the two cannot drift (woodpecker#316).
+		if types.IsPipelineConfigFile(file.Name) {
 			res = append(res, file)
 		}
 	}
