@@ -331,3 +331,39 @@ func TestFetch(t *testing.T) {
 		})
 	}
 }
+
+// TestFetchRestartReturnsOldConfig covers the restart short-circuit: on a restart
+// with cached config we must return it without touching the forge at all.
+func TestFetchRestartReturnsOldConfig(t *testing.T) {
+	t.Parallel()
+	old := []*forge_types.FileMeta{{Name: ".woodpecker.yml", Data: []byte("steps: {}")}}
+	f := new(mocks.MockForge)
+	cf := config.NewForge(time.Second, 1)
+
+	got, err := cf.Fetch(t.Context(), f, &model.User{}, &model.Repo{}, &model.Pipeline{}, old, true)
+
+	assert.NoError(t, err)
+	assert.Equal(t, old, got)
+	f.AssertNotCalled(t, "Dir", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything)
+	f.AssertNotCalled(t, "File", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything)
+}
+
+// TestFetchFolderNotImplementedFallsThroughToFile covers the forge-adapter that
+// does not implement folder listing: the folder candidate is skipped (ErrNotImplemented)
+// and the file candidates are tried instead.
+func TestFetchFolderNotImplementedFallsThroughToFile(t *testing.T) {
+	t.Parallel()
+	f := new(mocks.MockForge)
+	f.On("Dir", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
+		Return(nil, forge_types.ErrNotImplemented)
+	f.On("File", mock.Anything, mock.Anything, mock.Anything, mock.Anything, ".woodpecker.yaml").
+		Return([]byte("steps: {}"), nil)
+	f.On("File", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
+		Return(nil, &forge_types.ErrConfigNotFound{})
+	cf := config.NewForge(time.Second, 1)
+
+	got, err := cf.Fetch(t.Context(), f, &model.User{}, &model.Repo{}, &model.Pipeline{Commit: "abc"}, nil, false)
+
+	assert.NoError(t, err)
+	assert.Len(t, got, 1)
+}

@@ -14,12 +14,27 @@
 
 package types
 
-import "sort"
+import (
+	"sort"
+	"strings"
+)
 
 // FileMeta represents a file in version control.
 type FileMeta struct {
 	Name string
 	Data []byte
+}
+
+// IsPipelineConfigFile reports whether a file name in a config folder could be a
+// pipeline config (a .yaml/.yml file). It is the single source of truth shared by
+// the config service's post-fetch filter and forge adapters that filter a config
+// directory listing *before* fetching content — so a forge never fetches (and
+// never exposes the whole config load to a transient error on) a file the config
+// service would discard anyway, e.g. `*.disabled` (woodpecker#316). Keep these two
+// call sites using this one predicate so they cannot drift and silently drop a
+// valid config.
+func IsPipelineConfigFile(name string) bool {
+	return strings.HasSuffix(name, ".yml") || strings.HasSuffix(name, ".yaml")
 }
 
 type fileMetaList []*FileMeta

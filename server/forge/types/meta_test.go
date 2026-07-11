@@ -45,3 +45,21 @@ func TestSortByName(t *testing.T) {
 		},
 	}, SortByName(fm))
 }
+
+func TestIsPipelineConfigFile(t *testing.T) {
+	cases := map[string]bool{
+		"pipeline.yaml":        true,
+		"pipeline.yml":         true,
+		".woodpecker.yaml":     true,
+		"a.yaml":               true,
+		"links.yaml.disabled":  false,
+		"secscan.yml.disabled": false,
+		"README.md":            false,
+		"config.json":          false,
+		"noext":                false,
+		"":                     false,
+	}
+	for name, want := range cases {
+		assert.Equalf(t, want, IsPipelineConfigFile(name), "IsPipelineConfigFile(%q)", name)
+	}
+}
