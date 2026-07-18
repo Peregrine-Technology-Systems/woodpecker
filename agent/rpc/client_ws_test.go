@@ -56,6 +56,24 @@ func mockWSServer(t *testing.T, handler func(*websocket.Conn)) *httptest.Server 
 	}))
 }
 
+// holdUntilCleanup returns a channel a mock WS handler blocks on (`<-hold`)
+// after writing its frame(s), so the connection stays fully open until the test
+// finishes. It replaces a fixed `time.Sleep(100ms)` before the handler returns
+// (and `defer conn.Close()` severs the socket): under CI load the client's
+// readPump could be scheduled >100ms late, so the close raced — and beat — the
+// just-written frame, and the client surfaced "connection lost" instead of the
+// semantic reply. Blocking until cleanup removes the race entirely; the channel
+// is closed in t.Cleanup, letting the handler return and close the conn. Safe
+// against srv.Close() hanging because an upgraded WS conn is hijacked and no
+// longer tracked by httptest's connection accounting (#325).
+func holdUntilCleanup(t *testing.T) chan struct{} {
+	t.Helper()
+	hold := make(chan struct{})
+	var once sync.Once
+	t.Cleanup(func() { once.Do(func() { close(hold) }) })
+	return hold
+}
+
 func TestWSClient_BuildURL(t *testing.T) {
 	c := &WSClient{
 		serverURL: "d3ci42.peregrinetechsys.net:443",
@@ -131,6 +149,7 @@ func TestWSClient_Wait_ReturnsOnServerCancel(t *testing.T) {
 }
 
 func TestWSClient_Version(t *testing.T) {
+	hold := holdUntilCleanup(t)
 	srv := mockWSServer(t, func(conn *websocket.Conn) {
 		// Send version message
 		env, _ := json.Marshal(envelope{
@@ -138,8 +157,7 @@ func TestWSClient_Version(t *testing.T) {
 			Payload: json.RawMessage(`{"server_version":"v3.13.0-pts.12"}`),
 		})
 		conn.WriteMessage(websocket.TextMessage, env)
-		// Keep connection alive briefly
-		time.Sleep(100 * time.Millisecond)
+		<-hold // keep the connection open until cleanup (see holdUntilCleanup)
 	})
 	defer srv.Close()
 
@@ -279,7 +297,12 @@ func TestWSClient_InitDoneUpdate_SendAndWaitAck(t *testing.T) {
 	rec := &msgRecorder{}
 	c := autoAckWSServer(t, rec.record)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	// autoAckWSServer acks deterministically from a read loop that holds the
+	// connection open, so these four round-trips always complete — the only way
+	// to miss the deadline is CI-VM scheduling starvation, not a real stall.
+	// Give generous headroom (the op is sub-millisecond; a genuine hang still
+	// fails at this bound) rather than flaking a correct client under load (#325).
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	assert.NoError(t, c.Init(ctx, "wf-1", rpc.WorkflowState{Started: 1}))
@@ -340,13 +363,14 @@ func TestWSClient_EnqueueLog_BatchesToServer(t *testing.T) {
 }
 
 func TestWSClient_SendAndWait_AckErrorSurfaces(t *testing.T) {
+	hold := holdUntilCleanup(t)
 	srv := mockWSServer(t, func(conn *websocket.Conn) {
 		_, msg, _ := conn.ReadMessage()
 		var env envelope
 		json.Unmarshal(msg, &env)
 		resp, _ := json.Marshal(envelope{Type: "ack", Ref: env.Ref, Payload: json.RawMessage(`{"ok":false,"error":"nope"}`)})
 		conn.WriteMessage(websocket.TextMessage, resp)
-		time.Sleep(100 * time.Millisecond)
+		<-hold // keep the connection open until cleanup (see holdUntilCleanup)
 	})
 	defer srv.Close()
 
@@ -404,11 +428,12 @@ func TestWSClient_ReadPump_RoutesPushesAndClosesPendingOnDisconnect(t *testing.T
 
 func TestWSClient_ReadPump_InvalidJSONIsSkipped(t *testing.T) {
 	delivered := make(chan struct{}, 1)
+	hold := holdUntilCleanup(t)
 	srv := mockWSServer(t, func(conn *websocket.Conn) {
 		conn.WriteMessage(websocket.TextMessage, []byte("{not json"))
 		good, _ := json.Marshal(envelope{Type: "version", Payload: json.RawMessage(`{"server_version":"v9"}`)})
 		conn.WriteMessage(websocket.TextMessage, good)
-		time.Sleep(100 * time.Millisecond)
+		<-hold // keep the connection open until cleanup (see holdUntilCleanup)
 	})
 	defer srv.Close()
 
@@ -467,10 +492,11 @@ func TestWSClient_SendAndWait_ContextCancelClearsPending(t *testing.T) {
 }
 
 func TestWSClient_Version_NonVersionEnvelopeReturnsUnknown(t *testing.T) {
+	hold := holdUntilCleanup(t)
 	srv := mockWSServer(t, func(conn *websocket.Conn) {
 		env, _ := json.Marshal(envelope{Type: "ping"}) // not "version"
 		conn.WriteMessage(websocket.TextMessage, env)
-		time.Sleep(100 * time.Millisecond)
+		<-hold // keep the connection open until cleanup (see holdUntilCleanup)
 	})
 	defer srv.Close()
 	c := NewWSClient(context.Background(), srv.URL[7:], "test-secret", "agent-1", false).(*WSClient)
@@ -481,6 +507,7 @@ func TestWSClient_Version_NonVersionEnvelopeReturnsUnknown(t *testing.T) {
 }
 
 func TestWSClient_RegisterAgent_ServerErrorSurfaces(t *testing.T) {
+	hold := holdUntilCleanup(t)
 	srv := mockWSServer(t, func(conn *websocket.Conn) {
 		_, msg, _ := conn.ReadMessage()
 		var env envelope
@@ -488,7 +515,7 @@ func TestWSClient_RegisterAgent_ServerErrorSurfaces(t *testing.T) {
 		// Reply with an ack carrying an error (not a "registered" envelope).
 		resp, _ := json.Marshal(envelope{Type: "ack", Ref: env.Ref, Payload: json.RawMessage(`{"error":"denied"}`)})
 		conn.WriteMessage(websocket.TextMessage, resp)
-		time.Sleep(100 * time.Millisecond)
+		<-hold // keep the connection open until cleanup (see holdUntilCleanup)
 	})
 	defer srv.Close()
 	c := NewWSClient(context.Background(), srv.URL[7:], "test-secret", "agent-1", false).(*WSClient)
@@ -501,6 +528,7 @@ func TestWSClient_RegisterAgent_ServerErrorSurfaces(t *testing.T) {
 }
 
 func TestWSClient_Next_NoWorkOnEmptyAssign(t *testing.T) {
+	hold := holdUntilCleanup(t)
 	srv := mockWSServer(t, func(conn *websocket.Conn) {
 		_, msg, _ := conn.ReadMessage()
 		var env envelope
@@ -508,7 +536,7 @@ func TestWSClient_Next_NoWorkOnEmptyAssign(t *testing.T) {
 		// task.assign with an empty id → no work.
 		resp, _ := json.Marshal(envelope{Type: "task.assign", Ref: env.Ref, Payload: json.RawMessage(`{"id":""}`)})
 		conn.WriteMessage(websocket.TextMessage, resp)
-		time.Sleep(100 * time.Millisecond)
+		<-hold // keep the connection open until cleanup (see holdUntilCleanup)
 	})
 	defer srv.Close()
 	c := NewWSClient(context.Background(), srv.URL[7:], "test-secret", "agent-1", false).(*WSClient)
@@ -633,6 +661,7 @@ func TestWSClient_RegisterAgent_ContextCancel(t *testing.T) {
 }
 
 func TestWSClient_RegisterAgent_UnexpectedResponseType(t *testing.T) {
+	hold := holdUntilCleanup(t)
 	srv := mockWSServer(t, func(conn *websocket.Conn) {
 		_, msg, _ := conn.ReadMessage()
 		var env envelope
@@ -640,7 +669,7 @@ func TestWSClient_RegisterAgent_UnexpectedResponseType(t *testing.T) {
 		// Neither "registered" nor an ack carrying an error → "unexpected response".
 		resp, _ := json.Marshal(envelope{Type: "weird", Ref: env.Ref, Payload: json.RawMessage(`{}`)})
 		conn.WriteMessage(websocket.TextMessage, resp)
-		time.Sleep(100 * time.Millisecond)
+		<-hold // keep the connection open until cleanup (see holdUntilCleanup)
 	})
 	defer srv.Close()
 	c := NewWSClient(context.Background(), srv.URL[7:], "test-secret", "agent-1", false).(*WSClient)
@@ -674,6 +703,7 @@ func TestWSClient_SendWithRetry_ReconnectsThenSucceeds(t *testing.T) {
 	defer func() { wsReconnectMin, wsReconnectMax = oldMin, oldMax }()
 
 	var conns atomic.Int64
+	hold := holdUntilCleanup(t)
 	upgrader := websocket.Upgrader{CheckOrigin: func(_ *http.Request) bool { return true }}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Query().Get("token") != "test-secret" {
@@ -694,7 +724,7 @@ func TestWSClient_SendWithRetry_ReconnectsThenSucceeds(t *testing.T) {
 		json.Unmarshal(msg, &env)
 		resp, _ := json.Marshal(envelope{Type: "ack", Ref: env.Ref, Payload: json.RawMessage(`{"ok":true}`)})
 		conn.WriteMessage(websocket.TextMessage, resp)
-		time.Sleep(100 * time.Millisecond)
+		<-hold // keep the connection open until cleanup (see holdUntilCleanup)
 	}))
 	defer srv.Close()
 
