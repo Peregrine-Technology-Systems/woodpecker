@@ -103,6 +103,20 @@ func PostHook(c *gin.Context) {
 			return
 		}
 
+		// A transient forge-API failure during hook parsing (GitHub 5xx /
+		// rate-limit / timeout, surfaced as ErrTransientForge after the adapter's
+		// bounded retries) is NOT a permanent bad request. Return 503 so the
+		// forge's own webhook-retry redelivers, instead of a 400 that GitHub
+		// treats as "never retry" and which permanently strands the CI trigger
+		// (woodpecker#321).
+		if errors.Is(err, &types.ErrTransientForge{}) {
+			webhooksDropped.WithLabelValues("forge_transient_error").Inc()
+			msg := "transient forge error while parsing hook, awaiting forge redelivery"
+			log.Warn().Err(err).Msg(msg)
+			c.String(http.StatusServiceUnavailable, msg)
+			return
+		}
+
 		webhooksDropped.WithLabelValues("parse_hook_error").Inc()
 		msg := "failure to parse hook"
 		// A real forge delivery failed to parse (as opposed to the expected/ignored

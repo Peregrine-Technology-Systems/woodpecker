@@ -15,6 +15,7 @@
 package config_test
 
 import (
+	"context"
 	"fmt"
 	"path/filepath"
 	"testing"
@@ -346,6 +347,58 @@ func TestFetchRestartReturnsOldConfig(t *testing.T) {
 	assert.Equal(t, old, got)
 	f.AssertNotCalled(t, "Dir", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything)
 	f.AssertNotCalled(t, "File", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything)
+}
+
+// TestFetchRetryBacksOffAndRecovers proves the retry loop now spaces its
+// attempts. A forge blip that clears by the second attempt must succeed, and
+// the fetch must have waited a backoff between attempts — without the backoff
+// (woodpecker#319) the two attempts fired within microseconds and both landed
+// in the same outage window.
+func TestFetchRetryBacksOffAndRecovers(t *testing.T) {
+	t.Parallel()
+	f := new(mocks.MockForge)
+	// First attempt: a transient forge error (not ErrConfigNotFound, so it is a
+	// real failure that triggers a retry). Second attempt: success.
+	f.On("File", mock.Anything, mock.Anything, mock.Anything, mock.Anything, ".woodpecker.yml").
+		Once().Return(nil, fmt.Errorf("could not load config from forge: context deadline exceeded"))
+	f.On("File", mock.Anything, mock.Anything, mock.Anything, mock.Anything, ".woodpecker.yml").
+		Once().Return([]byte("steps: {}"), nil)
+
+	cf := config.NewForge(time.Second, 3)
+	repo := &model.Repo{FullName: "o/r", Config: ".woodpecker.yml"}
+
+	start := time.Now()
+	got, err := cf.Fetch(t.Context(), f, &model.User{AccessToken: "x"}, repo, &model.Pipeline{Commit: "abc"}, nil, false)
+	elapsed := time.Since(start)
+
+	assert.NoError(t, err, "a transient blip that clears on retry must not go terminal")
+	assert.Len(t, got, 1)
+	assert.GreaterOrEqual(t, elapsed, 200*time.Millisecond, "must back off between the two attempts")
+	f.AssertNumberOfCalls(t, "File", 2)
+}
+
+// TestFetchRetryAbortsOnContextCancel proves the backoff wait honours context
+// cancellation: a cancelled caller context must abandon the retries promptly
+// rather than sleeping through the full backoff schedule.
+func TestFetchRetryAbortsOnContextCancel(t *testing.T) {
+	t.Parallel()
+	f := new(mocks.MockForge)
+	f.On("File", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
+		Return(nil, fmt.Errorf("could not load config from forge: context deadline exceeded"))
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel() // already cancelled before the first attempt
+
+	cf := config.NewForge(time.Second, 3)
+	repo := &model.Repo{FullName: "o/r", Config: ".woodpecker.yml"}
+
+	start := time.Now()
+	_, err := cf.Fetch(ctx, f, &model.User{AccessToken: "x"}, repo, &model.Pipeline{Commit: "abc"}, nil, false)
+	elapsed := time.Since(start)
+
+	assert.Error(t, err)
+	assert.Less(t, elapsed, 200*time.Millisecond, "a cancelled context must not sleep through the backoff")
+	f.AssertNumberOfCalls(t, "File", 1) // no retry after cancellation
 }
 
 // TestFetchFolderNotImplementedFallsThroughToFile covers the forge-adapter that
