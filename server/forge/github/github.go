@@ -809,15 +809,24 @@ func (c *client) getTagCommitSHA(ctx context.Context, repo *model.Repo, tagName 
 		return "", err
 	}
 
-	page := 1
-	var tag *github.RepositoryTag
-	for {
+	return resolveTagSHA(ctx, gh, repo.Owner, repo.Name, tagName)
+}
+
+// resolveTagSHA returns the commit SHA of tagName by paging through the repo's
+// tags. It advances pagination off the response's NextPage and stops when the
+// listing is exhausted (NextPage == 0), so a tag that is not on the first page
+// is still found and a tag that does not exist returns an error — rather than
+// looping forever on page 1, which the previous `for {}` (never advancing the
+// page) did whenever the tag was absent from the first page (woodpecker#324).
+func resolveTagSHA(ctx context.Context, gh *github.Client, owner, name, tagName string) (string, error) {
+	opts := &github.ListOptions{Page: 1}
+	for opts.Page > 0 {
 		var tags []*github.RepositoryTag
+		var resp *github.Response
 		// Retry transient forge errors (webhook-synchronous path, see #321).
 		if err := retryHookForgeCall(ctx, func() (*github.Response, error) {
 			var e error
-			var resp *github.Response
-			tags, resp, e = gh.Repositories.ListTags(ctx, repo.Owner, repo.Name, &github.ListOptions{Page: page})
+			tags, resp, e = gh.Repositories.ListTags(ctx, owner, name, opts)
 			return resp, e
 		}); err != nil {
 			return "", err
@@ -825,18 +834,12 @@ func (c *client) getTagCommitSHA(ctx context.Context, repo *model.Repo, tagName 
 
 		for _, t := range tags {
 			if t.GetName() == tagName {
-				tag = t
-				break
+				return t.GetCommit().GetSHA(), nil
 			}
 		}
-		if tag != nil {
-			break
-		}
+		opts.Page = resp.NextPage
 	}
-	if tag == nil {
-		return "", fmt.Errorf("could not find tag %s", tagName)
-	}
-	return tag.GetCommit().GetSHA(), nil
+	return "", fmt.Errorf("could not find tag %s", tagName)
 }
 
 func (c *client) loadChangedFilesFromCommits(ctx context.Context, tmpRepo *model.Repo, pipeline *model.Pipeline, curr, prev string) (*model.Pipeline, error) {
