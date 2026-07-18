@@ -5,7 +5,8 @@ GO=/usr/local/go/bin/go
 
 echo "==> Running tests on Peregrine plugin packages..."
 
-# Our packages only — upstream packages are not our coverage responsibility
+# Our packages only — upstream packages are not our coverage responsibility.
+# CPU-timing-tolerant packages — safe to run in one concurrent invocation.
 PACKAGES=(
   go.woodpecker-ci.org/woodpecker/v3/server/plugin/...
   go.woodpecker-ci.org/woodpecker/v3/server/plugin/gcppubsub/...
@@ -13,6 +14,16 @@ PACKAGES=(
   go.woodpecker-ci.org/woodpecker/v3/server/plugin/externaldispatch/...
   go.woodpecker-ci.org/woodpecker/v3/server/rpc
   go.woodpecker-ci.org/woodpecker/v3/server/forge/github
+)
+
+# agent/rpc drives REAL WebSocket round-trips with real timeouts. Bundled into
+# the invocation above, `go test` runs its binary concurrently with the other
+# package binaries (up to GOMAXPROCS), and on a constrained CI spot agent that
+# cross-package competition starves its readPump goroutine so a reply isn't
+# routed within the assertion's timeout — flaking the timing tests (#325). Give
+# it a dedicated invocation so it runs against the agent's full CPU, with no
+# sibling test binaries competing for scheduling.
+TIMING_PACKAGES=(
   go.woodpecker-ci.org/woodpecker/v3/agent/rpc
 )
 
@@ -25,5 +36,8 @@ if [ -n "$HEAD_TREE" ] && [ "$HEAD_TREE" = "$MAIN_TREE" ]; then
 fi
 
 "${GO}" test -v -count=1 "${PACKAGES[@]}"
+
+echo "==> Running timing-sensitive packages in isolation..."
+"${GO}" test -v -count=1 "${TIMING_PACKAGES[@]}"
 
 echo "==> Tests passed"
