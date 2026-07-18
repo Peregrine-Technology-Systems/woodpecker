@@ -29,6 +29,13 @@ import (
 	"go.woodpecker-ci.org/woodpecker/v3/shared/constant"
 )
 
+// forgeRetryBackoff is the base of the exponential backoff between config-fetch
+// retries (attempt i waits forgeRetryBackoff<<i). It exists so the existing
+// retry loop actually spans a transient forge outage rather than hammering
+// inside it (woodpecker#319). Config fetching runs asynchronously to pipeline
+// creation, so the added wall-clock is not on any request's critical path.
+const forgeRetryBackoff = 250 * time.Millisecond
+
 type forgeFetcher struct {
 	timeout    time.Duration
 	retryCount uint
@@ -58,10 +65,26 @@ func (f *forgeFetcher) Fetch(ctx context.Context, forge forge.Forge, user *model
 	// try to fetch multiple times
 	for i := 0; i < int(f.retryCount); i++ {
 		files, err = ffc.fetch(ctx, strings.TrimSpace(repo.Config))
-		if err != nil {
-			log.Trace().Err(err).Msgf("Fetching config files: Attempt #%d failed", i+1)
-		} else {
+		if err == nil {
 			break
+		}
+		log.Trace().Err(err).Msgf("Fetching config files: Attempt #%d failed", i+1)
+
+		// Back off before the next attempt. The retry loop previously fired with
+		// zero delay, so against a *fast*-returning transient forge error (e.g. a
+		// GitHub 502 in ~200ms) every attempt landed inside the same blip and all
+		// failed — the retry was effectively a no-op, and the pipeline went
+		// terminal `error` before any step ran (woodpecker#319). An exponential
+		// backoff spreads the attempts across the outage window so a later one can
+		// catch the forge recovering. Skipped after the final attempt, and
+		// abandoned immediately if the caller's context is cancelled.
+		if i < int(f.retryCount)-1 {
+			backoff := forgeRetryBackoff << i
+			select {
+			case <-ctx.Done():
+				return files, err
+			case <-time.After(backoff):
+			}
 		}
 	}
 

@@ -14,6 +14,7 @@ import (
 	"go.woodpecker-ci.org/woodpecker/v3/server"
 	"go.woodpecker-ci.org/woodpecker/v3/server/api"
 	forge_mocks "go.woodpecker-ci.org/woodpecker/v3/server/forge/mocks"
+	forge_types "go.woodpecker-ci.org/woodpecker/v3/server/forge/types"
 	"go.woodpecker-ci.org/woodpecker/v3/server/model"
 	config_service_mocks "go.woodpecker-ci.org/woodpecker/v3/server/services/config/mocks"
 	services_mocks "go.woodpecker-ci.org/woodpecker/v3/server/services/mocks"
@@ -93,4 +94,67 @@ func TestHook(t *testing.T) {
 
 	assert.Equal(t, http.StatusNoContent, c.Writer.Status())
 	assert.Equal(t, "true", w.Header().Get("Pipeline-Filtered"))
+}
+
+// hookAuthContext wires up just enough (token auth + forge lookup) to reach the
+// `_forge.Hook(...)` call, so a test can drive the error-classification branch
+// directly by controlling what Hook returns. Uses a real mocked store/forge so
+// unexpected extra calls fail the test.
+func hookAuthContext(t *testing.T) (*gin.Context, *forge_mocks.MockForge) {
+	t.Helper()
+	_manager := services_mocks.NewMockManager(t)
+	_forge := forge_mocks.NewMockForge(t)
+	_store := store_mocks.NewMockStore(t)
+	server.Config.Services.Manager = _manager
+	server.Config.Permissions.Open = true
+	server.Config.Permissions.Orgs = permissions.NewOrgs(nil)
+	server.Config.Permissions.Admins = permissions.NewAdmins(nil)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Set("store", _store)
+
+	repo := &model.Repo{
+		ID: 123, ForgeRemoteID: "123", Owner: "owner", Name: "name",
+		IsActive: true, UserID: 123, Hash: "secret-123-this-is-a-secret",
+	}
+	repoToken := token.New(token.HookToken)
+	repoToken.Set("repo-id", fmt.Sprintf("%d", repo.ID))
+	signedToken, err := repoToken.Sign(repo.Hash)
+	assert.NoError(t, err)
+	header := http.Header{}
+	header.Set("Authorization", fmt.Sprintf("Bearer %s", signedToken))
+	c.Request = &http.Request{Header: header, URL: &url.URL{Scheme: "https"}}
+
+	_store.On("GetRepo", repo.ID).Return(repo, nil)
+	_manager.On("ForgeFromRepo", repo).Return(_forge, nil)
+	return c, _forge
+}
+
+// TestHookForgeErrorClassification is the silent-OK pair for the hook error
+// branch: a transient forge error must become a retryable 503 (so the forge
+// redelivers), while a genuinely permanent parse error must stay a 400 (#321).
+func TestHookForgeErrorClassification(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	t.Run("transient forge error returns 503", func(t *testing.T) {
+		c, _forge := hookAuthContext(t)
+		_forge.On("Hook", mock.Anything, mock.Anything).
+			Return(nil, nil, &forge_types.ErrTransientForge{Err: fmt.Errorf("github 503")})
+
+		api.PostHook(c)
+
+		assert.Equal(t, http.StatusServiceUnavailable, c.Writer.Status(),
+			"transient forge error must be a retryable 503, not a permanent 400")
+	})
+
+	t.Run("permanent parse error returns 400", func(t *testing.T) {
+		c, _forge := hookAuthContext(t)
+		_forge.On("Hook", mock.Anything, mock.Anything).
+			Return(nil, nil, fmt.Errorf("malformed webhook payload"))
+
+		api.PostHook(c)
+
+		assert.Equal(t, http.StatusBadRequest, c.Writer.Status(),
+			"a genuinely malformed hook stays a permanent 400")
+	})
 }

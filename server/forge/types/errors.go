@@ -43,6 +43,31 @@ func (*ErrIgnoreEvent) Is(target error) bool {
 	return ok
 }
 
+// ErrTransientForge wraps a forge-API failure that is transient (HTTP 5xx,
+// rate-limit, or a network/timeout error) and survived a forge adapter's
+// bounded retries. Callers translate it into a retryable response (e.g. an
+// inbound webhook handler returning HTTP 503 instead of a permanent 400) so the
+// forge's own delivery-retry mechanism can redeliver later, rather than
+// permanently stranding a CI trigger on a momentary upstream blip
+// (woodpecker#321).
+type ErrTransientForge struct {
+	Err error
+}
+
+func (e *ErrTransientForge) Error() string {
+	if e.Err != nil {
+		return "transient forge error: " + e.Err.Error()
+	}
+	return "transient forge error"
+}
+
+func (e *ErrTransientForge) Unwrap() error { return e.Err }
+
+func (*ErrTransientForge) Is(target error) bool {
+	_, ok := target.(*ErrTransientForge)
+	return ok
+}
+
 type ErrConfigNotFound struct {
 	Configs []string
 }
