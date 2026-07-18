@@ -34,6 +34,16 @@ func (h *inboxFullCounter) Run(_ *zerolog.Event, _ zerolog.Level, msg string) {
 
 var inboxFullWarns = &inboxFullCounter{}
 
+// wsTestDeadline bounds the deterministic mock-server round-trips
+// (Init/Done/Update/Next/Version/RegisterAgent against a handler that always
+// replies). These complete in sub-millisecond wall-clock, so the deadline is
+// pure safety headroom — its only job is to fail a genuinely *hung* client
+// rather than a correct one that the CI VM's scheduler starved for a few
+// seconds while running the whole suite in parallel. A tight 5s bound flaked
+// exactly that way under load; 30s keeps a real hang detectable while giving a
+// contended VM ample slack (#325).
+const wsTestDeadline = 30 * time.Second
+
 func TestMain(m *testing.M) {
 	log.Logger = log.Logger.Hook(inboxFullWarns)
 	os.Exit(m.Run())
@@ -164,7 +174,7 @@ func TestWSClient_Version(t *testing.T) {
 	wsURL := srv.URL[7:] // strip "http://"
 	c := NewWSClient(context.Background(), wsURL, "test-secret", "agent-1", false).(*WSClient)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), wsTestDeadline)
 	defer cancel()
 
 	v, err := c.Version(ctx)
@@ -182,6 +192,7 @@ func TestWSClient_RefBearingEnvelopesDoNotFillInbox(t *testing.T) {
 	warnsBefore := inboxFullWarns.n.Load()
 	delivered := make(chan string, n)
 
+	hold := holdUntilCleanup(t)
 	srv := mockWSServer(t, func(conn *websocket.Conn) {
 		// Push n ref-bearing responses — far more than the inbox's cap of 64.
 		for i := 1; i <= n; i++ {
@@ -192,7 +203,7 @@ func TestWSClient_RefBearingEnvelopesDoNotFillInbox(t *testing.T) {
 			})
 			conn.WriteMessage(websocket.TextMessage, env)
 		}
-		time.Sleep(500 * time.Millisecond) // keep conn alive while readPump drains
+		<-hold // keep the connection open until cleanup while readPump drains
 	})
 	defer srv.Close()
 
@@ -213,7 +224,7 @@ func TestWSClient_RefBearingEnvelopesDoNotFillInbox(t *testing.T) {
 	c.connect(context.Background())
 
 	seen := make(map[string]bool, n)
-	deadline := time.After(5 * time.Second)
+	deadline := time.After(wsTestDeadline)
 	for len(seen) < n {
 		select {
 		case ref := <-delivered:
@@ -302,7 +313,7 @@ func TestWSClient_InitDoneUpdate_SendAndWaitAck(t *testing.T) {
 	// to miss the deadline is CI-VM scheduling starvation, not a real stall.
 	// Give generous headroom (the op is sub-millisecond; a genuine hang still
 	// fails at this bound) rather than flaking a correct client under load (#325).
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), wsTestDeadline)
 	defer cancel()
 
 	assert.NoError(t, c.Init(ctx, "wf-1", rpc.WorkflowState{Started: 1}))
@@ -318,7 +329,7 @@ func TestWSClient_InitDoneUpdate_SendAndWaitAck(t *testing.T) {
 
 func TestWSClient_Next_ReturnsAssignedWorkflow(t *testing.T) {
 	c := autoAckWSServer(t, nil)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), wsTestDeadline)
 	defer cancel()
 
 	wf, err := c.Next(ctx, rpc.Filter{Labels: map[string]string{"tier": "spot"}})
@@ -570,12 +581,13 @@ func TestWSClient_ReadPump_UnsolicitedPushOverflowWarns(t *testing.T) {
 	const pushes = 70 // > inbox cap of 64, and nothing drains it here
 
 	warnsBefore := inboxFullWarns.n.Load()
+	hold := holdUntilCleanup(t)
 	srv := mockWSServer(t, func(conn *websocket.Conn) {
 		for i := 0; i < pushes; i++ {
 			env, _ := json.Marshal(envelope{Type: "noop"}) // no ref, not task.cancel
 			conn.WriteMessage(websocket.TextMessage, env)
 		}
-		time.Sleep(300 * time.Millisecond)
+		<-hold // keep the connection open until cleanup while readPump overflows
 	})
 	defer srv.Close()
 
@@ -729,7 +741,7 @@ func TestWSClient_SendWithRetry_ReconnectsThenSucceeds(t *testing.T) {
 	defer srv.Close()
 
 	c := NewWSClient(context.Background(), srv.URL[7:], "test-secret", "agent-1", false).(*WSClient)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), wsTestDeadline)
 	defer cancel()
 
 	// Init goes through sendWithRetry: the first attempt's response is lost on the
@@ -767,7 +779,7 @@ func TestWSClient_RegisterAgent(t *testing.T) {
 	case <-time.After(time.Second):
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), wsTestDeadline)
 	defer cancel()
 
 	agentID, err := c.RegisterAgent(ctx, rpc.AgentInfo{
