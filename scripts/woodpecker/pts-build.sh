@@ -18,7 +18,7 @@ set -euo pipefail
 SHA_SHORT=$(echo "${CI_COMMIT_SHA:-$(git rev-parse HEAD)}" | cut -c1-8)
 VERSION="v3.13.0-pts.${CI_PIPELINE_NUMBER:-0}"
 COMMIT_SHA="${CI_COMMIT_SHA:-$(git rev-parse HEAD)}"
-BUILD_CACHE_BUCKET="gs://ci-runners-de-build-cache"
+BUILD_CACHE_BUCKET="gs://peregrine-production-build-cache"
 DEPLOY_BUCKET="${BUILD_CACHE_BUCKET}/woodpecker-deploy"
 
 echo "==> pts-build: ${VERSION} (${SHA_SHORT})"
@@ -36,10 +36,75 @@ export GOMODCACHE="${HOME}/go/pkg/mod"
 export GOTELEMETRY=off
 mkdir -p "${GOCACHE}" "${GOMODCACHE}"
 
+# ── woodpecker-ci-writer access token (#322) ──
+# The build cache now lives in peregrine-production-build-cache. The ambient
+# builder identity (ci_image_builder@ci-runners-de) has NO path into
+# peregrine-production, so every build-cache read/write below authenticates as
+# woodpecker-ci-writer@ via a short-lived Keycloak-federated WIF token.
+# The mint script is published by peregrine-infrastructure (infra#4819) to the
+# agent-hooks bucket, fetched at runtime — the same self-service pattern this
+# fork already uses for get-gh-app-installation-token.sh (agent/hooks/environment
+# in peregrine-infrastructure): never pre-placed on disk. #329: pts-build.sh
+# originally assumed a pre-provisioned local file, which nothing ever wrote —
+# fetch it ourselves. ci-agent@ already holds objectViewer on this bucket, no
+# new IAM.
+#
+# The mint script is a thin wrapper that `source`s lib/mint-token.sh (and that
+# in turn sources lib/curl-secret-config.sh) — infra#5182: fetching only the
+# wrapper into a bare file leaves `$SCRIPT_DIR/lib/...` resolving to whatever
+# stale copy happens to be resident on pts-build-vm (or nothing at all), not the
+# fresh one the wrapper actually needs. Co-fetch the wrapper and both libs into
+# one directory, mirroring the bucket's own scripts/ + scripts/lib/ layout, so
+# the wrapper's relative `source` finds the copy we just pulled down.
+#
+# WCW_MINT_SCRIPT stays as a local-override escape hatch (e.g. testing against
+# a self-contained script already on disk — skips the co-fetch entirely). Fail
+# loud either way — never fall back to bare gsutil (the ambient identity can't
+# reach the new bucket, and a silent fallback is exactly the anti-pattern this
+# cutover exists to remove).
+WCW_MINT_HOOKS_BASE="${WCW_MINT_HOOKS_BASE:-gs://ci-runners-de-agent-hooks/scripts}"
+if [ -z "${WCW_MINT_SCRIPT:-}" ]; then
+    WCW_MINT_DIR=$(mktemp -d)
+    mkdir -p "${WCW_MINT_DIR}/lib"
+    WCW_MINT_FETCH_ERR=$(mktemp)
+    WCW_MINT_FETCH_OK=1
+    for WCW_REL in "woodpecker-ci-writer-mint-token.sh" "lib/mint-token.sh" "lib/curl-secret-config.sh"; do
+        if ! gcloud storage cat "${WCW_MINT_HOOKS_BASE}/${WCW_REL}" > "${WCW_MINT_DIR}/${WCW_REL}" 2>"${WCW_MINT_FETCH_ERR}"; then
+            echo "❌ could not fetch ${WCW_REL} from ${WCW_MINT_HOOKS_BASE}/${WCW_REL}: $(head -c 300 "${WCW_MINT_FETCH_ERR}")" >&2
+            WCW_MINT_FETCH_OK=0
+            break
+        fi
+    done
+    if [ "${WCW_MINT_FETCH_OK}" -ne 1 ]; then
+        echo "   set WCW_MINT_SCRIPT to a local override, or check pts-build-vm's ci-agent@ objectViewer grant (infra#4819/#5182)" >&2
+        rm -rf "${WCW_MINT_DIR}" "${WCW_MINT_FETCH_ERR}"
+        exit 1
+    fi
+    rm -f "${WCW_MINT_FETCH_ERR}"
+    chmod +x "${WCW_MINT_DIR}/woodpecker-ci-writer-mint-token.sh"
+    WCW_MINT_SCRIPT="${WCW_MINT_DIR}/woodpecker-ci-writer-mint-token.sh"
+fi
+if [ ! -x "${WCW_MINT_SCRIPT}" ]; then
+    echo "❌ woodpecker-ci-writer mint script not executable at ${WCW_MINT_SCRIPT}" >&2
+    exit 1
+fi
+WCW_TOKEN_FILE=$(mktemp)
+chmod 600 "${WCW_TOKEN_FILE}"
+trap 'shred -u "${WCW_TOKEN_FILE}" 2>/dev/null || rm -f "${WCW_TOKEN_FILE}"; [ -n "${WCW_MINT_DIR:-}" ] && rm -rf "${WCW_MINT_DIR}"' EXIT
+echo "==> Minting woodpecker-ci-writer access token..."
+"${WCW_MINT_SCRIPT}" "${WCW_TOKEN_FILE}"
+
+# Authenticated GCS access to peregrine-production-build-cache. gcloud storage
+# (not bare gsutil) with the minted token; supports the same "-" stdin/stdout
+# streaming the tarball caches rely on.
+wcw_storage() {
+    gcloud storage "$@" --access-token-file="${WCW_TOKEN_FILE}"
+}
+
 # (#217) Single-object tarball restore: one GCS GET, no per-object round-trips.
 # zstd -d is ~3-4x faster than gzip on Go build artifacts.
 echo "==> Restoring go-build cache..."
-if gsutil -q cp "${BUILD_CACHE_BUCKET}/go-build-cache.tar.zst" - 2>/dev/null \
+if wcw_storage cp "${BUILD_CACHE_BUCKET}/go-build-cache.tar.zst" - 2>/dev/null \
     | zstd -d | tar -x -C "${HOME}"; then
     echo "    go-build: $(du -sh "${GOCACHE}" | cut -f1)"
 else
@@ -49,7 +114,7 @@ fi
 # (#221) go-mod tarball restore — same approach as go-build. A warm cache
 # reduces go mod download from ~8-9min (network fetch) to near-zero (local verify).
 echo "==> Restoring go-mod cache..."
-if gsutil -q cp "${BUILD_CACHE_BUCKET}/go-mod-cache.tar.zst" - 2>/dev/null \
+if wcw_storage cp "${BUILD_CACHE_BUCKET}/go-mod-cache.tar.zst" - 2>/dev/null \
     | zstd -d | tar -x -C "${HOME}"; then
     echo "    go-mod: $(du -sh "${GOMODCACHE}" | cut -f1)"
 else
@@ -66,10 +131,10 @@ go mod download 2>/dev/null && echo "    modules ready" || \
 # node_modules.
 echo ""; echo "==> Restoring web cache (dist + node_modules)..."
 mkdir -p web/dist
-if gsutil -q cp "${BUILD_CACHE_BUCKET}/web-cache.tar.zst" - 2>/dev/null \
+if wcw_storage cp "${BUILD_CACHE_BUCKET}/web-cache.tar.zst" - 2>/dev/null \
     | zstd -d | tar -x -C web; then
     echo "    dist/: $(ls web/dist/ | wc -l) files (from tarball)"
-elif gsutil -m -q rsync -r "${BUILD_CACHE_BUCKET}/woodpecker-web-dist/" web/dist/ 2>/dev/null \
+elif wcw_storage rsync -r "${BUILD_CACHE_BUCKET}/woodpecker-web-dist/" web/dist/ 2>/dev/null \
     && [ -f web/dist/index.html ]; then
     # Migration bridge: tarball not yet primed — fall back to legacy rsync path.
     # woodpecker-web-dist/ is still valid; tarball will be saved at end of this
@@ -103,13 +168,13 @@ echo "    $(du -h bin/woodpecker-agent | cut -f1)"
 # ── Save caches ──
 echo ""; echo "==> Saving go-build cache..."
 if tar -c -C "${HOME}" .cache/go-build \
-    | zstd -3 -T0 | gsutil -q cp - "${BUILD_CACHE_BUCKET}/go-build-cache.tar.zst"; then
+    | zstd -3 -T0 | wcw_storage cp - "${BUILD_CACHE_BUCKET}/go-build-cache.tar.zst"; then
     echo "    go-build cache saved"
     # One-time migration: remove legacy rsync tree now that tarball is in place (#217).
     # Idempotent — silently skips if already removed.
-    if gsutil ls "${BUILD_CACHE_BUCKET}/go-build/" 2>/dev/null | grep -q .; then
+    if wcw_storage ls "${BUILD_CACHE_BUCKET}/go-build/" 2>/dev/null | grep -q .; then
         echo "    Removing legacy go-build/ (migrated to tarball)..."
-        gsutil -m -q rm -r "${BUILD_CACHE_BUCKET}/go-build/" 2>/dev/null && \
+        wcw_storage rm -r "${BUILD_CACHE_BUCKET}/go-build/" 2>/dev/null && \
             echo "    Legacy go-build/ removed (12 GiB freed)" || \
             echo "    ⚠️  Legacy go-build/ removal failed (non-fatal)"
     fi
@@ -119,12 +184,12 @@ fi
 
 echo "==> Saving go-mod cache..."
 tar -c -C "${HOME}" go/pkg/mod \
-    | zstd -3 -T0 | gsutil -q cp - "${BUILD_CACHE_BUCKET}/go-mod-cache.tar.zst" && \
+    | zstd -3 -T0 | wcw_storage cp - "${BUILD_CACHE_BUCKET}/go-mod-cache.tar.zst" && \
     echo "    go-mod cache saved" || echo "    ⚠️  go-mod cache save failed (non-fatal)"
 
 echo "==> Saving web cache (dist + node_modules)..."
 tar -c -C web dist node_modules \
-    | zstd -3 -T0 | gsutil -q cp - "${BUILD_CACHE_BUCKET}/web-cache.tar.zst" && \
+    | zstd -3 -T0 | wcw_storage cp - "${BUILD_CACHE_BUCKET}/web-cache.tar.zst" && \
     echo "    web cache saved" || echo "    ⚠️  web cache save failed (non-fatal)"
 
 # ── Upload binaries to GCS ──
@@ -134,10 +199,10 @@ echo "${SERVER_SHA256}" > bin/woodpecker-server.sha256
 AGENT_SHA256=$(sha256sum bin/woodpecker-agent | awk '{print $1}')
 echo "${AGENT_SHA256}" > bin/woodpecker-agent.sha256
 
-gsutil -q cp bin/woodpecker-server "${DEPLOY_BUCKET}/${VERSION}/woodpecker-server"
-gsutil -q cp bin/woodpecker-server.sha256 "${DEPLOY_BUCKET}/${VERSION}/woodpecker-server.sha256"
-gsutil -q cp bin/woodpecker-agent "${DEPLOY_BUCKET}/${VERSION}/woodpecker-agent"
-gsutil -q cp bin/woodpecker-agent.sha256 "${DEPLOY_BUCKET}/${VERSION}/woodpecker-agent.sha256"
+wcw_storage cp bin/woodpecker-server "${DEPLOY_BUCKET}/${VERSION}/woodpecker-server"
+wcw_storage cp bin/woodpecker-server.sha256 "${DEPLOY_BUCKET}/${VERSION}/woodpecker-server.sha256"
+wcw_storage cp bin/woodpecker-agent "${DEPLOY_BUCKET}/${VERSION}/woodpecker-agent"
+wcw_storage cp bin/woodpecker-agent.sha256 "${DEPLOY_BUCKET}/${VERSION}/woodpecker-agent.sha256"
 
 echo "    Server + agent uploaded: ${DEPLOY_BUCKET}/${VERSION}/"
 echo "    server SHA256: ${SERVER_SHA256}"
@@ -242,12 +307,12 @@ fi
 # A server restart triggered by the marker can only kill the lightweight
 # cleanup steps (which are non-critical), not this script.
 echo ""; echo "==> Writing pending-deploy marker..."
-if ! gsutil -q stat "${DEPLOY_BUCKET}/${VERSION}/woodpecker-server" 2>/dev/null; then
+if ! wcw_storage ls "${DEPLOY_BUCKET}/${VERSION}/woodpecker-server" >/dev/null 2>&1; then
     echo "    ❌ Binary not found — aborting promote to prevent a bad deploy"
     exit 1
 fi
 printf '%s\n%s\n%s' "${VERSION}" "${COMMIT_SHA}" "${CI_PIPELINE_NUMBER:-0}" | \
-    gsutil -q cp - "${DEPLOY_BUCKET}/pending"
+    wcw_storage cp - "${DEPLOY_BUCKET}/pending"
 echo "    Pending marker written — woodpecker-deploy.sh will pick up within 30s"
 
 echo ""; echo "==> pts-build compile complete: ${VERSION}"

@@ -757,8 +757,17 @@ func (c *client) loadChangedFilesFromPullRequest(ctx context.Context, pull *gith
 
 	opts := &github.ListOptions{Page: 1}
 	for opts.Page > 0 {
-		files, resp, err := gh.PullRequests.ListFiles(ctx, repo.Owner, repo.Name, pull.GetNumber(), opts)
-		if err != nil {
+		var files []*github.CommitFile
+		var resp *github.Response
+		// Retry transient forge errors: this runs inside the inbound webhook
+		// request, and an unretried 5xx/timeout here becomes a permanent 400
+		// that the forge never redelivers, stranding the CI trigger
+		// (woodpecker#321).
+		if err := retryHookForgeCall(ctx, func() (*github.Response, error) {
+			var e error
+			files, resp, e = gh.PullRequests.ListFiles(ctx, repo.Owner, repo.Name, pull.GetNumber(), opts)
+			return resp, e
+		}); err != nil {
 			return nil, err
 		}
 
@@ -800,28 +809,37 @@ func (c *client) getTagCommitSHA(ctx context.Context, repo *model.Repo, tagName 
 		return "", err
 	}
 
-	page := 1
-	var tag *github.RepositoryTag
-	for {
-		tags, _, err := gh.Repositories.ListTags(ctx, repo.Owner, repo.Name, &github.ListOptions{Page: page})
-		if err != nil {
+	return resolveTagSHA(ctx, gh, repo.Owner, repo.Name, tagName)
+}
+
+// resolveTagSHA returns the commit SHA of tagName by paging through the repo's
+// tags. It advances pagination off the response's NextPage and stops when the
+// listing is exhausted (NextPage == 0), so a tag that is not on the first page
+// is still found and a tag that does not exist returns an error — rather than
+// looping forever on page 1, which the previous `for {}` (never advancing the
+// page) did whenever the tag was absent from the first page (woodpecker#324).
+func resolveTagSHA(ctx context.Context, gh *github.Client, owner, name, tagName string) (string, error) {
+	opts := &github.ListOptions{Page: 1}
+	for opts.Page > 0 {
+		var tags []*github.RepositoryTag
+		var resp *github.Response
+		// Retry transient forge errors (webhook-synchronous path, see #321).
+		if err := retryHookForgeCall(ctx, func() (*github.Response, error) {
+			var e error
+			tags, resp, e = gh.Repositories.ListTags(ctx, owner, name, opts)
+			return resp, e
+		}); err != nil {
 			return "", err
 		}
 
 		for _, t := range tags {
 			if t.GetName() == tagName {
-				tag = t
-				break
+				return t.GetCommit().GetSHA(), nil
 			}
 		}
-		if tag != nil {
-			break
-		}
+		opts.Page = resp.NextPage
 	}
-	if tag == nil {
-		return "", fmt.Errorf("could not find tag %s", tagName)
-	}
-	return tag.GetCommit().GetSHA(), nil
+	return "", fmt.Errorf("could not find tag %s", tagName)
 }
 
 func (c *client) loadChangedFilesFromCommits(ctx context.Context, tmpRepo *model.Repo, pipeline *model.Pipeline, curr, prev string) (*model.Pipeline, error) {
@@ -867,8 +885,14 @@ func (c *client) loadChangedFilesFromCommits(ctx context.Context, tmpRepo *model
 	if prev == "" {
 		opts := &github.ListOptions{Page: 1}
 		for opts.Page > 0 {
-			commit, resp, err := gh.Repositories.GetCommit(ctx, repo.Owner, repo.Name, curr, opts)
-			if err != nil {
+			var commit *github.RepositoryCommit
+			var resp *github.Response
+			// Retry transient forge errors (webhook-synchronous path, see #321).
+			if err := retryHookForgeCall(ctx, func() (*github.Response, error) {
+				var e error
+				commit, resp, e = gh.Repositories.GetCommit(ctx, repo.Owner, repo.Name, curr, opts)
+				return resp, e
+			}); err != nil {
 				return nil, err
 			}
 			for _, file := range commit.Files {
@@ -879,8 +903,14 @@ func (c *client) loadChangedFilesFromCommits(ctx context.Context, tmpRepo *model
 	} else {
 		opts := &github.ListOptions{Page: 1}
 		for opts.Page > 0 {
-			comp, resp, err := gh.Repositories.CompareCommits(ctx, repo.Owner, repo.Name, prev, curr, opts)
-			if err != nil {
+			var comp *github.CommitsComparison
+			var resp *github.Response
+			// Retry transient forge errors (webhook-synchronous path, see #321).
+			if err := retryHookForgeCall(ctx, func() (*github.Response, error) {
+				var e error
+				comp, resp, e = gh.Repositories.CompareCommits(ctx, repo.Owner, repo.Name, prev, curr, opts)
+				return resp, e
+			}); err != nil {
 				return nil, err
 			}
 			for _, file := range comp.Files {

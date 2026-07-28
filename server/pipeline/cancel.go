@@ -223,6 +223,21 @@ func cancelPreviousPipelines(
 			return false
 		}
 
+		// #338: a duplicate/redelivered webhook for the same commit must never
+		// cancel its own twin. Without this, a GitHub redelivery (or a genuine
+		// double-delivery) of an already-processed push creates a second
+		// pipeline for the identical commit, which this function would
+		// otherwise treat as "a newer push superseding an older one on this
+		// branch" and cancel the original — throwing away in-flight progress
+		// and restarting CI from zero for no reason at all, since both
+		// pipelines are building the exact same code. Guarded on non-empty:
+		// an unset Commit ("") is "unknown," not "matches" — two unrelated
+		// pipelines that both happen to have no recorded commit must not be
+		// treated as duplicates of each other.
+		if pipeline.Commit != "" && pipeline.Commit == active.Commit {
+			return false
+		}
+
 		// find events for the same context
 		switch pipeline.Event {
 		case model.EventPush:
