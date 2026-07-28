@@ -18,6 +18,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"time"
 
 	"github.com/rs/zerolog/log"
 	"github.com/urfave/cli/v3"
@@ -73,9 +74,28 @@ func runGrpcServer(ctx context.Context, c *cli.Command, _store store.Store) erro
 		if grpcServer == nil {
 			return
 		}
+		// infra#5208/woodpecker#335: grpc.Server.GracefulStop() has no timeout of
+		// its own -- it blocks until every currently-connected agent's long-poll
+		// Next() stream closes naturally, however long that takes. With a large
+		// connected fleet, that turned a deploy restart's SIGTERM into a ~10min
+		// hang (systemd eventually SIGKILLs it), during which the webhook
+		// receiver on the same process is also down. Bound it: give agents
+		// shutdownTimeout to disconnect gracefully, then hard-stop so the
+		// process actually exits promptly and predictably.
 		log.Info().Msg("terminating grpc service gracefully")
-		grpcServer.GracefulStop()
-		log.Info().Msg("grpc service stopped")
+		stopped := make(chan struct{})
+		go func() {
+			grpcServer.GracefulStop()
+			close(stopped)
+		}()
+		select {
+		case <-stopped:
+			log.Info().Msg("grpc service stopped gracefully")
+		case <-time.After(shutdownTimeout):
+			log.Warn().Dur("timeout", shutdownTimeout).
+				Msg("grpc graceful stop timed out — forcing hard stop so shutdown isn't unbounded")
+			grpcServer.Stop()
+		}
 	}()
 
 	if err := grpcServer.Serve(lis); err != nil {
