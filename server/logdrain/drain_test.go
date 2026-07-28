@@ -35,12 +35,12 @@ func TestEnabled(t *testing.T) {
 	var nilDrain *Drain
 	assert.False(t, nilDrain.Enabled(), "nil drain is disabled")
 	assert.False(t, (&Drain{}).Enabled(), "zero drain is disabled")
-	assert.True(t, newDrain(&mockLogger{}, "log", nil).Enabled(), "drain with a logger is enabled")
+	assert.True(t, newDrain(&mockLogger{}, nil).Enabled(), "drain with a logger is enabled")
 }
 
 func TestAppendForwardsEachLine(t *testing.T) {
 	m := &mockLogger{}
-	d := newDrain(m, "projects/p/logs/woodpecker-steps", nil)
+	d := newDrain(m, nil)
 	step := &model.Step{ID: 7, Name: "deploy", State: model.StatusRunning, Started: 1_000_000}
 
 	d.Append("org/repo", 42, step, []*model.LogEntry{
@@ -51,7 +51,10 @@ func TestAppendForwardsEachLine(t *testing.T) {
 
 	assert.Len(t, m.entries, 2)
 	e0 := m.entries[0]
-	assert.Equal(t, "projects/p/logs/woodpecker-steps", e0.LogName)
+	// #333: LogName must stay empty on the entry — the Logger returned by
+	// client.Logger(logName) already scopes every write to that log name;
+	// setting Entry.LogName too makes the real GCP client reject the write.
+	assert.Empty(t, e0.LogName, "Entry.LogName must not be set — the Logger already scopes it")
 	assert.Equal(t, "org/repo", e0.Labels["repo"])
 	assert.Equal(t, "42", e0.Labels["pipeline"])
 	assert.Equal(t, "deploy", e0.Labels["step"])
@@ -78,7 +81,7 @@ func TestAppendDisabledIsNoOp(t *testing.T) {
 
 func TestAppendNilStepIsNoOp(t *testing.T) {
 	m := &mockLogger{}
-	d := newDrain(m, "log", nil)
+	d := newDrain(m, nil)
 	d.Append("org/repo", 1, nil, []*model.LogEntry{{Data: []byte("x")}})
 	assert.Empty(t, m.entries)
 }
@@ -86,7 +89,7 @@ func TestAppendNilStepIsNoOp(t *testing.T) {
 func TestBuildEntryZeroStartUsesIngestionTime(t *testing.T) {
 	// step.Started == 0 → leave Timestamp zero so the GCP client stamps now.
 	step := &model.Step{ID: 1, Name: "x", State: model.StatusSuccess, Started: 0}
-	e := buildEntry("log", "org/repo", 1, step, &model.LogEntry{Time: 5, Data: []byte("hi")})
+	e := buildEntry("org/repo", 1, step, &model.LogEntry{Time: 5, Data: []byte("hi")})
 	assert.True(t, e.Timestamp.IsZero(), "zero start → zero timestamp (ingestion time)")
 	assert.Equal(t, logging.Info, e.Severity)
 }
@@ -112,11 +115,11 @@ func TestClose(t *testing.T) {
 	assert.NoError(t, (&Drain{}).Close(), "disabled drain close is a no-op")
 
 	called := false
-	d := newDrain(&mockLogger{}, "log", func() error { called = true; return nil })
+	d := newDrain(&mockLogger{}, func() error { called = true; return nil })
 	assert.NoError(t, d.Close())
 	assert.True(t, called, "closeFn invoked")
 
 	boom := errors.New("flush failed")
-	d2 := newDrain(&mockLogger{}, "log", func() error { return boom })
+	d2 := newDrain(&mockLogger{}, func() error { return boom })
 	assert.ErrorIs(t, d2.Close(), boom, "close surfaces the client error")
 }
