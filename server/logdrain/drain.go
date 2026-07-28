@@ -41,14 +41,13 @@ type entryLogger interface {
 // nil *Drain) is a disabled no-op, so callers can use it unconditionally.
 type Drain struct {
 	logger  entryLogger
-	logName string
 	closeFn func() error
 }
 
 // newDrain builds a Drain around an entryLogger — the testable core, used by
 // New (real client) and by tests (mock).
-func newDrain(logger entryLogger, logName string, closeFn func() error) *Drain {
-	return &Drain{logger: logger, logName: logName, closeFn: closeFn}
+func newDrain(logger entryLogger, closeFn func() error) *Drain {
+	return &Drain{logger: logger, closeFn: closeFn}
 }
 
 // Enabled reports whether the drain will forward anything.
@@ -67,7 +66,7 @@ func (d *Drain) Append(repoFullName string, pipelineNumber int64, step *model.St
 		if e == nil {
 			continue
 		}
-		d.logger.Log(buildEntry(d.logName, repoFullName, pipelineNumber, step, e))
+		d.logger.Log(buildEntry(repoFullName, pipelineNumber, step, e))
 	}
 }
 
@@ -85,13 +84,19 @@ func (d *Drain) Close() error {
 // (see agent/log/line_writer.go), NOT a wall-clock value, so it is reconstructed
 // as step.Started + offset. When the step has no recorded start (Started == 0),
 // the Timestamp is left zero and the GCP client stamps ingestion time.
-func buildEntry(logName, repoFullName string, pipelineNumber int64, step *model.Step, e *model.LogEntry) logging.Entry {
+//
+// #333: Entry.LogName must NOT be set here — the *logging.Logger returned by
+// client.Logger(logName) already scopes every entry it writes to that log
+// name, and the GCP client rejects a write where Entry.LogName is set too
+// ("Entry.LogName should be not be set when writing"). Setting it here (as a
+// previous version of this function did) silently failed every single write
+// via the best-effort error handler — the drain never actually wrote a line.
+func buildEntry(repoFullName string, pipelineNumber int64, step *model.Step, e *model.LogEntry) logging.Entry {
 	var ts time.Time
 	if step.Started > 0 {
 		ts = time.Unix(step.Started+e.Time, 0).UTC()
 	}
 	return logging.Entry{
-		LogName: logName,
 		Resource: &mrpb.MonitoredResource{
 			Type:   "generic_task",
 			Labels: map[string]string{"job": "woodpecker-steps"},
