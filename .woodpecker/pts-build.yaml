@@ -26,7 +26,10 @@ steps:
         from_secret: woodpecker_api_token
       WOODPECKER_AGENT_SECRET:
         from_secret: woodpecker_agent_secret
-      GH_TOKEN:
-        from_secret: gh_token
     commands:
-      - scripts/woodpecker/pts-wake.sh
+      - |
+        # GH_TOKEN read from the CI agent hook's cached App-token mint (infra#4594) —
+        # the `gh_token` GCP SM secret referenced here previously is disabled estate-wide.
+        [ -s /tmp/.gh-token ] || { echo "ERROR: /tmp/.gh-token missing or empty — the hook's App-token mint didn't land on this agent this run (see agent/hooks/environment's WARN above). Not proceeding with an empty GH_TOKEN." >&2; exit 1; }
+        export GH_TOKEN="$(cat /tmp/.gh-token)"
+        scripts/woodpecker/pts-wake.sh
