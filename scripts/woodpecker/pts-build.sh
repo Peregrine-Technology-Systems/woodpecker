@@ -41,15 +41,31 @@ mkdir -p "${GOCACHE}" "${GOMODCACHE}"
 # builder identity (ci_image_builder@ci-runners-de) has NO path into
 # peregrine-production, so every build-cache read/write below authenticates as
 # woodpecker-ci-writer@ via a short-lived Keycloak-federated WIF token.
-# The mint script is owned + provisioned onto pts-build-vm by
-# peregrine-infrastructure (infra#4819); its on-VM path is the cross-repo seam,
-# overridable via WCW_MINT_SCRIPT. Fail loud if it isn't present — never fall
-# back to bare gsutil (the ambient identity can't reach the new bucket, and a
-# silent fallback is exactly the anti-pattern this cutover exists to remove).
-WCW_MINT_SCRIPT="${WCW_MINT_SCRIPT:-/opt/woodpecker/woodpecker-ci-writer-mint-token.sh}"
+# The mint script is published by peregrine-infrastructure (infra#4819) to the
+# agent-hooks bucket, fetched at runtime — the same self-service pattern this
+# fork already uses for get-gh-app-installation-token.sh (agent/hooks/environment
+# in peregrine-infrastructure): never pre-placed on disk. #329: pts-build.sh
+# originally assumed a pre-provisioned local file, which nothing ever wrote —
+# fetch it ourselves. ci-agent@ already holds objectViewer on this bucket, no
+# new IAM. WCW_MINT_SCRIPT stays as a local-override escape hatch (e.g. testing
+# against a script already on disk). Fail loud either way — never fall back to
+# bare gsutil (the ambient identity can't reach the new bucket, and a silent
+# fallback is exactly the anti-pattern this cutover exists to remove).
+WCW_MINT_BUCKET="${WCW_MINT_BUCKET:-gs://ci-runners-de-agent-hooks/scripts/woodpecker-ci-writer-mint-token.sh}"
+if [ -z "${WCW_MINT_SCRIPT:-}" ]; then
+    WCW_MINT_SCRIPT=$(mktemp)
+    WCW_MINT_FETCH_ERR=$(mktemp)
+    if ! gcloud storage cat "${WCW_MINT_BUCKET}" > "${WCW_MINT_SCRIPT}" 2>"${WCW_MINT_FETCH_ERR}"; then
+        echo "❌ could not fetch woodpecker-ci-writer mint script from ${WCW_MINT_BUCKET}: $(head -c 300 "${WCW_MINT_FETCH_ERR}")" >&2
+        echo "   set WCW_MINT_SCRIPT to a local override, or check pts-build-vm's ci-agent@ objectViewer grant (infra#4819)" >&2
+        rm -f "${WCW_MINT_SCRIPT}" "${WCW_MINT_FETCH_ERR}"
+        exit 1
+    fi
+    rm -f "${WCW_MINT_FETCH_ERR}"
+    chmod +x "${WCW_MINT_SCRIPT}"
+fi
 if [ ! -x "${WCW_MINT_SCRIPT}" ]; then
-    echo "❌ woodpecker-ci-writer mint script not found/executable at ${WCW_MINT_SCRIPT}" >&2
-    echo "   set WCW_MINT_SCRIPT, or provision it onto pts-build-vm (infra#4819)" >&2
+    echo "❌ woodpecker-ci-writer mint script not executable at ${WCW_MINT_SCRIPT}" >&2
     exit 1
 fi
 WCW_TOKEN_FILE=$(mktemp)
