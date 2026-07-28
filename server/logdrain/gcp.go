@@ -37,11 +37,18 @@ const DefaultLogName = "woodpecker-steps"
 // (severity-based alerting/log-based monitoring catches it) and carry a
 // running failure count so "one transient blip" and "systemically broken
 // since startup" are distinguishable from the log line alone.
+// logDrainWriteErrorType is a stable field value for filtering/alerting on
+// this exact event, independent of the human-readable Msg() text — the same
+// reason this repo's testing discipline requires typed errors at substrate
+// boundaries (errors.Is, never string-matching the message). If the wording
+// in Msg() ever changes, anything matching on this field keeps working.
+const logDrainWriteErrorType = "log_drain_write_error"
+
 func newOnErrorHandler() func(error) {
 	var failureCount atomic.Uint64
 	return func(e error) {
 		n := failureCount.Add(1)
-		log.Error().Err(e).Uint64("consecutive_failures", n).
+		log.Error().Err(e).Str("type", logDrainWriteErrorType).Uint64("consecutive_failures", n).
 			Msg("log drain: Cloud Logging write error (best-effort, dropped — but NOT silent)")
 	}
 }

@@ -78,10 +78,12 @@ func TestOnErrorHandlerEscalatesLoudlyWithRunningCount(t *testing.T) {
 	records := onErrorLogLines(t, buf)
 	if assert.Len(t, records, 2, "both failures logged") {
 		assert.Equal(t, "error", records[0]["level"], "first failure is ERROR, not WARN — silent-OK is what shipped before #333")
+		assert.Equal(t, logDrainWriteErrorType, records[0]["type"], "stable type field — filterable/alertable without string-matching Msg()")
 		assert.Equal(t, float64(1), records[0]["consecutive_failures"])
 		assert.Equal(t, "boom 1", records[0]["error"])
 
 		assert.Equal(t, "error", records[1]["level"])
+		assert.Equal(t, logDrainWriteErrorType, records[1]["type"])
 		assert.Equal(t, float64(2), records[1]["consecutive_failures"], "count keeps rising so a systemic outage reads differently from one blip")
 		assert.Equal(t, "boom 2", records[1]["error"])
 	}
