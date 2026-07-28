@@ -190,10 +190,13 @@ func TestKillReasonFromWorkflows_NilSafety(t *testing.T) {
 	assert.Equal(t, "agent_done_kill", killReasonFromWorkflows([]*model.Workflow{nil, nil}))
 }
 
-// TestKillReasonFromWorkflows_AgentPreempted — a workflow the agent canceled
-// because it was shutting down (SIGTERM/preemption, #275) is tagged
-// "agent_preempted", distinct from the generic agent_done_kill fallback. (#275)
-func TestKillReasonFromWorkflows_AgentPreempted(t *testing.T) {
+// TestKillReasonFromWorkflows_AgentShutdown — a workflow the agent canceled
+// because it received SIGTERM (#275) is tagged "agent_shutdown", distinct
+// from the generic agent_done_kill fallback. #339: was "agent_preempted"
+// until this was renamed — SIGTERM alone doesn't confirm a GCP preemption
+// (see killReasonFromWorkflows's own comment for the incident that proved
+// it: three non-preemptible ondemand VMs hit this same signature).
+func TestKillReasonFromWorkflows_AgentShutdown(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
 		name      string
@@ -201,12 +204,12 @@ func TestKillReasonFromWorkflows_AgentPreempted(t *testing.T) {
 		want      string
 	}{
 		{
-			name:      "agent shutdown signature → agent_preempted",
+			name:      "agent shutdown signature → agent_shutdown",
 			workflows: []*model.Workflow{{ID: 1, State: model.StatusKilled, Error: "agent shutdown"}},
-			want:      "agent_preempted",
+			want:      "agent_shutdown",
 		},
 		{
-			name:      "plain Canceled (server-issued) → agent_done_kill, not preempted",
+			name:      "plain Canceled (server-issued) → agent_done_kill, not agent_shutdown",
 			workflows: []*model.Workflow{{ID: 1, State: model.StatusKilled, Error: "Canceled"}},
 			want:      "agent_done_kill",
 		},
@@ -226,7 +229,7 @@ func TestKillReasonFromWorkflows_AgentPreempted(t *testing.T) {
 				{ID: 1, State: model.StatusSuccess},
 				{ID: 2, State: model.StatusKilled, Error: "agent shutdown"},
 			},
-			want: "agent_preempted",
+			want: "agent_shutdown",
 		},
 	}
 	for _, tc := range cases {
@@ -236,10 +239,11 @@ func TestKillReasonFromWorkflows_AgentPreempted(t *testing.T) {
 	}
 }
 
-// TestUpdateStatusToDone_StampsKillReason_AgentPreempted — end-to-end through
+// TestUpdateStatusToDone_StampsKillReason_AgentShutdown — end-to-end through
 // the #202 derivation: a killed rollup whose workflow carries the agent-shutdown
-// signature stamps KillReason="agent_preempted". (#275)
-func TestUpdateStatusToDone_StampsKillReason_AgentPreempted(t *testing.T) {
+// signature stamps KillReason="agent_shutdown" (#275, renamed from
+// "agent_preempted" in #339).
+func TestUpdateStatusToDone_StampsKillReason_AgentShutdown(t *testing.T) {
 	t.Parallel()
 	now := time.Now().Unix()
 	pl := model.Pipeline{
@@ -248,7 +252,7 @@ func TestUpdateStatusToDone_StampsKillReason_AgentPreempted(t *testing.T) {
 		},
 	}
 	updated, _ := UpdateStatusToDone(mockStorePipeline(t), pl, model.StatusKilled, now)
-	assert.Equal(t, "agent_preempted", updated.KillReason)
+	assert.Equal(t, "agent_shutdown", updated.KillReason)
 	assert.Equal(t, now, updated.KilledAt)
 }
 

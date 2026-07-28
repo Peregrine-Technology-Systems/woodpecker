@@ -91,7 +91,7 @@ func TestKilledEventCarriesKillReason(t *testing.T) {
 
 	ev := sampleEvent(plugin.EventPipelineKilled)
 	ev.Status = model.StatusKilled
-	ev.KillReason = "agent_preempted" // #275 graceful-preemption attribution
+	ev.KillReason = "agent_shutdown" // #275 agent-self-reported-SIGTERM attribution, renamed from "agent_preempted" in #339
 
 	require.NoError(t, pub.OnEvent(context.Background(), ev))
 	require.Len(t, *messages, 1)
@@ -101,10 +101,10 @@ func TestKilledEventCarriesKillReason(t *testing.T) {
 	require.NoError(t, json.Unmarshal((*messages)[0].data, &got))
 	assert.Equal(t, "pipeline.killed", got.Type)
 	assert.Equal(t, "killed", got.Data.Status)
-	assert.Equal(t, "agent_preempted", got.Data.KillReason)
+	assert.Equal(t, "agent_shutdown", got.Data.KillReason)
 	// ...and present as a flat sibling key in the raw JSON, so monitoring can
 	// land it in BigQuery (#3331).
-	assert.Contains(t, string((*messages)[0].data), `"kill_reason":"agent_preempted"`)
+	assert.Contains(t, string((*messages)[0].data), `"kill_reason":"agent_shutdown"`)
 }
 
 func TestOnEventAttributes(t *testing.T) {

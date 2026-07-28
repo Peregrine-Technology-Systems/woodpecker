@@ -62,9 +62,11 @@ type Pipeline struct {
 	// pending_only_canceled), reconcile.go::killOrphan (reconciler_orphan),
 	// rpc.go::release_agent_tasks (agent_disconnect), and external status
 	// API (external_status_api). The agent-reported-kill fallback in
-	// UpdateStatusToDone splits into agent_preempted (the agent self-canceled
-	// because it was terminating — SIGTERM/spot preemption, #275) and the
-	// generic agent_done_kill (any other agent-reported kill). Empty for
+	// UpdateStatusToDone splits into agent_shutdown (the agent self-canceled
+	// because it received SIGTERM, #275 — renamed from "agent_preempted" in
+	// #339, since SIGTERM doesn't by itself mean a GCP spot preemption; see
+	// killReasonFromWorkflows) and the generic agent_done_kill (any other
+	// agent-reported kill). Empty for
 	// pre-#202 rows; SOC 2 / ISO 27001 attribution + #190 mode-C diagnostics
 	// surface.
 	KillReason string `json:"kill_reason,omitempty" xorm:"varchar(64) 'kill_reason'"`

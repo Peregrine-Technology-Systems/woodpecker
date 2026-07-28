@@ -95,12 +95,24 @@ func UpdateStatusToDone(store store.Store, pipeline model.Pipeline, status model
 // killReasonFromWorkflows derives a KillReason string from the rolled-up
 // state of the pipeline's workflows. Inspects each workflow for the
 // canonical agent-disconnect signature, then for the agent-shutdown
-// (SIGTERM/preemption) signature (#275); falls back to a generic
-// "agent_done_kill" tag when neither is observed (the agent itself reported a
-// Killed/Canceled state for its own reasons). The agent-shutdown class is
-// broken out from the generic fallback so a recoverable spot preemption is
+// (SIGTERM) signature (#275); falls back to a generic "agent_done_kill" tag
+// when neither is observed (the agent itself reported a Killed/Canceled
+// state for its own reasons). The agent-shutdown class is broken out from
+// the generic fallback so a recoverable agent-initiated cancel is
 // distinguishable from an arbitrary agent-reported kill in forensics and bus
 // telemetry — it is the precondition for the self-heal re-queue follow-up.
+//
+// #339: this used to return "agent_preempted", presuming the SIGTERM's
+// cause was a GCP spot preemption. It wasn't — three ondemand (non-
+// preemptible, confirmed via GCP audit log: zero compute.instances.{insert,
+// delete,stop} events in the incident window) VMs got this exact label from
+// a plain agent SIGTERM unrelated to any preemption (a systemd
+// restart/connectivity event on the box, not GCP evicting it). The agent's
+// own SIGTERM handler (agent/runner.go) is honest about this ambiguity in
+// its own comments ("SIGTERM — spot preemption / systemd stop"); the bug was
+// this function collapsing that ambiguity into a specific, unverified GCP
+// phenomenon. "agent_shutdown" reports exactly what's known — the agent
+// self-reported receiving SIGTERM — without presuming why.
 func killReasonFromWorkflows(workflows []*model.Workflow) string {
 	for _, w := range workflows {
 		if w != nil && w.KilledByAgentDisconnect() {
@@ -109,7 +121,7 @@ func killReasonFromWorkflows(workflows []*model.Workflow) string {
 	}
 	for _, w := range workflows {
 		if w != nil && w.CanceledByAgentShutdown() {
-			return "agent_preempted"
+			return "agent_shutdown"
 		}
 	}
 	return "agent_done_kill"

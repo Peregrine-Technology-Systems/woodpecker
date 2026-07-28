@@ -46,7 +46,7 @@ type pubsubData struct {
 	Author   string `json:"author"`
 	Message  string `json:"message"`
 	Event    string `json:"event"`
-	// KillReason is the #202 kill attribution (agent_disconnect / agent_preempted
+	// KillReason is the #202 kill attribution (agent_disconnect / agent_shutdown
 	// / user_initiated / superseded_by_newer_push / pending_only_canceled /
 	// agent_done_kill / …). omitempty so it appears only on terminal-kill events;
 	// surfaced on the bus so monitoring can land it in BigQuery and split a

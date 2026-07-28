@@ -43,7 +43,7 @@ expected a different shape that was never what the fork emitted).
   "author":   "amalc",
   "message":  "fix: …",
   "event":    "push",
-  "kill_reason": "agent_preempted"
+  "kill_reason": "agent_shutdown"
 }
 ```
 
@@ -57,7 +57,7 @@ expected a different shape that was never what the fork emitted).
 | `author`   | string | |
 | `message`  | string | first line of the commit message, truncated to 80 chars. |
 | `event`    | string | forge event (`push`, `pull_request`, `manual`, `deployment`, …). |
-| `kill_reason` | string | **optional** — the #202 kill attribution. Present **only on terminal-kill states** (`status` is `killed`/`canceled`/`superseded`); **omitted** otherwise. Values: `agent_disconnect` (hard agent WS drop), `agent_preempted` (graceful SIGTERM/spot-preemption self-report, #275), `agent_done_kill` (any other agent-reported kill), `user_initiated`, `superseded_by_newer_push`, `pending_only_canceled`, `reconciler_orphan`, `external_status_api`. **Additive, non-breaking** (added without a `schema_version` bump per the breaking-change-only rule); subscribers on `"1.0"` that ignore unknown fields are unaffected, and consumers that want the attribution read it when present. |
+| `kill_reason` | string | **optional** — the #202 kill attribution. Present **only on terminal-kill states** (`status` is `killed`/`canceled`/`superseded`); **omitted** otherwise. Values: `agent_disconnect` (hard agent WS drop), `agent_shutdown` (agent self-reported receiving SIGTERM, #275 — **renamed from `agent_preempted` in #339**: SIGTERM alone doesn't confirm a GCP spot preemption, so the value no longer claims one — three ondemand/non-preemptible VMs hit the old label from a plain agent restart, confirmed via GCP audit log showing zero preemption/stop/delete events), `agent_done_kill` (any other agent-reported kill), `user_initiated`, `superseded_by_newer_push`, `pending_only_canceled`, `reconciler_orphan`, `external_status_api`. **Additive, non-breaking** (added without a `schema_version` bump per the breaking-change-only rule); subscribers on `"1.0"` that ignore unknown fields are unaffected, and consumers that want the attribution read it when present. **Consumers matching on the literal string `agent_preempted` must update to `agent_shutdown`.** |
 
 **Do not** expect a nested `pipeline: { id, status, event, branch, repo_id }`
 object — that shape has never been emitted by this fork. `status`, `branch`, and
