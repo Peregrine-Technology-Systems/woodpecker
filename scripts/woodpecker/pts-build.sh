@@ -47,22 +47,42 @@ mkdir -p "${GOCACHE}" "${GOMODCACHE}"
 # in peregrine-infrastructure): never pre-placed on disk. #329: pts-build.sh
 # originally assumed a pre-provisioned local file, which nothing ever wrote —
 # fetch it ourselves. ci-agent@ already holds objectViewer on this bucket, no
-# new IAM. WCW_MINT_SCRIPT stays as a local-override escape hatch (e.g. testing
-# against a script already on disk). Fail loud either way — never fall back to
-# bare gsutil (the ambient identity can't reach the new bucket, and a silent
-# fallback is exactly the anti-pattern this cutover exists to remove).
-WCW_MINT_BUCKET="${WCW_MINT_BUCKET:-gs://ci-runners-de-agent-hooks/scripts/woodpecker-ci-writer-mint-token.sh}"
+# new IAM.
+#
+# The mint script is a thin wrapper that `source`s lib/mint-token.sh (and that
+# in turn sources lib/curl-secret-config.sh) — infra#5182: fetching only the
+# wrapper into a bare file leaves `$SCRIPT_DIR/lib/...` resolving to whatever
+# stale copy happens to be resident on pts-build-vm (or nothing at all), not the
+# fresh one the wrapper actually needs. Co-fetch the wrapper and both libs into
+# one directory, mirroring the bucket's own scripts/ + scripts/lib/ layout, so
+# the wrapper's relative `source` finds the copy we just pulled down.
+#
+# WCW_MINT_SCRIPT stays as a local-override escape hatch (e.g. testing against
+# a self-contained script already on disk — skips the co-fetch entirely). Fail
+# loud either way — never fall back to bare gsutil (the ambient identity can't
+# reach the new bucket, and a silent fallback is exactly the anti-pattern this
+# cutover exists to remove).
+WCW_MINT_HOOKS_BASE="${WCW_MINT_HOOKS_BASE:-gs://ci-runners-de-agent-hooks/scripts}"
 if [ -z "${WCW_MINT_SCRIPT:-}" ]; then
-    WCW_MINT_SCRIPT=$(mktemp)
+    WCW_MINT_DIR=$(mktemp -d)
+    mkdir -p "${WCW_MINT_DIR}/lib"
     WCW_MINT_FETCH_ERR=$(mktemp)
-    if ! gcloud storage cat "${WCW_MINT_BUCKET}" > "${WCW_MINT_SCRIPT}" 2>"${WCW_MINT_FETCH_ERR}"; then
-        echo "❌ could not fetch woodpecker-ci-writer mint script from ${WCW_MINT_BUCKET}: $(head -c 300 "${WCW_MINT_FETCH_ERR}")" >&2
-        echo "   set WCW_MINT_SCRIPT to a local override, or check pts-build-vm's ci-agent@ objectViewer grant (infra#4819)" >&2
-        rm -f "${WCW_MINT_SCRIPT}" "${WCW_MINT_FETCH_ERR}"
+    WCW_MINT_FETCH_OK=1
+    for WCW_REL in "woodpecker-ci-writer-mint-token.sh" "lib/mint-token.sh" "lib/curl-secret-config.sh"; do
+        if ! gcloud storage cat "${WCW_MINT_HOOKS_BASE}/${WCW_REL}" > "${WCW_MINT_DIR}/${WCW_REL}" 2>"${WCW_MINT_FETCH_ERR}"; then
+            echo "❌ could not fetch ${WCW_REL} from ${WCW_MINT_HOOKS_BASE}/${WCW_REL}: $(head -c 300 "${WCW_MINT_FETCH_ERR}")" >&2
+            WCW_MINT_FETCH_OK=0
+            break
+        fi
+    done
+    if [ "${WCW_MINT_FETCH_OK}" -ne 1 ]; then
+        echo "   set WCW_MINT_SCRIPT to a local override, or check pts-build-vm's ci-agent@ objectViewer grant (infra#4819/#5182)" >&2
+        rm -rf "${WCW_MINT_DIR}" "${WCW_MINT_FETCH_ERR}"
         exit 1
     fi
     rm -f "${WCW_MINT_FETCH_ERR}"
-    chmod +x "${WCW_MINT_SCRIPT}"
+    chmod +x "${WCW_MINT_DIR}/woodpecker-ci-writer-mint-token.sh"
+    WCW_MINT_SCRIPT="${WCW_MINT_DIR}/woodpecker-ci-writer-mint-token.sh"
 fi
 if [ ! -x "${WCW_MINT_SCRIPT}" ]; then
     echo "❌ woodpecker-ci-writer mint script not executable at ${WCW_MINT_SCRIPT}" >&2
@@ -70,7 +90,7 @@ if [ ! -x "${WCW_MINT_SCRIPT}" ]; then
 fi
 WCW_TOKEN_FILE=$(mktemp)
 chmod 600 "${WCW_TOKEN_FILE}"
-trap 'shred -u "${WCW_TOKEN_FILE}" 2>/dev/null || rm -f "${WCW_TOKEN_FILE}"' EXIT
+trap 'shred -u "${WCW_TOKEN_FILE}" 2>/dev/null || rm -f "${WCW_TOKEN_FILE}"; [ -n "${WCW_MINT_DIR:-}" ] && rm -rf "${WCW_MINT_DIR}"' EXIT
 echo "==> Minting woodpecker-ci-writer access token..."
 "${WCW_MINT_SCRIPT}" "${WCW_TOKEN_FILE}"
 
