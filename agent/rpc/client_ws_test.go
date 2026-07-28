@@ -388,7 +388,10 @@ func TestWSClient_SendAndWait_AckErrorSurfaces(t *testing.T) {
 	c := NewWSClient(context.Background(), srv.URL[7:], "test-secret", "agent-1", false).(*WSClient)
 	c.connect(context.Background())
 
-	err := c.sendAndWait(context.Background(), "workflow.init", struct{}{})
+	// #332: bounded like every other real round-trip in this file (#325).
+	ctx, cancel := context.WithTimeout(context.Background(), wsTestDeadline)
+	defer cancel()
+	err := c.sendAndWait(ctx, "workflow.init", struct{}{})
 	if assert.Error(t, err) {
 		assert.Contains(t, err.Error(), "nope")
 	}
@@ -512,7 +515,14 @@ func TestWSClient_Version_NonVersionEnvelopeReturnsUnknown(t *testing.T) {
 	defer srv.Close()
 	c := NewWSClient(context.Background(), srv.URL[7:], "test-secret", "agent-1", false).(*WSClient)
 
-	v, err := c.Version(context.Background())
+	// #332: this used a bare context.Background() — if the reply is ever
+	// missed (a genuine bug, or a scheduling race the holdUntilCleanup fix
+	// doesn't cover), the call blocks forever with no safety net, bounded
+	// only by `go test`'s own multi-minute default timeout. Bound it like
+	// every other real round-trip in this file (#325).
+	ctx, cancel := context.WithTimeout(context.Background(), wsTestDeadline)
+	defer cancel()
+	v, err := c.Version(ctx)
 	assert.NoError(t, err)
 	assert.Equal(t, "unknown", v.ServerVersion)
 }
@@ -532,7 +542,11 @@ func TestWSClient_RegisterAgent_ServerErrorSurfaces(t *testing.T) {
 	c := NewWSClient(context.Background(), srv.URL[7:], "test-secret", "agent-1", false).(*WSClient)
 	c.connect(context.Background())
 
-	_, err := c.RegisterAgent(context.Background(), rpc.AgentInfo{Capacity: 1})
+	// #332: bounded like every other real round-trip in this file (#325) —
+	// see the comment on TestWSClient_Version_NonVersionEnvelopeReturnsUnknown.
+	ctx, cancel := context.WithTimeout(context.Background(), wsTestDeadline)
+	defer cancel()
+	_, err := c.RegisterAgent(ctx, rpc.AgentInfo{Capacity: 1})
 	if assert.Error(t, err) {
 		assert.Contains(t, err.Error(), "denied")
 	}
@@ -553,7 +567,12 @@ func TestWSClient_Next_NoWorkOnEmptyAssign(t *testing.T) {
 	c := NewWSClient(context.Background(), srv.URL[7:], "test-secret", "agent-1", false).(*WSClient)
 	c.connect(context.Background())
 
-	wf, err := c.Next(context.Background(), rpc.Filter{})
+	// #332: this exact test hung for 7+ minutes in CI on a bare
+	// context.Background() with no deadline — bounded now like every other
+	// real round-trip in this file (#325).
+	ctx, cancel := context.WithTimeout(context.Background(), wsTestDeadline)
+	defer cancel()
+	wf, err := c.Next(ctx, rpc.Filter{})
 	assert.NoError(t, err)
 	assert.Nil(t, wf, "empty assign id means no work")
 }
@@ -687,7 +706,10 @@ func TestWSClient_RegisterAgent_UnexpectedResponseType(t *testing.T) {
 	c := NewWSClient(context.Background(), srv.URL[7:], "test-secret", "agent-1", false).(*WSClient)
 	c.connect(context.Background())
 
-	_, err := c.RegisterAgent(context.Background(), rpc.AgentInfo{Capacity: 1})
+	// #332: bounded like every other real round-trip in this file (#325).
+	ctx, cancel := context.WithTimeout(context.Background(), wsTestDeadline)
+	defer cancel()
+	_, err := c.RegisterAgent(ctx, rpc.AgentInfo{Capacity: 1})
 	if assert.Error(t, err) {
 		assert.Contains(t, err.Error(), "unexpected response")
 	}
