@@ -571,6 +571,25 @@ func TestCancelPreviousPipelines_BranchMatchCancels(t *testing.T) {
 	mockStore.AssertNotCalled(t, "UpdatePipeline", mock.Anything)
 }
 
+// TestCancelPreviousPipelines_SameCommitSkipped — #338: a duplicate/
+// redelivered webhook for the same commit must never cancel its own twin,
+// even though it matches on event+branch exactly like the canonical
+// cancel case above.
+func TestCancelPreviousPipelines_SameCommitSkipped(t *testing.T) {
+	mockStore, _ := setupCancelTest(t)
+	repo := &model.Repo{ID: 1, FullName: "org/repo", CancelPreviousPipelineEvents: []model.WebhookEvent{model.EventPush}}
+	newPL := &model.Pipeline{ID: 2100, Number: 71, Event: model.EventPush, Branch: "main", Commit: "abc123"}
+	user := &model.User{ID: 1}
+
+	mockStore.On("GetActivePipelineList", repo).Return([]*model.Pipeline{
+		{ID: 2099, Event: model.EventPush, Branch: "main", Commit: "abc123", Status: model.StatusRunning}, // same commit
+	}, nil)
+
+	err := cancelPreviousPipelines(context.Background(), nil, mockStore, newPL, repo, user)
+	assert.NoError(t, err)
+	mockStore.AssertNotCalled(t, "WorkflowGetTree", mock.Anything)
+}
+
 // TestCancelPreviousPipelines_StoreError surfaces the store-error early-return.
 func TestCancelPreviousPipelines_StoreError(t *testing.T) {
 	mockStore, _ := setupCancelTest(t)
