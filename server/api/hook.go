@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/rs/zerolog/log"
@@ -80,6 +81,29 @@ func PostHook(c *gin.Context) {
 	// before this point if getRepoFromToken returns (nil, nil). The check
 	// was unreachable in current code; if the callback is ever refactored
 	// to be nil-safe, restore the guard with a webhooks_dropped reason.
+
+	//
+	// 1b. Short-circuit an exact duplicate delivery (#338)
+	//
+	// Read-only check, placed after token validation (so this only ever
+	// short-circuits an authenticated request, never lets an unauthenticated
+	// one skip auth) but before the expensive forge Hook() parsing +
+	// pipeline.Create(), which is the actual work a redelivery would
+	// otherwise duplicate. The ID is only ever marked seen on this
+	// function's DEFINITE-success return (below) — never here, and never on
+	// a transient-error path, so GitHub's own retry-on-5xx redelivery (#321)
+	// keeps working. A missing delivery-ID header (non-GitHub forge, or
+	// GitHub ever changes it) always falls through to normal processing —
+	// this is best-effort defense-in-depth, not the only guard: cancel.go's
+	// pipelineNeedsCancel also refuses to cancel a same-commit pipeline
+	// regardless of whether this cache catches the duplicate.
+	deliveryID := webhookDeliveryID(c.Request)
+	if globalWebhookDedup.check(deliveryID, time.Now()) {
+		webhooksDropped.WithLabelValues("duplicate_delivery").Inc()
+		log.Info().Str("delivery_id", deliveryID).Msg("ignoring hook: duplicate delivery already processed")
+		c.Status(http.StatusNoContent)
+		return
+	}
 
 	_forge, err := server.Config.Services.Manager.ForgeFromRepo(repo)
 	if err != nil {
@@ -225,6 +249,10 @@ func PostHook(c *gin.Context) {
 		}
 		handlePipelineErr(c, err)
 	} else {
+		// #338: only mark the delivery seen once a pipeline was DEFINITELY
+		// created — a failed attempt (including one that legitimately wants
+		// a forge redelivery) must remain retryable.
+		globalWebhookDedup.markSeen(deliveryID, time.Now())
 		c.JSON(http.StatusOK, pl)
 	}
 }

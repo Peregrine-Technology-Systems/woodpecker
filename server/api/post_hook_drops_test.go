@@ -15,6 +15,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/prometheus/client_golang/prometheus/testutil"
@@ -363,4 +364,49 @@ func TestPostHook_FilteredCounterNotCreateFailed(t *testing.T) {
 	assert.Equal(t, "true", f.w.Header().Get("Pipeline-Filtered"))
 	assert.InDelta(t, beforeFiltered+1, testutil.ToFloat64(webhooksDropped.WithLabelValues("filtered")), 0.001)
 	assert.InDelta(t, beforeFailed, testutil.ToFloat64(webhooksDropped.WithLabelValues("pipeline_create_failed")), 0.001)
+}
+
+// TestPostHook_DuplicateDeliveryShortCircuits — #338: a delivery ID already
+// marked seen is rejected before ever touching the forge, proving the
+// short-circuit actually happens where it's supposed to (not just that the
+// cache logic works in isolation).
+func TestPostHook_DuplicateDeliveryShortCircuits(t *testing.T) {
+	f := newHookFixture(t)
+	f.c.Request.Header.Set("X-GitHub-Delivery", "TestPostHook_DuplicateDeliveryShortCircuits-id")
+	globalWebhookDedup.markSeen("TestPostHook_DuplicateDeliveryShortCircuits-id", time.Now())
+
+	beforeDup := testutil.ToFloat64(webhooksDropped.WithLabelValues("duplicate_delivery"))
+
+	PostHook(f.c)
+
+	assert.Equal(t, http.StatusNoContent, f.c.Writer.Status())
+	assert.InDelta(t, beforeDup+1, testutil.ToFloat64(webhooksDropped.WithLabelValues("duplicate_delivery")), 0.001)
+	// ForgeFromRepo/Hook were never set up on the mocks — if PostHook reached
+	// them, NewMockManager(t)/NewMockForge(t)'s own expectation-checking
+	// would fail this test on an unexpected call.
+}
+
+// TestPostHook_NewDeliveryProceedsAndGetsMarkedSeen — the complementary case:
+// an unseen delivery ID proceeds normally, and is marked seen only once the
+// pipeline is actually created — not before.
+func TestPostHook_NewDeliveryProceedsAndGetsMarkedSeen(t *testing.T) {
+	f := newHookFixture(t)
+	id := "TestPostHook_NewDeliveryProceedsAndGetsMarkedSeen-id"
+	f.c.Request.Header.Set("X-GitHub-Delivery", id)
+
+	pl := &model.Pipeline{Event: model.EventPush, Message: "[skip ci] automated commit"}
+	f.manager.On("ForgeFromRepo", f.repo).Return(f.forge, nil)
+	f.forge.On("Hook", mock.Anything, mock.Anything).Return(f.repo, pl, nil)
+	f.store.On("GetUser", f.user.ID).Return(f.user, nil)
+	f.forge.On("Refresh", mock.Anything, mock.Anything, mock.Anything).Return(false, nil).Maybe()
+	f.store.On("UpdateRepo", f.repo).Return(nil)
+
+	assert.False(t, globalWebhookDedup.check(id, time.Now()), "not seen before the request")
+
+	PostHook(f.c)
+
+	assert.Equal(t, http.StatusNoContent, f.c.Writer.Status(), "filtered by ErrFiltered, not by dedup")
+	// pipeline.Create returned ErrFiltered (not a definite success), so the ID
+	// must NOT be marked seen — a legitimate retry must still be possible.
+	assert.False(t, globalWebhookDedup.check(id, time.Now()), "ErrFiltered is not a success — must stay retryable")
 }
