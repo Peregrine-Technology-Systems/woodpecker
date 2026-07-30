@@ -21,6 +21,7 @@ import (
 
 	"cloud.google.com/go/logging"
 	"github.com/rs/zerolog/log"
+	"google.golang.org/api/option"
 )
 
 // DefaultLogName is used when WOODPECKER_LOG_DRAIN_GCP_LOG_NAME is unset.
@@ -53,13 +54,22 @@ func newOnErrorHandler() func(error) {
 	}
 }
 
-// New builds a Drain backed by a real GCP Cloud Logging client using
-// Application Default Credentials. It NEVER returns an error or crashes the
-// server: an empty project (drain not configured) or unavailable ADC (e.g.
-// local dev) yields a disabled no-op Drain after a one-time INFO log. Async
-// transport errors are logged at ERROR via the client's error handler — loud
-// on purpose, never silent-OK (#333). (#233)
-func New(ctx context.Context, project, logName string) *Drain {
+// New builds a Drain backed by a real GCP Cloud Logging client. By default it
+// authenticates via the process's global Application Default Credentials. It
+// NEVER returns an error or crashes the server: an empty project (drain not
+// configured) or unavailable/invalid credentials (e.g. local dev, or a bad
+// credentialsFile) yields a disabled no-op Drain after a one-time INFO log.
+// Async transport errors are logged at ERROR via the client's error handler —
+// loud on purpose, never silent-OK (#333). (#233)
+//
+// credentialsFile (#343): when non-empty, a path to a GCP credentials file
+// (service-account key or a WIF external_account config) the drain
+// authenticates with INSTEAD of global ADC — scoped to this one client, so it
+// never repoints any other ADC consumer in the process (the footgun
+// GOOGLE_APPLICATION_CREDENTIALS would cause if used process-wide just to
+// give the drain a distinct identity). Empty preserves the original
+// global-ADC behavior exactly.
+func New(ctx context.Context, project, logName, credentialsFile string) *Drain {
 	if project == "" {
 		log.Info().Msg("log drain: WOODPECKER_LOG_DRAIN_GCP_PROJECT unset — step-log Cloud Logging drain disabled")
 		return &Drain{}
@@ -68,11 +78,17 @@ func New(ctx context.Context, project, logName string) *Drain {
 		logName = DefaultLogName
 	}
 
-	client, err := logging.NewClient(ctx, project)
+	var clientOpts []option.ClientOption
+	if credentialsFile != "" {
+		clientOpts = append(clientOpts, option.WithCredentialsFile(credentialsFile))
+	}
+
+	client, err := logging.NewClient(ctx, project, clientOpts...)
 	if err != nil {
-		// Most commonly: ADC not available. Disable gracefully, don't crash.
-		log.Info().Err(err).Str("project", project).
-			Msg("log drain: Cloud Logging client unavailable (ADC?) — step-log drain disabled")
+		// Most commonly: ADC unavailable, or an invalid/unreadable
+		// credentialsFile. Disable gracefully either way, don't crash.
+		log.Info().Err(err).Str("project", project).Bool("credentials_file_set", credentialsFile != "").
+			Msg("log drain: Cloud Logging client unavailable — step-log drain disabled")
 		return &Drain{}
 	}
 	client.OnError = newOnErrorHandler()

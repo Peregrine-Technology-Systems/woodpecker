@@ -197,8 +197,12 @@ func setupEvilGlobals(ctx context.Context, c *cli.Command, s store.Store) (err e
 	}
 
 	// #233: best-effort step-log drain to GCP Cloud Logging. New never errors —
-	// an unset project or unavailable ADC yields a disabled no-op (logged INFO).
-	server.Config.Services.LogDrain = logdrain.New(ctx, c.String("log-drain-gcp-project"), c.String("log-drain-gcp-log-name"))
+	// an unset project or unavailable/invalid credentials yields a disabled
+	// no-op (logged INFO). #343: optional dedicated credentials file so the
+	// drain can authenticate as a distinct (e.g. WIF) identity without
+	// repointing the whole process's global ADC.
+	server.Config.Services.LogDrain = logdrain.New(ctx,
+		c.String("log-drain-gcp-project"), c.String("log-drain-gcp-log-name"), c.String("log-drain-gcp-credentials-file"))
 
 	// #891 / #176 / #188: Reconcile orphaned "running" pipelines.
 	// The reconciler asks the queue which pipelines have active tasks
