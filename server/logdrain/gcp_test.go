@@ -29,9 +29,19 @@ import (
 
 func TestNewDisabledWhenNoProject(t *testing.T) {
 	// Empty project → disabled no-op, never touches GCP, never errors.
-	d := New(context.Background(), "", "")
+	d := New(context.Background(), "", "", "")
 	assert.NotNil(t, d)
 	assert.False(t, d.Enabled(), "empty project yields a disabled drain")
+	assert.NoError(t, d.Close(), "disabled drain closes cleanly")
+}
+
+// #343: an invalid/unreadable credentials file must degrade to the same
+// disabled no-op as an ADC failure — never crash the server, never panic on
+// a bad path.
+func TestNewDisabledWhenCredentialsFileInvalid(t *testing.T) {
+	d := New(context.Background(), "some-project", "", "/nonexistent/path/does-not-exist.json")
+	assert.NotNil(t, d)
+	assert.False(t, d.Enabled(), "invalid credentials file yields a disabled drain, not a crash")
 	assert.NoError(t, d.Close(), "disabled drain closes cleanly")
 }
 

@@ -641,6 +641,11 @@ var flags = append([]cli.Flag{
 		Usage:   "Cloud Logging log name for the step-log drain (#233).",
 		Value:   "woodpecker-steps",
 	},
+	&cli.StringFlag{
+		Sources: cli.EnvVars("WOODPECKER_LOG_DRAIN_GCP_CREDENTIALS_FILE"),
+		Name:    "log-drain-gcp-credentials-file",
+		Usage:   "Path to a GCP credentials file (service-account key or WIF external_account config) for the step-log drain (#343). Empty uses the process's global Application Default Credentials — set this to authenticate the drain as a distinct identity without repointing every other ADC consumer in the process.",
+	},
 }, logger.GlobalLoggerFlags...)
 
 // If woodpecker is running inside a container the default value for
