@@ -118,13 +118,24 @@ func (s *RPC) Next(c context.Context, agentFilter rpc.Filter) (*rpc.Workflow, er
 		// failing exactly as before. We don't know which task (if any) is
 		// pending until we ask the queue, so the gate has to live in the
 		// filter function, not as an early return.
+		//
+		// #346: the override match must SKIP the base filter entirely, not
+		// layer on top of it. baseFilterFn (createFilterFuncWithDeploy) still
+		// requires every task label key to have a matching or wildcarded entry
+		// in the agent's own filter labels -- a deliberately minimal pinned
+		// agent (e.g. WOODPECKER_FILTER_LABELS=backend=local-d3ci42 only) fails
+		// that requirement for any task carrying auto-injected labels the
+		// override never asked about (tier, org-id, woodpecker-ci.org/branch,
+		// forge-id, repo-id, ...) -- which is effectively every real task. An
+		// exact override match is a stronger, more specific signal than the
+		// base filter's per-label check, so it wins outright rather than being
+		// additionally gated by it.
 		overrideValue := agent.CustomLabels[s.noScheduleOverrideLabel]
-		baseFilterFn := filterFn
 		filterFn = func(task *model.Task) (bool, int) {
 			if task.Labels[s.noScheduleOverrideLabel] != overrideValue {
 				return false, 0
 			}
-			return baseFilterFn(task)
+			return true, 10
 		}
 	}
 
