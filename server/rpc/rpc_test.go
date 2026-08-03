@@ -275,6 +275,36 @@ func TestRPCNext_NoSchedule(t *testing.T) {
 		assert.False(t, ok, "a general task with no backend requirement must not match a cordoned agent")
 	})
 
+	t.Run("AllowsExplicitlyTargetedTask with unrelated auto-injected labels the pinned agent never declared (#346)", func(t *testing.T) {
+		store := store_mocks.NewMockStore(t)
+		agent := &model.Agent{ID: 7, NoSchedule: true, CustomLabels: map[string]string{"backend": "local-d3ci42"}}
+		store.On("AgentFind", int64(7)).Once().Return(agent, nil)
+
+		q := queue_mocks.NewMockQueue(t)
+		var captured queue.FilterFn
+		q.EXPECT().Poll(mock.Anything, int64(7), mock.Anything).
+			Run(func(_ context.Context, _ int64, f queue.FilterFn) { captured = f }).
+			Return(nil, nil).Once()
+
+		s := RPC{store: store, queue: q, noScheduleOverrideLabel: "backend"}
+
+		// Deliberately minimal agentFilter.Labels -- no wildcards, no tier/org-id
+		// entries -- mirroring a pinned agent whose WOODPECKER_FILTER_LABELS is
+		// just "backend=local-d3ci42". Before #346 the base filter's per-label
+		// requirement rejected this task anyway despite the exact backend match.
+		_, err := s.Next(nextTestCtx(t, 7), rpc.Filter{Labels: map[string]string{}})
+		require.NoError(t, err)
+		require.NotNil(t, captured)
+
+		ok, _ := captured(&model.Task{Labels: map[string]string{
+			"backend":                  "local-d3ci42",
+			"tier":                     "ondemand",
+			"org-id":                   "2",
+			"woodpecker-ci.org/branch": "main",
+		}})
+		assert.True(t, ok, "an exact override match must admit the task even though the agent's own filter labels never declared tier/org-id/branch")
+	})
+
 	t.Run("empty noScheduleOverrideLabel disables the override entirely (restores pre-#305 behavior)", func(t *testing.T) {
 		store := store_mocks.NewMockStore(t)
 		agent := &model.Agent{ID: 5, NoSchedule: true, CustomLabels: map[string]string{"backend": "local-d3ci42"}}
