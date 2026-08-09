@@ -369,65 +369,19 @@ func (s *RPC) ReleaseAgentTasks(c context.Context, agentID int64) {
 			}
 		}
 
-		// Load children (steps) so WorkflowStatus can evaluate them.
-		// Skip if already cached from the partition step (avoids a second DB hit).
-		if workflow.Children == nil {
-			workflow.Children, err = s.store.StepListFromWorkflowFind(workflow)
-			if err != nil {
-				log.Error().Err(err).Int64("workflow_id", workflowID).
-					Msg("release: failed to load workflow steps")
-			}
-		}
-
+		// Finalize steps + workflow state through the same routine the
+		// OrphanReconciler backstop uses (woodpecker#349) — kills any
+		// pending/running step (#168: only if something was actually
+		// in-flight does the workflow get marked killed rather than
+		// reflecting the steps' real outcome), gives a killed step with an
+		// outcome-verification proof-query one read-only probe (#235,
+		// peregrine-ci-scaler#1055), and computes the final workflow state.
+		// "agent disconnected" is the signature Workflow.KilledByAgentDisconnect()
+		// keys on to suppress the forge.Status post below — a requeue, or
+		// the ci-scaler auto-requeue-by-repush (#741), is expected to post a
+		// fresh one shortly.
 		now := time.Now().Unix()
-
-		// Mark pending/running steps as killed. Track whether any steps
-		// were actually in-flight — if all steps already completed, the
-		// workflow should reflect their outcome, not be marked killed (#168).
-		anyKilled := false
-		for _, step := range workflow.Children {
-			if step.Running() || step.State == model.StatusPending {
-				step.State = model.StatusKilled
-				step.Finished = now
-				step.Error = "agent disconnected"
-				if err := s.store.StepUpdate(step); err != nil {
-					log.Error().Err(err).Int64("step_id", step.ID).
-						Msg("release: failed to kill step")
-				}
-				anyKilled = true
-			}
-		}
-
-		// #235: a step killed by the disconnect that declares an
-		// outcome-verification proof-query gets one read-only probe — covers
-		// the "agent disconnected mid-deploy but the deploy actually landed"
-		// case (peregrine-ci-scaler#1055). A reconciled step flips to success,
-		// so the workflow status below is computed from the real outcome.
-		if n := pipeline.ReconcileVerifiedKilledSteps(c, s.store, workflow); n > 0 {
-			log.Info().Int64("workflow_id", workflowID).Int("reconciled_steps", n).
-				Msg("verify: reconciled disconnect-killed step(s) to success (#235)")
-			anyKilled = false
-			for _, st := range workflow.Children {
-				if st.State == model.StatusKilled {
-					anyKilled = true
-					break
-				}
-			}
-		}
-
-		// If all steps had already completed before the disconnect, compute
-		// workflow status from them instead of marking killed (#168).
-		workflow.Finished = now
-		if anyKilled {
-			workflow.State = model.StatusKilled
-			workflow.Error = "agent disconnected"
-		} else {
-			workflow.State = pipeline.WorkflowStatus(workflow.Children)
-		}
-		if err := s.store.WorkflowUpdate(workflow); err != nil {
-			log.Error().Err(err).Int64("workflow_id", workflowID).
-				Msg("release: failed to update workflow on disconnect")
-		}
+		pipeline.FinalizeKilledWorkflow(c, s.store, workflow, now, "agent disconnected")
 
 		// Update parent pipeline status
 		currentPipeline, err := s.store.GetPipeline(workflow.PipelineID)
