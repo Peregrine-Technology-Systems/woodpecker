@@ -171,11 +171,22 @@ func (r *OrphanReconciler) Tick(_store store.Store) int {
 	return reconciled
 }
 
-// killOrphan marks one pipeline + its running workflows as killed AND
+// reconcileErrSignature is the workflow.Error / step.Error recorded by
+// killOrphan. Deliberately NOT the "agent disconnected" string
+// Workflow.KilledByAgentDisconnect() matches: that match suppresses the
+// forge.Status post (fork#44) on the assumption a requeue will follow up
+// with a fresh one shortly. This backstop path has no requeue counterpart
+// (woodpecker#349) — suppressing here would leave the GitHub status stuck
+// at whatever it last was, forever, with nothing left to ever resolve it.
+const reconcileErrSignature = "reconcile: pipeline orphaned, no active queue task"
+
+// killOrphan marks one pipeline + every non-terminal workflow underneath it
+// as killed — including workflows that never started, not just ones caught
+// mid-run (#349) — finalizing their steps via FinalizeKilledWorkflow, and
 // posts a final failure status to the forge so the upstream PR check
-// transitions out of "pending" (#181). Returns true on successful pipeline
-// update; workflow update failures are logged but don't reverse the
-// pipeline transition; forge.Status failures are also logged but never
+// transitions out of "pending" (#181, #349). Returns true on successful
+// pipeline update; workflow update failures are logged but don't reverse
+// the pipeline transition; forge.Status failures are also logged but never
 // fail the kill — the DB transition is the durable contract.
 func killOrphan(ctx context.Context, _store store.Store, pl *model.Pipeline, repo *model.Repo) bool {
 	// #193: structured log mirrors cancel.go::Cancel — same fields so a single
@@ -200,12 +211,13 @@ func killOrphan(ctx context.Context, _store store.Store, pl *model.Pipeline, rep
 	if err != nil {
 		return true
 	}
+	now := time.Now().Unix()
 	for _, w := range workflows {
-		if w.State == model.StatusRunning {
-			w.State = model.StatusKilled
-			if err := _store.WorkflowUpdate(w); err != nil {
-				log.Error().Err(err).Msgf("reconcile: failed to update workflow %d", w.ID)
-			}
+		// Running() covers both Pending (never started) and Running — #349:
+		// a not-yet-started workflow left untouched here stays Pending
+		// forever, and so does its forge status.
+		if w.Running() {
+			FinalizeKilledWorkflow(ctx, _store, w, now, reconcileErrSignature)
 		}
 	}
 

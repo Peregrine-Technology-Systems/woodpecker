@@ -69,6 +69,7 @@ func TestReconcileOrphanedAtStartup_KillsRunningPipelines(t *testing.T) {
 
 	workflows := []*model.Workflow{{ID: 50, State: model.StatusRunning, Name: "ci"}}
 	mockStore.On("WorkflowGetTree", pipelines[0]).Return(workflows, nil)
+	mockStore.On("StepListFromWorkflowFind", mock.Anything).Return([]*model.Step{}, nil)
 	mockStore.On("WorkflowUpdate", mock.MatchedBy(func(w *model.Workflow) bool {
 		return w.ID == 50 && w.State == model.StatusKilled
 	})).Return(nil)
@@ -331,6 +332,7 @@ func TestKillOrphan_WorkflowUpdateFailureLoggedButContinues(t *testing.T) {
 		{ID: 1, State: model.StatusRunning},
 		{ID: 2, State: model.StatusRunning},
 	}, nil)
+	mockStore.On("StepListFromWorkflowFind", mock.Anything).Return([]*model.Step{}, nil)
 	mockStore.On("WorkflowUpdate", mock.MatchedBy(func(w *model.Workflow) bool { return w.ID == 1 })).Return(assert.AnError)
 	mockStore.On("WorkflowUpdate", mock.MatchedBy(func(w *model.Workflow) bool { return w.ID == 2 })).Return(nil)
 
@@ -359,6 +361,7 @@ func TestKillOrphan_PostsForgeStatusWhenManagerWired(t *testing.T) {
 	mockStore.On("WorkflowGetTree", mock.Anything).Return([]*model.Workflow{
 		{ID: 50, State: model.StatusRunning, Name: "ci"},
 	}, nil)
+	mockStore.On("StepListFromWorkflowFind", mock.Anything).Return([]*model.Step{}, nil)
 	mockStore.On("WorkflowUpdate", mock.Anything).Return(nil)
 	mockStore.On("GetUser", int64(42)).Return(&model.User{ID: 42, Login: "u"}, nil)
 	mockManager.On("ForgeFromRepo", repos[0]).Return(mockForge, nil)
@@ -478,6 +481,69 @@ func TestKillOrphan_AuditLog(t *testing.T) {
 		assert.Equal(t, false, rec["never_dispatched"])
 		assert.Equal(t, "reconcile_orphaned", rec["reason"])
 	}
+}
+
+// TestKillOrphan_FinalizesStepsAndNeverStartedWorkflow is the woodpecker#349
+// regression: a pipeline with one workflow mid-run (e.g. "ci") and a
+// dependent workflow that never started (e.g. "deploy", still Pending
+// because it depends_on the first) gets orphaned. Before the
+// FinalizeKilledWorkflow extraction, killOrphan only flipped the RUNNING
+// workflow's own State — its steps stayed at running/finished=0 forever,
+// and the Pending workflow was left completely untouched (steps and all),
+// so its GitHub status stayed "pending" forever. Both must now reach a
+// terminal state with every step finalized.
+func TestKillOrphan_FinalizesStepsAndNeverStartedWorkflow(t *testing.T) {
+	mockStore := mocks.NewMockStore(t)
+	q := queueWithTasks(t) // empty queue → orphan
+	repos := []*model.Repo{{ID: 1, FullName: "org/r"}}
+	mockStore.On("RepoListAll", true, mock.Anything).Return(repos, nil)
+	mockStore.On("GetActivePipelineList", repos[0]).Return([]*model.Pipeline{
+		{ID: 400, Number: 9, Status: model.StatusRunning, RepoID: 1},
+	}, nil)
+	mockStore.On("UpdatePipeline", mock.Anything).Return(nil)
+
+	ciWorkflow := &model.Workflow{ID: 10, State: model.StatusRunning, Name: "ci"}
+	deployWorkflow := &model.Workflow{ID: 11, State: model.StatusPending, Name: "deploy"}
+	mockStore.On("WorkflowGetTree", mock.Anything).Return([]*model.Workflow{ciWorkflow, deployWorkflow}, nil)
+
+	ciStep := &model.Step{ID: 100, Name: "ci-step", State: model.StatusRunning, Started: 42}
+	mockStore.On("StepListFromWorkflowFind", ciWorkflow).Return([]*model.Step{ciStep}, nil)
+	// deploy never started — its step row is still Pending.
+	deployStep := &model.Step{ID: 101, Name: "deploy-step", State: model.StatusPending}
+	mockStore.On("StepListFromWorkflowFind", deployWorkflow).Return([]*model.Step{deployStep}, nil)
+
+	mockStore.On("StepUpdate", mock.MatchedBy(func(s *model.Step) bool {
+		return (s.ID == 100 || s.ID == 101) && s.State == model.StatusKilled && s.Finished > 0
+	})).Return(nil).Twice()
+
+	mockStore.On("WorkflowUpdate", mock.MatchedBy(func(w *model.Workflow) bool {
+		return w.ID == 10 && w.State == model.StatusKilled && w.Finished > 0 &&
+			!strings.Contains(w.Error, "agent disconnected")
+	})).Return(nil)
+	mockStore.On("WorkflowUpdate", mock.MatchedBy(func(w *model.Workflow) bool {
+		return w.ID == 11 && w.State == model.StatusKilled && w.Finished > 0 &&
+			!strings.Contains(w.Error, "agent disconnected")
+	})).Return(nil)
+
+	count := ReconcileOrphanedAtStartup(mockStore, q)
+	assert.Equal(t, 1, count)
+
+	// Both step rows must have been finalized — not left frozen.
+	assert.Equal(t, model.StatusKilled, ciStep.State)
+	assert.Equal(t, model.StatusKilled, deployStep.State)
+}
+
+// TestKillOrphan_DoesNotSuppressForgeStatus locks the #349 design decision:
+// killOrphan's error signature must NOT match
+// Workflow.KilledByAgentDisconnect() (the substring "agent disconnected"),
+// because unlike the primary rpc.ReleaseAgentTasks disconnect path, this
+// backstop has no requeue/re-post follow-up. If the signature matched,
+// fork#44's suppression would fire and the forge status would never be
+// posted at all — worse than today.
+func TestKillOrphan_DoesNotSuppressForgeStatus(t *testing.T) {
+	wf := &model.Workflow{ID: 1, State: model.StatusKilled, Error: reconcileErrSignature}
+	assert.False(t, wf.KilledByAgentDisconnect(),
+		"reconcile's error signature must not trip the agent-disconnect forge-status suppression")
 }
 
 // TestActivePipelineSet_PullsFromAllThreeListsAndDedupes verifies the set
