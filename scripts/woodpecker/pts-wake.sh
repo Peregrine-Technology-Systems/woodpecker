@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # pts-wake.sh — provision pts-build-vm for woodpecker compilation (#1669).
-# Ephemeral pattern: always creates fresh from the pinned ci-agent image (see
-# PTS_BUILD_IMAGE below) so every build gets a known agent binary and
-# toolchain. No stale agent.conf, no manual taint/recreate cycle.
+# Ephemeral pattern: always creates fresh from ci-agent family image so every
+# build gets the latest agent binary and toolchain. No image staleness, no
+# stale agent.conf, no manual taint/recreate cycle.
 #
 # Zone fallback (#150): tries each of the 11 agent zones in sequence until one
 # has e2-standard-8 capacity. Zone used is stored in VM metadata so
@@ -16,17 +16,7 @@
 # Build cache lives in GCS — no persistent disk needed.
 set -euo pipefail
 
-# #345/#351/#352/#353: pts-build-vm runs as ci-agent@${PTS_BUILD_PROJECT} — its
-# own ambient identity, separate from the woodpecker-ci-writer WIF token minted
-# later for build-cache writes. Once ci-runners-de was decommissioned, that
-# identity could never be granted read on a peregrine-production resource (the
-# org's DRS structurally rejects legacy-project SAs being granted onto PP,
-# one-directional — infra#5195), so the fix here is migrating the VM's own
-# identity to a PP-native one, not a cross-project grant. Confirmed with infra
-# before landing (woodpecker#353) that peregrine-production already mirrors
-# every grant this VM needs under the same names/shapes used below — this is a
-# pure project-value swap, no other value changes.
-PTS_BUILD_PROJECT="peregrine-production"
+PTS_BUILD_PROJECT="ci-runners-de"
 PTS_BUILD_VM="pts-build-vm"
 WP_API="https://d3ci42.peregrinetechsys.net"
 
@@ -75,19 +65,8 @@ if [ "${STATUS}" = "RUNNING" ] && [ -n "${CURRENT_ZONE}" ]; then
         --zone="${CURRENT_ZONE}" --project="${PTS_BUILD_PROJECT}" --quiet 2>/dev/null || true
 fi
 
-# peregrine-production has no ci-agent image FAMILY (unlike the legacy
-# project) — infra tried adding one (infra#5688) and reverted it (infra#5691):
-# `family` is ForceNew on google_compute_image, and the image name is fixed to
-# a single terraform var, so setting it would destroy-then-create the live
-# fleet's boot image while 18 dependent instance templates are actively
-# resizing against it. So this pins a specific image name instead, same as the
-# legacy project's own agent-image pinning pattern (infra#5649,
-# bootstrap.sh/handle-agent-image-deployment.sh) — override via env for a
-# same-day bump without touching this file.
-PTS_BUILD_IMAGE="${PTS_BUILD_IMAGE:-ci-agent-wppts536-sc0495-f6f12875}"
-
-# ── Create fresh from the pinned ci-agent image — zone fallback (#150) ──
-echo "==> Creating ${PTS_BUILD_VM} from ${PTS_BUILD_IMAGE} (pts.${CI_PIPELINE_NUMBER:-0})..."
+# ── Create fresh from latest ci-agent family image — zone fallback (#150) ──
+echo "==> Creating ${PTS_BUILD_VM} from ci-agent family (pts.${CI_PIPELINE_NUMBER:-0})..."
 CREATED_ZONE=""
 for ZONE in ${ZONE_LIST}; do
     # #250: pin pts-build-vm to the buildkite-network VPC (NOT the default
@@ -111,7 +90,7 @@ for ZONE in ${ZONE_LIST}; do
             --project="${PTS_BUILD_PROJECT}" \
             --zone="${ZONE}" \
             --machine-type=e2-standard-8 \
-            --image="${PTS_BUILD_IMAGE}" \
+            --image-family=ci-agent \
             --image-project="${PTS_BUILD_PROJECT}" \
             --boot-disk-size=50GB \
             --boot-disk-type=pd-ssd \
@@ -125,7 +104,7 @@ for ZONE in ${ZONE_LIST}; do
             --maintenance-policy=MIGRATE \
             --quiet 2>&1; then
         CREATED_ZONE="${ZONE}"
-        echo "    VM created in ${CREATED_ZONE} from ${PTS_BUILD_IMAGE}"
+        echo "    VM created in ${CREATED_ZONE} from latest ci-agent image"
         # TTL backstop — reaper stops the VM within 2h if the pipeline
         # doesn't delete it first (#228).
         gcloud compute instances add-labels "${PTS_BUILD_VM}" \
