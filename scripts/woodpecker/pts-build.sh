@@ -62,7 +62,7 @@ mkdir -p "${GOCACHE}" "${GOMODCACHE}"
 # loud either way — never fall back to bare gsutil (the ambient identity can't
 # reach the new bucket, and a silent fallback is exactly the anti-pattern this
 # cutover exists to remove).
-WCW_MINT_HOOKS_BASE="${WCW_MINT_HOOKS_BASE:-gs://peregrine-production-agent-hooks/scripts}"
+WCW_MINT_HOOKS_BASE="${WCW_MINT_HOOKS_BASE:-gs://ci-runners-de-agent-hooks/scripts}"
 if [ -z "${WCW_MINT_SCRIPT:-}" ]; then
     WCW_MINT_DIR=$(mktemp -d)
     mkdir -p "${WCW_MINT_DIR}/lib"
