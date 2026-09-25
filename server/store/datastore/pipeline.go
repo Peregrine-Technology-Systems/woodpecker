@@ -237,7 +237,23 @@ func (s storage) UpdatePipeline(pipeline *model.Pipeline) error {
 
 func (s storage) DeletePipeline(pipeline *model.Pipeline) error {
 	return s.wq.serialize(func() error {
-		return s.deletePipeline(s.writeEngine().NewSession(), pipeline.ID)
+		// #365: the cascade in deletePipeline removes logs, steps, workflows and
+		// config BEFORE the pipeline row, so it must be all-or-nothing. Without a
+		// transaction each statement autocommits and a failure at the final step
+		// leaves the children destroyed and the pipeline row standing — a row that
+		// still returns 200 and counts as history with its logs gone. That damage
+		// is a parent without children, so the obvious orphan check (no child
+		// without a parent) reads clean against it. Same Begin/Commit shape
+		// createPipeline already uses above.
+		sess := s.writeEngine().NewSession()
+		defer sess.Close()
+		if err := sess.Begin(); err != nil {
+			return err
+		}
+		if err := s.deletePipeline(sess, pipeline.ID); err != nil {
+			return err
+		}
+		return sess.Commit()
 	})
 }
 
