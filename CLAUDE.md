@@ -28,6 +28,22 @@ shared/      common types, config, utils
   pts-build-cleanup.yaml cleanup step
 ```
 
+## ⚠️ This repo is PUBLIC — it is a fork of an upstream OSS project
+
+`gh repo view --json visibility` returns **`PUBLIC`**. Everything written here is world-readable: issue and PR bodies, comments, commit messages, release notes, and code comments. Upstream Woodpecker contributors and anyone else can read all of it. This is the one property of this repo most likely to be missed, because every sibling repo in the estate is private and the estate's conventions were written for those.
+
+**Sign comments, issues and PRs WITHOUT the seat chip image.** The global convention's sign-off is `— Claude <model> · <seat> ![<CHIP>](<chip-url>)`, but the chip is explicitly optional (global-claude#650) and its stated reason covers this case directly: the chip "was never validated and is branding, not attribution", and a seat that must not put a Peregrine mark on an outward-facing repo can sign without one. Use:
+
+```
+— Claude <model> · woodpecker
+```
+
+Reference incident: 2026-09-25, eight artifacts (#364 ×2, #365, #366, #367, #368, #369 ×2) were signed with the full chip before anyone noticed the repo was public. The chip URL also publishes an internal asset-bucket name and the estate's seat taxonomy, so it is a small disclosure on top of being unwanted branding. Stripped retroactively; the sign-off line itself was kept.
+
+**Keep internal detail out of anything written here.** Hostnames, GCP project and service-account names already appear in committed files (`scripts/woodpecker/pts-*.sh`, `.woodpecker/*.yaml`, this file), so those are already public and repeating them costs nothing new. What must NOT be added: object-store paths for exported production data, absolute paths on anyone's workstation, credential or secret names, and anything about another seat's internals that they have not published themselves. When a cross-repo thread needs that kind of detail, put it in the private sibling repo's issue and reference it by number here.
+
+**Sibling-repo issue references are fine but opaque to outside readers.** `infra#6594` means nothing to an upstream contributor and cannot be followed. Keep a one-line plain-English summary alongside any such reference so a public reader is not left with a dead pointer.
+
 ## Standards
 
 - All Peregrine-specific changes must be clearly marked — prefix commits with `[pts]` and reference a `pts-` issue
