@@ -30,7 +30,18 @@ if ! command -v zstd >/dev/null 2>&1; then
 fi
 
 # ── Go toolchain + cache paths ──
-export PATH="/usr/local/go/bin:$PATH"
+# #369: the bakery image links /usr/local/bin/go (already on PATH); the older
+# packer image untarred to /usr/local/go/bin. pts-build-vm is a separate
+# population from the CI fleet, so add the legacy dir only when it really
+# exists — an `if`, not `[ -d ] &&`, because under `set -e` a false test in an
+# && chain would kill the script. Then fail loud rather than build blind.
+if [ -d /usr/local/go/bin ]; then
+    export PATH="/usr/local/go/bin:$PATH"
+fi
+if ! command -v go >/dev/null 2>&1; then
+    echo "ERROR: no go on PATH on pts-build-vm — cannot compile (#369)." >&2
+    exit 1
+fi
 export GOCACHE="${HOME}/.cache/go-build"
 export GOMODCACHE="${HOME}/go/pkg/mod"
 export GOTELEMETRY=off
