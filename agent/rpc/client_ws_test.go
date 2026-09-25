@@ -37,12 +37,22 @@ var inboxFullWarns = &inboxFullCounter{}
 // wsTestDeadline bounds the deterministic mock-server round-trips
 // (Init/Done/Update/Next/Version/RegisterAgent against a handler that always
 // replies). These complete in sub-millisecond wall-clock, so the deadline is
-// pure safety headroom — its only job is to fail a genuinely *hung* client
-// rather than a correct one that the CI VM's scheduler starved for a few
-// seconds while running the whole suite in parallel. A tight 5s bound flaked
-// exactly that way under load; 30s keeps a real hang detectable while giving a
-// contended VM ample slack (#325).
-const wsTestDeadline = 30 * time.Second
+// pure safety headroom: its only job is to fail a genuinely hung client.
+//
+// It was 30s, widened from 5s under #325 on the belief that the earlier 5s
+// flaking was CI-VM scheduler starvation. That belief was wrong. The cause was
+// #372 — sendAndWait wrote to the wire before registering its reply waiter, so
+// a reply returning on loopback could be discarded by readPump and the call
+// blocked until its timeout. Starvation was never a plausible explanation for
+// the magnitude: a sub-millisecond operation does not miss a 30s bound by four
+// orders of magnitude, and every failure landed on exactly the deadline, which
+// is the signature of something blocked rather than something slow.
+//
+// Back to 5s now the cause is fixed, because a 30s bound hides the next real
+// stall for 30 seconds and made this one look like weather for a year. If this
+// flakes again, that is information about a genuine stall — investigate it, do
+// not widen it back (#332, #372).
+const wsTestDeadline = 5 * time.Second
 
 func TestMain(m *testing.M) {
 	log.Logger = log.Logger.Hook(inboxFullWarns)
@@ -812,4 +822,103 @@ func TestWSClient_RegisterAgent(t *testing.T) {
 	})
 	assert.NoError(t, err)
 	assert.Equal(t, int64(42), agentID)
+}
+
+// TestWSClient_UnmatchedReplyIsCountedNotDropped is the negative half of the
+// #372 pair. readPump used to look up pending[ref] and, finding nothing, fall
+// off the end of the `if` — discarding the reply with no counter, no log and no
+// trace. That silence is why the race at #372 survived two closures of #332: a
+// dropped reply and a reply that never arrived are indistinguishable from the
+// outside. An unmatched reply must leave evidence even once it is impossible.
+func TestWSClient_UnmatchedReplyIsCountedNotDropped(t *testing.T) {
+	// This server acks with a ref nobody is waiting for — the same situation the
+	// race produces, reached through the real read path without depending on the
+	// race's timing to occur.
+	srv := mockWSServer(t, func(conn *websocket.Conn) {
+		for {
+			_, msg, err := conn.ReadMessage()
+			if err != nil {
+				return
+			}
+			var env envelope
+			if json.Unmarshal(msg, &env) != nil || env.Ref == "" {
+				continue
+			}
+			resp, _ := json.Marshal(envelope{
+				Type: "ack", Ref: env.Ref + "-unmatched", Payload: json.RawMessage(`{"ok":true}`),
+			})
+			conn.WriteMessage(websocket.TextMessage, resp)
+		}
+	})
+	t.Cleanup(srv.Close)
+
+	c := NewWSClient(context.Background(), srv.URL[7:], "test-secret", "agent-1", false).(*WSClient)
+	if err := c.connect(context.Background()); err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+
+	before := c.droppedReplies.Load()
+
+	// This call cannot succeed — its ack carries a ref that matches nothing. The
+	// timeout is expected; what is asserted is that the mismatched reply left
+	// evidence rather than vanishing.
+	ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
+	defer cancel()
+	_ = c.Init(ctx, "wf-1", rpc.WorkflowState{Started: 1})
+
+	assert.Eventually(t, func() bool { return c.droppedReplies.Load() > before },
+		2*time.Second, 5*time.Millisecond,
+		"an unmatched reply must be counted, not silently discarded (#372)")
+}
+
+// TestWSClient_ConcurrentRoundTripsDropNoReplies is the positive half, and the
+// one that would have caught #372. It drives the real entry point concurrently
+// so the window between the wire write and the waiter registration is as wide
+// as the scheduler will make it, then asserts two things together: every call
+// got its ack, AND readPump dropped nothing. Either alone is passable by a
+// broken client — all-succeed can hide a drop that a retry covered, and
+// zero-dropped is trivially true if nothing was sent.
+func TestWSClient_ConcurrentRoundTripsDropNoReplies(t *testing.T) {
+	c := autoAckWSServer(t, nil)
+
+	// n is sized from a disarm test, and the measured numbers are stated here
+	// rather than described, because the comment this fix replaced asserted a
+	// conclusion its evidence did not support and that is why #372 survived two
+	// closures. Measured, with the pre-#372 send-then-register order restored:
+	// n=50 failed 2 runs in 20, n=400 failed 5 in 20. With the fix in place,
+	// n=400 passed 20 of 20 — so no false positives, but detection of a
+	// REINTRODUCED regression is roughly 25% per run, not reliable.
+	//
+	// That is deliberate and this test is the weaker of the pair. The race window
+	// is a few instructions wide and cannot be widened from a test without a seam
+	// in production code. The guard that does not depend on winning a race is
+	// TestWSClient_UnmatchedReplyIsCountedNotDropped: it is deterministic, and it
+	// protects the property that actually matters -- that a dropped reply can
+	// never again be silent. A recurrence would show up in the logs and the
+	// counter on the first occurrence, rather than as a 30s timeout with no trace.
+	const n = 400
+	var wg sync.WaitGroup
+	errs := make(chan error, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if err := c.Init(ctx, "wf-1", rpc.WorkflowState{Started: 1}); err != nil {
+				errs <- err
+			}
+		}()
+	}
+	wg.Wait()
+	close(errs)
+
+	var failed int
+	for err := range errs {
+		failed++
+		t.Errorf("round-trip failed, reply likely dropped (#372): %v", err)
+	}
+	assert.Zero(t, failed, "every concurrent round-trip must receive its ack")
+	assert.Zero(t, c.droppedReplies.Load(),
+		"readPump must not drop any reply when a waiter was registered before the send (#372)")
 }

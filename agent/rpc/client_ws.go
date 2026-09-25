@@ -55,11 +55,16 @@ type WSClient struct {
 	refSeq  atomic.Int64
 
 	// Server → agent message routing
-	inbox     chan envelope            // all incoming messages
-	pending   map[string]chan envelope // ref → response channel
-	pendingMu sync.Mutex
-	cancels   map[string]chan struct{} // workflowID → cancel signal
-	cancelsMu sync.Mutex
+	inbox   chan envelope            // all incoming messages
+	pending map[string]chan envelope // ref → response channel
+	// droppedReplies counts ref-bearing replies that arrived with no waiter
+	// registered. It must stay zero: #372 was invisible for two closures of
+	// #332 precisely because a discarded reply left no trace, so the count is
+	// the positive counterpart to the fix rather than a nicety.
+	droppedReplies atomic.Int64
+	pendingMu      sync.Mutex
+	cancels        map[string]chan struct{} // workflowID → cancel signal
+	cancelsMu      sync.Mutex
 
 	// Log batching
 	logs chan *rpc.LogEntry
@@ -216,11 +221,21 @@ func (c *WSClient) readPump() {
 		// the real delivery path; the inbox copy was always a dropped duplicate.
 		if env.Ref != "" {
 			c.pendingMu.Lock()
-			if ch, ok := c.pending[env.Ref]; ok {
+			ch, ok := c.pending[env.Ref]
+			if ok {
 				ch <- env
 				delete(c.pending, env.Ref)
 			}
 			c.pendingMu.Unlock()
+			if !ok {
+				// No waiter for this ref. Since #372 this should be unreachable;
+				// it is counted and logged rather than dropped because a silently
+				// discarded reply is indistinguishable from one that never came,
+				// and that silence is what hid #372 across two closures of #332.
+				c.droppedReplies.Add(1)
+				log.Warn().Str("ref", env.Ref).Str("type", env.Type).
+					Msg("ws-client: reply arrived with no waiter registered — dropped (#372)")
+			}
 			continue
 		}
 
@@ -256,40 +271,66 @@ func (c *WSClient) nextRef() string {
 // send sends a message and optionally waits for an ack.
 func (c *WSClient) send(msgType string, payload interface{}) (string, error) {
 	ref := c.nextRef()
+	return ref, c.sendWithRef(ref, msgType, payload)
+}
+
+// sendWithRef writes a message using a caller-supplied ref. Split out of send()
+// so a request/response caller can register its reply waiter BEFORE the message
+// reaches the wire — see registerAndSend and #372.
+func (c *WSClient) sendWithRef(ref, msgType string, payload interface{}) error {
 	raw, err := json.Marshal(payload)
 	if err != nil {
-		return ref, err
+		return err
 	}
 	data, err := json.Marshal(envelope{Type: msgType, Ref: ref, Payload: raw})
 	if err != nil {
-		return ref, err
+		return err
 	}
 
 	c.mu.Lock()
 	conn := c.conn
 	c.mu.Unlock()
 	if conn == nil {
-		return ref, fmt.Errorf("not connected")
+		return fmt.Errorf("not connected")
 	}
 
 	c.writeMu.Lock()
 	conn.SetWriteDeadline(time.Now().Add(wsWriteTimeout))
 	err = conn.WriteMessage(websocket.TextMessage, data)
 	c.writeMu.Unlock()
-	return ref, err
+	return err
+}
+
+// registerAndSend allocates a ref, registers its reply waiter, and only then
+// writes the message. The order is the whole point (#372): sendAndWait used to
+// write first and register second, so a reply returning inside that window --
+// microseconds on loopback -- found no waiter in pending[ref] and was discarded
+// by readPump, leaving the caller to block until its timeout for a reply the
+// server had already sent. On a send failure the waiter is removed again, so a
+// failed send leaves no orphan entry behind.
+func (c *WSClient) registerAndSend(msgType string, payload interface{}) (string, chan envelope, error) {
+	ref := c.nextRef()
+	ch := make(chan envelope, 1)
+
+	c.pendingMu.Lock()
+	c.pending[ref] = ch
+	c.pendingMu.Unlock()
+
+	if err := c.sendWithRef(ref, msgType, payload); err != nil {
+		c.pendingMu.Lock()
+		delete(c.pending, ref)
+		c.pendingMu.Unlock()
+		return ref, nil, err
+	}
+	return ref, ch, nil
 }
 
 // sendAndWait sends a message and waits for the ack.
 func (c *WSClient) sendAndWait(ctx context.Context, msgType string, payload interface{}) error {
-	ref, err := c.send(msgType, payload)
+	ref, ch, err := c.registerAndSend(msgType, payload)
 	if err != nil {
 		return err
 	}
-
-	ch := make(chan envelope, 1)
-	c.pendingMu.Lock()
-	c.pending[ref] = ch
-	c.pendingMu.Unlock()
 
 	select {
 	case env, ok := <-ch:
@@ -349,15 +390,10 @@ func (c *WSClient) RegisterAgent(ctx context.Context, info rpc.AgentInfo) (int64
 		return 0, err
 	}
 
-	ref, err := c.send("agent.register", info)
+	_, ch, err := c.registerAndSend("agent.register", info)
 	if err != nil {
 		return 0, err
 	}
-
-	ch := make(chan envelope, 1)
-	c.pendingMu.Lock()
-	c.pending[ref] = ch
-	c.pendingMu.Unlock()
 
 	select {
 	case env, ok := <-ch:
@@ -397,7 +433,7 @@ func (c *WSClient) Next(ctx context.Context, f rpc.Filter) (*rpc.Workflow, error
 		return nil, nil
 	}
 
-	ref, err := c.send("agent.next", struct {
+	ref, ch, err := c.registerAndSend("agent.next", struct {
 		FilterLabels map[string]string `json:"filter_labels"`
 	}{FilterLabels: f.Labels})
 	if err != nil {
@@ -410,11 +446,6 @@ func (c *WSClient) Next(ctx context.Context, f rpc.Filter) (*rpc.Workflow, error
 		c.mu.Unlock()
 		return nil, nil
 	}
-
-	ch := make(chan envelope, 1)
-	c.pendingMu.Lock()
-	c.pending[ref] = ch
-	c.pendingMu.Unlock()
 
 	select {
 	case env, ok := <-ch:
