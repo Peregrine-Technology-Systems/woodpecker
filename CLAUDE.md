@@ -44,6 +44,12 @@ Reference incident: 2026-09-25, eight artifacts (#364 ×2, #365, #366, #367, #36
 
 **Sibling-repo issue references are fine but opaque to outside readers.** `infra#6594` means nothing to an upstream contributor and cannot be followed. Keep a one-line plain-English summary alongside any such reference so a public reader is not left with a dead pointer.
 
+## Depending on infrastructure this fork does not own
+
+**Trigger — about to rely on a project name, an image, an identity, an install path or a bucket that another team owns:** → **[docs/INFRA_DEPENDENCIES.md](./docs/INFRA_DEPENDENCIES.md)**.
+
+**The one fact:** this fork's build path has broken repeatedly because an install path or project name was *written down here* instead of being **resolved at run time**. Prefer discovery over a literal; where a literal is unavoidable, make its absence fail loudly rather than fall back to something that used to work. That document records structure and re-verification method deliberately, and **not** the other team's current values — a copy of somebody else's configuration makes this repo responsible for currency it cannot maintain, and every revert in this area began with a fact that was true when relayed and false when used.
+
 ## Standards
 
 - All Peregrine-specific changes must be clearly marked — prefix commits with `[pts]` and reference a `pts-` issue
