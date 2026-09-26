@@ -119,7 +119,12 @@ setup() {
   printf '#!/bin/sh\nprintf "ya29.fake-token" > "$1"\nexit 0\n' > "$m"; chmod +x "$m"
   run mint_wake_token "$m" "$out"
   assert_success
-  assert_equal "$(stat -f '%OLp' "$out" 2>/dev/null || stat -c '%a' "$out")" "600"
+  # NOT `stat -f … || stat -c …`: on BSD -f means "format", on GNU it means
+  # "filesystem" and EXITS 0, so the fallback never fires and the assertion
+  # compares a filesystem dump. Same platform-divergence-that-succeeds shape as
+  # the GNU-only sed constructs this estate has been bitten by twice. python3 is
+  # already a dependency of the library under test.
+  assert_equal "$(python3 -c 'import os,stat,sys; print(oct(stat.S_IMODE(os.stat(sys.argv[1]).st_mode))[2:])' "$out")" "600"
 }
 
 # ──────────────── zone_failure_is_retryable (the #369 residue) ────────────────
