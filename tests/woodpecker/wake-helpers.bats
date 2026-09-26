@@ -179,3 +179,49 @@ setup() {
   # also "failure", so assert_failure would pass on an absent implementation.
   assert_equal "$status" 1
 }
+
+# ──────────────── resolve_build_target (#353 inert-merge switch) ────────────────
+#
+# pts-build.yaml is `event: manual` restricted to `branch: main`, and the wake
+# step runs this script from the checked-out workspace — so there is NO way to
+# exercise a change from a PR branch, and merging arms the next bake. With the
+# create path still unproven, the default must therefore be CURRENT behaviour,
+# per the estate's feature-switch rule (a missing switch falls back to the
+# committed default set to current behaviour, never to the new one).
+#
+# One switch selects the whole coherent set rather than three independent vars,
+# because independent vars permit incoherent combinations — a PP project with the
+# legacy image family, say — that fail in a way that looks like something else.
+
+@test "resolve_build_target: DEFAULT is legacy, so merging is inert" {
+  assert_equal "$PTS_BUILD_TARGET_DEFAULT" "legacy"
+}
+
+@test "resolve_build_target: legacy -> current behaviour, ambient auth, no mint" {
+  resolve_build_target legacy
+  assert_equal "$BUILD_PROJECT" "ci-runners-de"
+  assert_equal "$BUILD_IMAGE_FAMILY" "ci-agent"
+  assert_equal "$BUILD_IMAGE_PROJECT" "ci-runners-de"
+  assert_equal "$BUILD_AUTH" "ambient"
+}
+
+@test "resolve_build_target: peregrine-production -> PP set with minted auth" {
+  resolve_build_target peregrine-production
+  assert_equal "$BUILD_PROJECT" "peregrine-production"
+  assert_equal "$BUILD_IMAGE_FAMILY" "ci-agent-base-base"
+  assert_equal "$BUILD_IMAGE_PROJECT" "peregrine-production"
+  assert_equal "$BUILD_AUTH" "pts-build-wake"
+}
+
+# A typo must not silently select legacy — that would make an intended cutover
+# run silently produce a legacy VM, and the operator would read the green as
+# confirmation of the migration.
+@test "resolve_build_target: unknown target -> 1 (never a silent default)" {
+  run resolve_build_target peregrine-producton
+  assert_equal "$status" 1
+}
+
+@test "resolve_build_target: empty target -> 1" {
+  run resolve_build_target ""
+  assert_equal "$status" 1
+}
