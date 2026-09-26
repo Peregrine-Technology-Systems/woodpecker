@@ -16,9 +16,33 @@
 # Build cache lives in GCS — no persistent disk needed.
 set -euo pipefail
 
-PTS_BUILD_PROJECT="ci-runners-de"
+# #353: pts-build-vm now lives in peregrine-production. The legacy project is
+# under decommission, and its agent identity can never be granted anything on a
+# PP resource under the org's DRS policy — so this move required a PP-native
+# identity to make the create call, not a cross-project grant. See the auth block
+# below and infra#5682/#5698.
+PTS_BUILD_PROJECT="${PTS_BUILD_PROJECT:-peregrine-production}"
 PTS_BUILD_VM="pts-build-vm"
 WP_API="https://d3ci42.peregrinetechsys.net"
+
+# Image: PP has no family literally named `ci-agent` — it is `ci-agent-base-base`
+# (verified live; head carries the go the build needs). A family lookup is fine
+# for `gcloud compute instances create`: the ForceNew hazard that blocked adding
+# a family in terraform (infra#5688/#5691) applies to terraform-managed image
+# resources and instance templates, not to this call. Override either value to
+# pin a specific image for a one-off.
+PTS_BUILD_IMAGE_FAMILY="${PTS_BUILD_IMAGE_FAMILY:-ci-agent-base-base}"
+PTS_BUILD_IMAGE_PROJECT="${PTS_BUILD_IMAGE_PROJECT:-peregrine-production}"
+
+# Auth: the wake step runs on d3ci42-local under the LEGACY ambient identity,
+# which cannot create anything in PP. infra's deploy rsyncs the mint script for
+# the dedicated pts-build-wake identity to /opt/woodpecker; we exchange it for a
+# short-lived token and hand that to gcloud via CLOUDSDK_AUTH_ACCESS_TOKEN_FILE,
+# which every gcloud call below AND in lib/wake-helpers.sh then picks up. Using
+# the env var rather than a per-call --access-token-file flag is deliberate: a
+# call site that missed the flag would silently fall back to the ambient identity,
+# which is precisely the failure this change exists to remove.
+PTS_WAKE_MINT_SCRIPT="${PTS_WAKE_MINT_SCRIPT:-/opt/woodpecker/pts-build-wake-mint-token.sh}"
 
 # Fail-safe helpers — get_vm_owner_pipeline / get_pipeline_status branch on exit
 # status so an undetermined owner/status never falls through to a destructive
@@ -27,7 +51,27 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/woodpecker/lib/wake-helpers.sh
 source "${SCRIPT_DIR}/lib/wake-helpers.sh"
 
+# ── Authenticate as pts-build-wake, or abort (#353) ──
+# Fail loud rather than proceeding: an unauthenticated run inherits the legacy
+# ambient identity and 403s in every zone, which the fallback loop then reports
+# as capacity exhaustion (#369) — a permissions-shaped symptom for an
+# authentication-shaped cause. Two reverts came from exactly that confusion.
+PTS_WAKE_TOKEN_FILE="$(mktemp)"
+PTS_WAKE_CREATE_ERR="$(mktemp)"
+trap 'rm -f "${PTS_WAKE_TOKEN_FILE}" "${PTS_WAKE_CREATE_ERR}"' EXIT
+if ! mint_wake_token "${PTS_WAKE_MINT_SCRIPT}" "${PTS_WAKE_TOKEN_FILE}"; then
+    echo "ERROR: could not mint a pts-build-wake token; refusing to fall back to the" >&2
+    echo "       ambient (legacy) identity, which cannot create instances in" >&2
+    echo "       ${PTS_BUILD_PROJECT} and would 403 in every zone (#353)." >&2
+    echo "       Expected mint script at ${PTS_WAKE_MINT_SCRIPT} — infra's" >&2
+    echo "       deploy-woodpecker-server.sh places it there on every deploy." >&2
+    exit 1
+fi
+export CLOUDSDK_AUTH_ACCESS_TOKEN_FILE="${PTS_WAKE_TOKEN_FILE}"
+echo "==> Authenticated as pts-build-wake for ${PTS_BUILD_PROJECT}"
+
 # Same zone list used by ci-image-builder bootstrap.sh (peregrine-infrastructure PR #1665)
+ZONE_COUNT=11
 ZONE_LIST="us-central1-a us-central1-b us-east1-b us-east1-c us-east1-d us-west1-a us-west1-b us-west1-c us-east4-a us-east4-b us-south1-b"
 
 # ── Concurrent-run guard ──
@@ -90,8 +134,8 @@ for ZONE in ${ZONE_LIST}; do
             --project="${PTS_BUILD_PROJECT}" \
             --zone="${ZONE}" \
             --machine-type=e2-standard-8 \
-            --image-family=ci-agent \
-            --image-project="${PTS_BUILD_PROJECT}" \
+            --image-family="${PTS_BUILD_IMAGE_FAMILY}" \
+            --image-project="${PTS_BUILD_IMAGE_PROJECT}" \
             --boot-disk-size=50GB \
             --boot-disk-type=pd-ssd \
             --service-account="ci-agent@${PTS_BUILD_PROJECT}.iam.gserviceaccount.com" \
@@ -102,7 +146,7 @@ for ZONE in ${ZONE_LIST}; do
             --metadata="agent-label=pts-build,pts-build-pipeline=${CI_PIPELINE_NUMBER:-0},pts-build-zone=${ZONE}" \
             --no-restart-on-failure \
             --maintenance-policy=MIGRATE \
-            --quiet 2>&1; then
+            --quiet 2>&1 | tee "${PTS_WAKE_CREATE_ERR}"; then
         CREATED_ZONE="${ZONE}"
         echo "    VM created in ${CREATED_ZONE} from latest ci-agent image"
         # TTL backstop — reaper stops the VM within 2h if the pipeline
@@ -113,11 +157,23 @@ for ZONE in ${ZONE_LIST}; do
         echo "    TTL label set (120 min backstop)"
         break
     fi
-    echo "    WARN: ${ZONE} capacity unavailable — trying next zone"
+    # #369: report the cause we actually observed, and only advance the loop for a
+    # failure another zone could fix. Anything else — auth, permissions, quota
+    # (global), a missing image — fails here with its real text instead of being
+    # relabelled "capacity" eleven times over.
+    PTS_WAKE_LAST_ERR="$(cat "${PTS_WAKE_CREATE_ERR}" 2>/dev/null || true)"
+    if ! zone_failure_is_retryable "${PTS_WAKE_LAST_ERR}"; then
+        echo "ERROR: ${PTS_BUILD_VM} create failed in ${ZONE} for a reason another zone cannot fix:" >&2
+        echo "${PTS_WAKE_LAST_ERR}" | tail -5 >&2
+        exit 1
+    fi
+    echo "    WARN: ${ZONE} genuinely out of capacity — trying next zone"
 done
 
 if [ -z "${CREATED_ZONE}" ]; then
-    echo "ERROR: could not create ${PTS_BUILD_VM} in any zone — all zones at capacity"
+    echo "ERROR: could not create ${PTS_BUILD_VM} in any of the ${ZONE_COUNT} zones tried." >&2
+    echo "       Every attempt was a genuine capacity failure. Last reported reason:" >&2
+    echo "${PTS_WAKE_LAST_ERR:-<none captured>}" | tail -5 >&2
     exit 1
 fi
 
