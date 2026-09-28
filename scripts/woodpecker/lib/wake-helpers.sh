@@ -180,16 +180,86 @@ resolve_build_target() {
       BUILD_IMAGE_FAMILY="ci-agent"
       BUILD_IMAGE_PROJECT="ci-runners-de"
       BUILD_AUTH="ambient"
+      BUILD_HOOKS_BASE="gs://ci-runners-de-agent-hooks/scripts"
       ;;
     peregrine-production)
       BUILD_PROJECT="peregrine-production"
       BUILD_IMAGE_FAMILY="ci-agent-base-base"
       BUILD_IMAGE_PROJECT="peregrine-production"
       BUILD_AUTH="pts-build-wake"
+      BUILD_HOOKS_BASE="gs://peregrine-production-agent-hooks/scripts"
       ;;
     *)
       return 1
       ;;
   esac
   return 0
+}
+
+# find_build_vm PROJECT VM
+#   Locates the build VM and reports what was learned, keeping three states
+#   apart that pts-cleanup.sh used to collapse into one.
+#   stdout : "<zone> <owner-pipeline>" when found
+#   return : 0 = found (value on stdout)
+#            1 = genuinely absent (the list succeeded and returned no rows)
+#            2 = could NOT determine (the list itself failed)
+#
+#   #380: the old form was `gcloud ... 2>/dev/null | head -1 || true`, and an
+#   empty result printed "not found — already deleted or never created" and
+#   exited 0. That is true for one of three causes and false for the other two:
+#   a transient API error, and LOOKING IN THE WRONG PROJECT. #601 hit the third —
+#   the VM was created in peregrine-production while this script still named the
+#   legacy project, so the list found nothing, reported success, and left an
+#   e2-standard-8 running.
+#
+#   This is the same fail-open shape get_vm_owner_pipeline was hardened against
+#   for #3089. The wake side got the treatment; the cleanup side did not, which
+#   is why the defect survived in a file twenty lines long.
+find_build_vm() {
+  local project="$1" vm="$2" row
+  # NO PIPE on the gcloud call. `gcloud ... | head -1` makes the substitution
+  # report HEAD's status, not gcloud's, so a failed list reads as an empty one
+  # and lands in the "genuinely absent" branch below — recreating the exact
+  # collapse this function exists to prevent. The first line is taken with
+  # parameter expansion instead, where no status is involved. (Caught by the
+  # ERRORED test, having been written into the fix for the same bug.)
+  if ! row="$(gcloud compute instances list \
+        --project="${project}" \
+        --filter="name=${vm}" \
+        --format="value(zone,metadata.items[pts-build-pipeline])" 2>/dev/null)"; then
+    return 2
+  fi
+  row="${row%%$'\n'*}"
+  if [ -z "${row}" ]; then
+    return 1
+  fi
+  printf '%s' "${row}"
+  return 0
+}
+
+# delete_build_vm VM ZONE PROJECT
+#   Deletes the VM and then CONFIRMS it is gone by looking again.
+#   return : 0 = confirmed absent afterwards
+#            2 = still present, or absence could not be confirmed
+#
+#   The delete's own exit status is its report about itself, and #601 proved that
+#   is not enough: the delete exited 0 having deleted nothing, and the orphan was
+#   found later by listing from a different identity. So the verdict here comes
+#   from the post-check, not from the command.
+#
+#   That cuts both ways on purpose. A delete that ERRORS because the VM was
+#   already gone is a success by outcome, and a delete that SUCCEEDS while the VM
+#   remains is a failure by outcome. Only the second look can tell those apart,
+#   and an unreadable second look is undetermined — never success.
+delete_build_vm() {
+  local vm="$1" zone="$2" project="$3"
+
+  gcloud compute instances delete "${vm}" \
+      --zone="${zone}" --project="${project}" --quiet >/dev/null 2>&1 || true
+
+  find_build_vm "${project}" "${vm}" >/dev/null
+  case "$?" in
+    1) return 0 ;;   # absent — the outcome we wanted, however the delete reported
+    *) return 2 ;;   # still there, or the check failed: both are "not confirmed"
+  esac
 }

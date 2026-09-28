@@ -230,3 +230,108 @@ setup() {
   run resolve_build_target ""
   assert_equal "$status" 1
 }
+
+# ═══════════════════ #380: the coherent set gains the bucket ═══════════════════
+#
+# #601 proved the set was incomplete. Project, image and auth moved to
+# peregrine-production; the mint-script bucket did not, so the now-PP-native VM
+# identity lost its read on the legacy bucket and the build 403'd — the exact
+# mirror of #345/#352, which moved the bucket while the identity stayed legacy.
+# The bucket is a member of the set, not a neighbour of it.
+
+@test "resolve_build_target: legacy yields the legacy hooks bucket" {
+  resolve_build_target legacy
+  assert_equal "$BUILD_HOOKS_BASE" "gs://ci-runners-de-agent-hooks/scripts"
+}
+
+@test "resolve_build_target: peregrine-production yields the PP hooks bucket" {
+  resolve_build_target peregrine-production
+  assert_equal "$BUILD_HOOKS_BASE" "gs://peregrine-production-agent-hooks/scripts"
+}
+
+# The whole point of one switch: no combination can be half-migrated. If a future
+# edit adds a member and forgets a target, this catches it without anyone having
+# to remember the rule.
+@test "resolve_build_target: every member of the set is populated, both targets" {
+  for t in legacy peregrine-production; do
+    unset BUILD_PROJECT BUILD_IMAGE_FAMILY BUILD_IMAGE_PROJECT BUILD_AUTH BUILD_HOOKS_BASE
+    resolve_build_target "$t"
+    for m in BUILD_PROJECT BUILD_IMAGE_FAMILY BUILD_IMAGE_PROJECT BUILD_AUTH BUILD_HOOKS_BASE; do
+      [ -n "${!m}" ] || { echo "target=$t left $m empty"; return 1; }
+    done
+  done
+}
+
+# ══════════════ #380: find_build_vm — absent is NOT the same as errored ═══════
+#
+# pts-cleanup.sh's list was `... 2>/dev/null | head -1 || true`, and an empty
+# result meant "not found — already deleted or never created", exit 0. That
+# collapses three states: genuinely absent, gcloud errored, and LOOKING IN THE
+# WRONG PROJECT. #601 hit the third — the VM was in peregrine-production, the
+# list ran against the legacy project, found nothing, and reported success while
+# an e2-standard-8 kept running. Same fail-open shape wake-helpers was hardened
+# against for #3089; the cleanup side never got the treatment.
+
+@test "find_build_vm: found -> 0, emits zone and owner" {
+  gcloud() { echo "projects/p/zones/us-central1-a  601"; return 0; }
+  run find_build_vm proj vm
+  assert_success
+  assert_output --partial "us-central1-a"
+  assert_output --partial "601"
+}
+
+@test "find_build_vm: genuinely absent (list ok, no rows) -> 1" {
+  gcloud() { echo ""; return 0; }
+  run find_build_vm proj vm
+  assert_equal "$status" 1
+}
+
+@test "find_build_vm: list ERRORED -> 2, never confused with absent" {
+  gcloud() { echo "ERROR: (gcloud) API failure" >&2; return 1; }
+  run find_build_vm proj vm
+  assert_equal "$status" 2
+}
+
+# ═══════ #380: delete_build_vm — confirm absence, do not trust the delete ═════
+#
+# Stubs match the WHOLE arg list, not "$2". `gcloud compute instances delete`
+# puts the verb at $3 — matching $2 ("instances") silently never fires the
+# delete branch, so three of these tests passed while exercising nothing they
+# claimed to. Found by running the real entry point, not by reading them.
+#
+# The orphan survived a delete that exited 0. The delete's own exit status is
+# its report about itself; the only trustworthy check is looking again afterward.
+
+@test "delete_build_vm: gone after delete -> 0" {
+  # first call deletes, second call (the confirmation list) shows nothing
+  gcloud() { case " $* " in *" delete "*) return 0 ;; esac; echo ""; return 0; }
+  run delete_build_vm vm us-central1-a proj
+  assert_success
+}
+
+@test "delete_build_vm: STILL PRESENT after a delete that exited 0 -> 2" {
+  # the #601 shape: delete reports success, the VM is still there
+  gcloud() { case " $* " in *" delete "*) return 0 ;; esac; echo "projects/p/zones/us-central1-a  601"; return 0; }
+  run delete_build_vm vm us-central1-a proj
+  assert_equal "$status" 2
+}
+
+@test "delete_build_vm: delete errored and VM still present -> 2" {
+  gcloud() { case " $* " in *" delete "*) echo "ERROR: boom" >&2; return 1 ;; esac; echo "projects/p/zones/us-central1-a  601"; return 0; }
+  run delete_build_vm vm us-central1-a proj
+  assert_equal "$status" 2
+}
+
+# A delete that errors because the VM was already gone is a SUCCESS by outcome —
+# the post-check is what decides, not the command's complaint.
+@test "delete_build_vm: delete errored but VM is gone -> 0 (outcome wins)" {
+  gcloud() { case " $* " in *" delete "*) echo "ERROR: was not found" >&2; return 1 ;; esac; echo ""; return 0; }
+  run delete_build_vm vm us-central1-a proj
+  assert_success
+}
+
+@test "delete_build_vm: confirmation list cannot be read -> 2 (undetermined is not success)" {
+  gcloud() { case " $* " in *" delete "*) return 0 ;; esac; echo "ERROR: API failure" >&2; return 1; }
+  run delete_build_vm vm us-central1-a proj
+  assert_equal "$status" 2
+}

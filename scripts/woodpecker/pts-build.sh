@@ -73,7 +73,25 @@ mkdir -p "${GOCACHE}" "${GOMODCACHE}"
 # loud either way — never fall back to bare gsutil (the ambient identity can't
 # reach the new bucket, and a silent fallback is exactly the anti-pattern this
 # cutover exists to remove).
-WCW_MINT_HOOKS_BASE="${WCW_MINT_HOOKS_BASE:-gs://ci-runners-de-agent-hooks/scripts}"
+# The build target's coherent set lives in the shared helper library, so
+# pts-wake.sh, pts-build.sh and pts-cleanup.sh cannot disagree about which
+# project/image/identity/bucket a given target means (#380).
+PTS_BUILD_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/woodpecker/lib/wake-helpers.sh
+source "${PTS_BUILD_SCRIPT_DIR}/lib/wake-helpers.sh"
+
+# #380: the bucket is a MEMBER of the build target's coherent set, not an
+# independent default. #601 proved why: the VM identity moved to
+# peregrine-production while this default stayed legacy, so the PP-native
+# identity had no read on the legacy bucket and the fetch 403'd — the mirror of
+# #345/#352, which moved the bucket while the identity stayed legacy. Both halves
+# move together or neither does.
+PTS_BUILD_TARGET="${PTS_BUILD_TARGET:-${PTS_BUILD_TARGET_DEFAULT}}"
+if ! resolve_build_target "${PTS_BUILD_TARGET}"; then
+    echo "❌ unknown PTS_BUILD_TARGET='${PTS_BUILD_TARGET}'. Valid: legacy | peregrine-production." >&2
+    exit 1
+fi
+WCW_MINT_HOOKS_BASE="${WCW_MINT_HOOKS_BASE:-${BUILD_HOOKS_BASE}}"
 if [ -z "${WCW_MINT_SCRIPT:-}" ]; then
     WCW_MINT_DIR=$(mktemp -d)
     mkdir -p "${WCW_MINT_DIR}/lib"

@@ -131,8 +131,8 @@ if [ "${STATUS}" = "RUNNING" ] && [ -n "${CURRENT_ZONE}" ]; then
         --zone="${CURRENT_ZONE}" --project="${PTS_BUILD_PROJECT}" --quiet 2>/dev/null || true
 fi
 
-# ── Create fresh from latest ci-agent family image — zone fallback (#150) ──
-echo "==> Creating ${PTS_BUILD_VM} from ci-agent family (pts.${CI_PIPELINE_NUMBER:-0})..."
+# ── Create fresh from the resolved image family — zone fallback (#150) ──
+echo "==> Creating ${PTS_BUILD_VM} from ${PTS_BUILD_IMAGE_FAMILY} in ${PTS_BUILD_IMAGE_PROJECT} (pts.${CI_PIPELINE_NUMBER:-0})..."
 CREATED_ZONE=""
 for ZONE in ${ZONE_LIST}; do
     # #250: pin pts-build-vm to the buildkite-network VPC (NOT the default
@@ -170,7 +170,7 @@ for ZONE in ${ZONE_LIST}; do
             --maintenance-policy=MIGRATE \
             --quiet 2>&1 | tee "${PTS_WAKE_CREATE_ERR}"; then
         CREATED_ZONE="${ZONE}"
-        echo "    VM created in ${CREATED_ZONE} from latest ci-agent image"
+        echo "    VM created in ${CREATED_ZONE} from ${PTS_BUILD_IMAGE_FAMILY}"
         # TTL backstop — reaper stops the VM within 2h if the pipeline
         # doesn't delete it first (#228).
         gcloud compute instances add-labels "${PTS_BUILD_VM}" \
