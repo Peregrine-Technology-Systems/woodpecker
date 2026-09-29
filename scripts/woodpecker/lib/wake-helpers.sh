@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+
+# shellcheck source=scripts/woodpecker/lib/auth-helpers.sh
+# shellcheck disable=SC1091
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/auth-helpers.sh"
 # wake-helpers.sh — sourceable helpers for pts-wake.sh.
 #
 # [pts] Hardened against the silent-OK / fail-open class documented in
@@ -64,58 +68,6 @@ get_pipeline_status() {
   return 0
 }
 
-# mint_wake_token MINT_SCRIPT OUT_FILE
-#   Mints a GCP access token for the dedicated pts-build-wake identity and
-#   leaves it in OUT_FILE (mode 600) for gcloud's --access-token-file /
-#   CLOUDSDK_AUTH_ACCESS_TOKEN_FILE.
-#   return : 0 = OUT_FILE holds a usable, non-blank token
-#            2 = could not obtain one — the caller MUST abort
-#
-#   #353/#354/#355: pts-wake.sh used to authenticate not at all, inheriting
-#   whatever identity was ambient on the host. That is the LEGACY project's
-#   agent, which under the org's DRS policy can never be granted anything on a
-#   peregrine-production resource — so the repoint 403'd in all 11 zones, and
-#   the zone-fallback loop reported it as capacity exhaustion (#369).
-#
-#   The load-bearing property is that failure returns 2 rather than letting the
-#   caller proceed. A silent fallback to the ambient identity reproduces exactly
-#   that 403 and presents as a permissions problem rather than an authentication
-#   one — which is how it cost two reverts.
-#
-#   Note the deliberate absence of 2>/dev/null on the mint invocation: infra's
-#   bakery runbook records "NEVER 2>/dev/null a mint; a silent mint failure looks
-#   like a permission problem three commands later". The mint's own stdout is
-#   routed to stderr so its diagnostics stay visible without polluting a
-#   command-substitution capture of this function.
-mint_wake_token() {
-  local mint="$1" out="$2"
-
-  if [ ! -x "${mint}" ]; then
-    echo "mint_wake_token: mint script not executable: ${mint}" >&2
-    return 2
-  fi
-
-  # Create the destination 600 BEFORE the mint writes, so the token never
-  # exists briefly at the ambient umask.
-  if ! : > "${out}" 2>/dev/null || ! chmod 600 "${out}" 2>/dev/null; then
-    echo "mint_wake_token: cannot create token file: ${out}" >&2
-    return 2
-  fi
-
-  if ! "${mint}" "${out}" >&2; then
-    echo "mint_wake_token: mint failed (see above): ${mint}" >&2
-    return 2
-  fi
-
-  # An exit-0 mint that wrote nothing usable is the silent-OK shape: the failure
-  # would otherwise surface as a 401 from gcloud several commands later.
-  if [ -z "$(tr -d '[:space:]' < "${out}" 2>/dev/null)" ]; then
-    echo "mint_wake_token: mint exited 0 but wrote no token: ${out}" >&2
-    return 2
-  fi
-
-  return 0
-}
 
 # zone_failure_is_retryable OUTPUT
 #   Decides whether a failed `gcloud compute instances create` is worth trying in
@@ -223,19 +175,38 @@ find_build_vm() {
   # collapse this function exists to prevent. The first line is taken with
   # parameter expansion instead, where no status is involved. (Caught by the
   # ERRORED test, having been written into the fix for the same bug.)
+  local err
+  err="$(mktemp)"
   if ! row="$(gcloud compute instances list \
         --project="${project}" \
         --filter="name=${vm}" \
-        --format="value(zone,metadata.items[pts-build-pipeline])" 2>/dev/null)"; then
+        --format="value(zone,metadata.items[pts-build-pipeline])" 2>"${err}")"; then
+    rm -f "${err}"
     return 2
   fi
   row="${row%%$'\n'*}"
-  if [ -z "${row}" ]; then
-    return 1
+  if [ -n "${row}" ]; then
+    rm -f "${err}"
+    printf '%s' "${row}"
+    return 0
   fi
-  printf '%s' "${row}"
-  return 0
+  # Empty stdout is NOT absence on its own (#384, bake 608). `instances list`
+  # without --zones is an AGGREGATED list, so a caller who may not look gets a
+  # per-zone denial that degrades to exit 0 with zero rows and an explanation on
+  # stderr. The old form discarded stderr and checked only the status, making an
+  # unauthorized list indistinguishable from an empty one — cleanup then reported
+  # "genuinely absent" while an e2-standard-8 was running. An AUTHORIZED empty
+  # list says nothing; absence is proven only when nothing was said.
+  if [ -s "${err}" ]; then
+    echo "find_build_vm: no rows AND stderr was written — absence NOT proven:" >&2
+    head -c 400 "${err}" >&2
+    rm -f "${err}"
+    return 2
+  fi
+  rm -f "${err}"
+  return 1
 }
+
 
 # delete_build_vm VM ZONE PROJECT
 #   Deletes the VM and then CONFIRMS it is gone by looking again.

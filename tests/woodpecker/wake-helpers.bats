@@ -335,3 +335,152 @@ setup() {
   run delete_build_vm vm us-central1-a proj
   assert_equal "$status" 2
 }
+
+# ═════════════════ #384: unauthorized list vs empty list ═════════════════
+#
+# Bake 608 left an e2-standard-8 running while cleanup exited 0 saying
+# "genuinely absent". pts-cleanup.sh resolved BUILD_AUTH and never minted, so it
+# listed peregrine-production as the ambient legacy identity, and an AGGREGATED
+# `gcloud compute instances list` exits 0 with ZERO ROWS for a caller that may
+# not look. find_build_vm checked only the exit status, so an unauthorized list
+# was indistinguishable from an empty one.
+#
+# Every pre-existing stub here is AUTHORIZED BY CONSTRUCTION — a shell function
+# cannot return "exit 0, no rows, because you may not look here" unless the
+# fixture says so. That is why the suite passed while the branch was unreachable
+# in production too. These fixtures supply that shape deliberately.
+
+@test "find_build_vm: exit 0 + no rows + permission message on stderr -> 2, NOT absent" {
+  gcloud() {
+    echo "ERROR: (gcloud.compute.instances.list) Some requests did not succeed:" >&2
+    echo " - Required 'compute.instances.list' permission for 'projects/peregrine-production'" >&2
+    return 0
+  }
+  run find_build_vm peregrine-production pts-build-vm
+  assert_equal "$status" 2
+}
+
+@test "find_build_vm: exit 0 + no rows + clean stderr -> 1 (genuinely absent)" {
+  gcloud() { return 0; }
+  run find_build_vm proj vm
+  assert_equal "$status" 1
+}
+
+@test "find_build_vm: rows present wins even if stderr carries a warning" {
+  gcloud() {
+    echo "WARNING: some zones were unreachable" >&2
+    echo "projects/p/zones/us-central1-a  608"
+    return 0
+  }
+  run find_build_vm proj vm
+  assert_success
+  assert_output --partial "us-central1-a"
+}
+
+# ═════════════════ #384: authenticate_for_target ═════════════════
+
+@test "authenticate_for_target: ambient target is a no-op success" {
+  resolve_build_target legacy
+  run authenticate_for_target /tmp/nonexistent-mint "$BATS_TEST_TMPDIR/tok"
+  assert_success
+}
+
+@test "authenticate_for_target: pts-build-wake mints and exports the token file" {
+  resolve_build_target peregrine-production
+  local mint="$BATS_TEST_TMPDIR/mint.sh"
+  printf '#!/usr/bin/env bash\nprintf tok > "$1"\n' > "$mint"
+  chmod +x "$mint"
+  authenticate_for_target "$mint" "$BATS_TEST_TMPDIR/tok"
+  assert_equal "$?" 0
+  assert_equal "$CLOUDSDK_AUTH_ACCESS_TOKEN_FILE" "$BATS_TEST_TMPDIR/tok"
+}
+
+@test "authenticate_for_target: mint failure -> 1 and does NOT export a token" {
+  resolve_build_target peregrine-production
+  unset CLOUDSDK_AUTH_ACCESS_TOKEN_FILE
+  local mint="$BATS_TEST_TMPDIR/bad.sh"
+  printf '#!/usr/bin/env bash\nexit 7\n' > "$mint"
+  chmod +x "$mint"
+  run authenticate_for_target "$mint" "$BATS_TEST_TMPDIR/tok2"
+  assert_equal "$status" 1
+  assert_equal "${CLOUDSDK_AUTH_ACCESS_TOKEN_FILE:-}" ""
+}
+
+@test "authenticate_for_target: mint exits 0 but writes nothing -> 1 (silent-OK)" {
+  resolve_build_target peregrine-production
+  unset CLOUDSDK_AUTH_ACCESS_TOKEN_FILE
+  local mint="$BATS_TEST_TMPDIR/empty.sh"
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$mint"
+  chmod +x "$mint"
+  run authenticate_for_target "$mint" "$BATS_TEST_TMPDIR/tok3"
+  assert_equal "$status" 1
+}
+
+# ═══════════ #384: pts-cleanup.sh ENTRY POINT — the wiring, not the helper ═══════
+#
+# The #384 defect was not in a helper. Every helper behaved. The script simply
+# never CALLED the auth helper, and no test drove the script, so a suite of
+# green helper tests coexisted with a cleanup that looked at the wrong identity
+# and reported "genuinely absent" while an e2-standard-8 ran on.
+#
+# A helper-level test cannot catch "the caller forgot to call me". These drive
+# the real entry point as a subprocess, with gcloud shimmed on PATH (a shell
+# function is not inherited by a child process), so the assertion is about what
+# the SCRIPT does — which is what the caller observes.
+
+@test "pts-cleanup.sh: PP target with an unmintable token -> exit 1 and gcloud is NEVER called" {
+  local bin="$BATS_TEST_TMPDIR/bin"
+  mkdir -p "$bin"
+  printf '#!/usr/bin/env bash\necho "CALLED $*" >> "%s/gcloud-calls"\nexit 0\n' \
+    "$BATS_TEST_TMPDIR" > "$bin/gcloud"
+  chmod +x "$bin/gcloud"
+
+  PATH="$bin:$PATH" \
+  PTS_BUILD_TARGET=peregrine-production \
+  PTS_CLEANUP_MINT_SCRIPT="$BATS_TEST_TMPDIR/no-such-mint" \
+  run "${BATS_TEST_DIRNAME}/../../scripts/woodpecker/pts-cleanup.sh"
+
+  assert_equal "$status" 1
+  assert_output --partial "ORPHANED"
+  # The load-bearing assertion: it must not look OR delete as the wrong identity.
+  [ ! -f "$BATS_TEST_TMPDIR/gcloud-calls" ]
+}
+
+@test "pts-cleanup.sh: legacy target needs no mint and still reaches the lookup" {
+  local bin="$BATS_TEST_TMPDIR/bin"
+  mkdir -p "$bin"
+  # exit 0 with no rows and CLEAN stderr = genuinely absent
+  printf '#!/usr/bin/env bash\necho "CALLED $*" >> "%s/gcloud-calls"\nexit 0\n' \
+    "$BATS_TEST_TMPDIR" > "$bin/gcloud"
+  chmod +x "$bin/gcloud"
+
+  PATH="$bin:$PATH" \
+  PTS_BUILD_TARGET=legacy \
+  run "${BATS_TEST_DIRNAME}/../../scripts/woodpecker/pts-cleanup.sh"
+
+  assert_success
+  assert_output --partial "genuinely absent"
+  [ -f "$BATS_TEST_TMPDIR/gcloud-calls" ]
+}
+
+@test "pts-cleanup.sh: PP target, mint OK, unauthorized-shaped list -> exit 1, not success" {
+  local bin="$BATS_TEST_TMPDIR/bin"
+  mkdir -p "$bin"
+  # The bake-608 shape: exit 0, zero rows, permission text on stderr.
+  cat > "$bin/gcloud" <<'SH'
+#!/usr/bin/env bash
+echo "ERROR: Required 'compute.instances.list' permission" >&2
+exit 0
+SH
+  chmod +x "$bin/gcloud"
+  printf '#!/usr/bin/env bash\nprintf tok > "$1"\n' > "$BATS_TEST_TMPDIR/mint.sh"
+  chmod +x "$BATS_TEST_TMPDIR/mint.sh"
+
+  PATH="$bin:$PATH" \
+  PTS_BUILD_TARGET=peregrine-production \
+  PTS_CLEANUP_MINT_SCRIPT="$BATS_TEST_TMPDIR/mint.sh" \
+  run "${BATS_TEST_DIRNAME}/../../scripts/woodpecker/pts-cleanup.sh"
+
+  assert_equal "$status" 1
+  assert_output --partial "UNKNOWN"
+}
