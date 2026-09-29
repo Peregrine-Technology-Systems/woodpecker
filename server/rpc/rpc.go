@@ -768,6 +768,20 @@ func (s *RPC) Done(c context.Context, strWorkflowID string, state rpc.WorkflowSt
 		return err
 	}
 
+	// #382: settle any workflow that can now never run. Woodpecker only decides
+	// that inside the agent poll loop, so a workflow pinned to a label no agent
+	// advertises — classically one whose agent an EARLIER workflow was supposed
+	// to provision — is never evaluated and the pipeline reports "running"
+	// forever. Runs before IsThereRunningStage so the pipeline can finalize in
+	// the same pass, and only ever turns a hung pipeline into a settled one.
+	if n := pipeline.SkipUnrunnableWorkflows(c, s.store, s.queue, currentPipeline); n > 0 {
+		logger.Info().Int("skipped_workflows", n).
+			Msg("skip-unrunnable: settled workflow(s) that can never run (#382)")
+		if currentPipeline.Workflows, err = s.store.WorkflowGetTree(currentPipeline); err != nil {
+			return err
+		}
+	}
+
 	if !model.IsThereRunningStage(currentPipeline.Workflows) {
 		if currentPipeline, err = pipeline.UpdateStatusToDone(s.store, *currentPipeline, pipeline.PipelineStatus(currentPipeline.Workflows), workflow.Finished); err != nil {
 			logger.Error().Err(err).Msgf("pipeline.UpdateStatusToDone: cannot update workflows final state")
