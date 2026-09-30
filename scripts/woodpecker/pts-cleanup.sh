@@ -24,7 +24,36 @@ fi
 PTS_BUILD_PROJECT="${BUILD_PROJECT}"
 PTS_BUILD_VM="pts-build-vm"
 MY_PIPELINE="${CI_PIPELINE_NUMBER:-0}"
-echo "==> cleanup target=${PTS_BUILD_TARGET} project=${PTS_BUILD_PROJECT}"
+PTS_CLEANUP_MINT_SCRIPT="${PTS_CLEANUP_MINT_SCRIPT:-/opt/woodpecker/pts-build-wake-mint-token.sh}"
+echo "==> cleanup target=${PTS_BUILD_TARGET} project=${PTS_BUILD_PROJECT} auth=${BUILD_AUTH}"
+
+# #384: this script resolved BUILD_AUTH and never acted on it. Bake 608 therefore
+# listed peregrine-production as the ambient LEGACY identity, which can see
+# nothing there, and the aggregated list exited 0 with zero rows — so cleanup
+# reported "genuinely absent" while an e2-standard-8 was running. A delete that
+# cannot see is not a delete that found nothing.
+#
+# Authenticating is not optional for a non-ambient target: without it EVERY
+# gcloud call below is answered for the wrong identity, so both the find and the
+# delete are meaningless. Fail loudly instead — an orphan that is reported is
+# recoverable, an orphan that reports success is what #380 was written to stop
+# and what this script then did anyway.
+PTS_CLEANUP_TOKEN_FILE="$(mktemp)"
+chmod 600 "${PTS_CLEANUP_TOKEN_FILE}"
+trap 'rm -f "${PTS_CLEANUP_TOKEN_FILE}"' EXIT
+
+if ! authenticate_for_target "${PTS_CLEANUP_MINT_SCRIPT}" "${PTS_CLEANUP_TOKEN_FILE}"; then
+    echo "ERROR: target '${PTS_BUILD_TARGET}' requires a ${BUILD_AUTH} identity and it could" >&2
+    echo "       not be minted. Refusing to look for, or delete, a VM as the ambient" >&2
+    echo "       (legacy) identity: it sees nothing in ${PTS_BUILD_PROJECT}, so every" >&2
+    echo "       answer below would be a confident wrong one (#384)." >&2
+    echo "       Expected mint script at ${PTS_CLEANUP_MINT_SCRIPT}." >&2
+    echo "       CHECK FOR AN ORPHANED ${PTS_BUILD_VM} IN ${PTS_BUILD_PROJECT}." >&2
+    exit 1
+fi
+if [ "${BUILD_AUTH}" != "ambient" ]; then
+    echo "==> Authenticated as ${BUILD_AUTH} for ${PTS_BUILD_PROJECT}"
+fi
 
 # Three states, kept apart. The old form collapsed them into "not found" + exit 0,
 # which is how #601's orphan went unnoticed: the list was looking in the wrong

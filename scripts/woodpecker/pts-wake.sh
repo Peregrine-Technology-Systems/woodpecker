@@ -69,27 +69,26 @@ PTS_WAKE_TOKEN_FILE="$(mktemp)"
 chmod 600 "${PTS_WAKE_TOKEN_FILE}"
 trap 'rm -f "${PTS_WAKE_CREATE_ERR}" "${PTS_WAKE_TOKEN_FILE}"' EXIT
 
-if [ "${BUILD_AUTH}" = "pts-build-wake" ]; then
-    # Fail loud rather than proceeding: an unauthenticated run inherits the legacy
-    # ambient identity, which can see nothing in peregrine-production (verified —
-    # 0 instances visible vs 8 with a minted token), so it 403s in every zone and
-    # the fallback loop used to report that as capacity exhaustion (#369). Two
-    # reverts came from exactly that confusion.
-    if ! mint_wake_token "${PTS_WAKE_MINT_SCRIPT}" "${PTS_WAKE_TOKEN_FILE}"; then
-        echo "ERROR: could not mint a pts-build-wake token; refusing to fall back to" >&2
-        echo "       the ambient (legacy) identity, which cannot create instances in" >&2
-        echo "       ${PTS_BUILD_PROJECT} (#353)." >&2
-        echo "       Expected mint script at ${PTS_WAKE_MINT_SCRIPT} — infra's" >&2
-        echo "       deploy-woodpecker-server.sh places it there on every deploy." >&2
-        exit 1
-    fi
-    # The env var covers every gcloud call in this script AND in the sourced
-    # helpers. A per-call --access-token-file flag would leave a missed call site
-    # falling back silently to the ambient identity — the failure being removed.
-    # Verified on the host that the env var is honoured (8 PP instances visible
-    # with a good token, 0 without).
-    export CLOUDSDK_AUTH_ACCESS_TOKEN_FILE="${PTS_WAKE_TOKEN_FILE}"
-    echo "==> Authenticated as pts-build-wake for ${PTS_BUILD_PROJECT}"
+# Fail loud rather than proceeding: an unauthenticated run inherits the legacy
+# ambient identity, which can see nothing in peregrine-production (verified —
+# 0 instances visible vs 8 with a minted token), so it 403s in every zone and
+# the fallback loop used to report that as capacity exhaustion (#369). Two
+# reverts came from exactly that confusion.
+#
+# #384: the mint-and-export body moved into authenticate_for_target so cleanup
+# runs the SAME path. It previously lived only here, and pts-cleanup.sh — which
+# resolves the same BUILD_AUTH — silently had no auth at all. Two scripts needing
+# one behaviour is one helper, not one implementation and one omission.
+if ! authenticate_for_target "${PTS_WAKE_MINT_SCRIPT}" "${PTS_WAKE_TOKEN_FILE}"; then
+    echo "ERROR: could not mint a ${BUILD_AUTH} token; refusing to fall back to" >&2
+    echo "       the ambient (legacy) identity, which cannot create instances in" >&2
+    echo "       ${PTS_BUILD_PROJECT} (#353)." >&2
+    echo "       Expected mint script at ${PTS_WAKE_MINT_SCRIPT} — infra's" >&2
+    echo "       deploy-woodpecker-server.sh places it there on every deploy." >&2
+    exit 1
+fi
+if [ "${BUILD_AUTH}" != "ambient" ]; then
+    echo "==> Authenticated as ${BUILD_AUTH} for ${PTS_BUILD_PROJECT}"
 fi
 
 # Same zone list used by ci-image-builder bootstrap.sh (peregrine-infrastructure PR #1665)
