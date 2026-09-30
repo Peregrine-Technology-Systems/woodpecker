@@ -79,6 +79,8 @@ mkdir -p "${GOCACHE}" "${GOMODCACHE}"
 PTS_BUILD_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/woodpecker/lib/wake-helpers.sh
 source "${PTS_BUILD_SCRIPT_DIR}/lib/wake-helpers.sh"
+# shellcheck source=scripts/woodpecker/lib/web-build.sh
+source "${PTS_BUILD_SCRIPT_DIR}/lib/web-build.sh"
 
 # #380: the bucket is a MEMBER of the build target's coherent set, not an
 # independent default. #601 proved why: the VM identity moved to
@@ -171,10 +173,13 @@ elif wcw_storage rsync -r "${BUILD_CACHE_BUCKET}/woodpecker-web-dist/" web/dist/
     echo "    dist/: $(find web/dist/ -type f | wc -l) files (legacy GCS — priming tarball this run)"
 else
     echo "    cache miss — running pnpm build..."
-    cd web
-    pnpm install --no-frozen-lockfile >/dev/null 2>&1
-    node_modules/.bin/vite build --base=/BASE_PATH >/dev/null 2>&1
-    cd ..
+    # #386: was `pnpm install ... >/dev/null 2>&1` then the same for vite, so a
+    # failure ended the log mid-sentence with no cause. build_web_dist prints the
+    # failing command's own output and checks dist/index.html actually exists.
+    if ! build_web_dist web; then
+        echo "ERROR: web UI build failed (#386) — see the output above." >&2
+        exit 1
+    fi
     echo "    dist/: $(ls web/dist/ | wc -l) files (freshly built)"
 fi
 
