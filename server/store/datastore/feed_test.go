@@ -202,3 +202,51 @@ func TestRepoListLatest(t *testing.T) {
 	assert.EqualValues(t, model.StatusKilled, pipelines[1].Status)
 	assert.Equal(t, repo2.ID, pipelines[1].RepoID)
 }
+
+// #388: the scaler decides what to restart from /api/user/feed, and the feed
+// carried only status and finished — so an attributed cancel was invisible to the
+// one consumer whose behaviour depends on it. Recording the actor on the pipeline
+// row is not enough if the feed cannot show it. Real database: the question is
+// what a feed query actually returns, which a stub would only echo back.
+func TestUserFeedCarriesCancelAttribution(t *testing.T) {
+	store, closer := newTestStore(t, new(model.Repo), new(model.User), new(model.Perm), new(model.Pipeline), new(model.Org))
+	defer closer()
+
+	user := &model.User{Login: "joe", Email: "foo@bar.com", AccessToken: "e42080dddf012c718e476da161d21ad5"}
+	assert.NoError(t, store.CreateUser(user))
+	repo := &model.Repo{Owner: "o", Name: "r", FullName: "o/r", ForgeRemoteID: "1", IsActive: true}
+	assert.NoError(t, store.CreateRepo(repo))
+	assert.NoError(t, store.PermUpsert(&model.Perm{UserID: user.ID, RepoID: repo.ID, Push: true}))
+
+	attributed := &model.Pipeline{
+		RepoID: repo.ID, Number: 1, Status: model.StatusKilled, KillReason: "user_initiated",
+		CancelInfo: &model.CancelInfo{CanceledByUser: "amalc", CanceledByActor: "seat.woodpecker", Trigger: "user_initiated"},
+	}
+	plain := &model.Pipeline{RepoID: repo.ID, Number: 2, Status: model.StatusSuccess}
+	assert.NoError(t, store.CreatePipeline(attributed))
+	assert.NoError(t, store.CreatePipeline(plain))
+
+	feed, err := store.UserFeed(user)
+	assert.NoError(t, err)
+	assert.Len(t, feed, 2)
+
+	byNumber := map[int64]*model.Feed{}
+	for _, f := range feed {
+		byNumber[f.Number] = f
+	}
+
+	got := byNumber[1]
+	if assert.NotNil(t, got) && assert.NotNil(t, got.CancelInfo, "an attributed cancel must be visible in the feed") {
+		assert.Equal(t, "seat.woodpecker", got.CancelInfo.CanceledByActor)
+		assert.Equal(t, "amalc", got.CancelInfo.CanceledByUser)
+		assert.Equal(t, "user_initiated", got.KillReason)
+	}
+
+	// A pipeline that was never cancelled must still read cleanly: no error from a
+	// NULL cancel_info, and nothing invented.
+	untouched := byNumber[2]
+	if assert.NotNil(t, untouched) {
+		assert.Nil(t, untouched.CancelInfo)
+		assert.Equal(t, "", untouched.KillReason)
+	}
+}

@@ -131,6 +131,13 @@ COV_SKIP_REGEX='_test\.go$|/mocks/|wire_gen\.go$|_easyjson\.go$|\.pb\.go$|/fixtu
 # - server/config.go: declaration-only global Config struct (no executable
 #   statements); the `server` package has no test files so the profile reports
 #   NO_DATA. Like server/store/store.go — nothing to execute.
+# - server/model/feed.go: declaration-only Feed struct (zero executable
+#   statements), so the cover profile reports NO_DATA — nothing to execute. The
+#   #388 fields it gained (KillReason, CancelInfo) are exercised by
+#   TestUserFeedCarriesCancelAttribution in server/store/datastore, which decodes
+#   a real feed query into model.Feed against a real database and asserts the
+#   attribution comes back (and that a NULL cancel_info reads cleanly). Do NOT use
+#   this exemption for incremental changes that don't add tests for the fields.
 # - server/plugin/gcppubsub/client.go: the New() constructor for a live GCP
 #   Pub/Sub publisher (#264). pubsub.NewClient + topic publish-settings + the
 #   async result.Get goroutine can't run without live GCP credentials — the same
@@ -262,7 +269,7 @@ COV_SKIP_REGEX='_test\.go$|/mocks/|wire_gen\.go$|_easyjson\.go$|\.pb\.go$|/fixtu
 #   in constant_test.go (TestGRPCKeepaliveInvariant), and their wiring into the flag
 #   defaults is guarded by cmd/agent/core/flags_test.go (TestKeepaliveFlagsWired).
 #   Do NOT use this exemption for a file that gains executable statements.
-COV_WIRING_REGEX='^pipeline/const\.go$|^cmd/server/setup\.go$|^server/router/api\.go$|^cmd/|^server/store/datastore/migration/migration\.go$|^server/store/datastore/pipeline\.go$|^server/store/store\.go$|^server/api/ws_agent\.go$|^server/rpc/rpc\.go$|^server/rpc/server\.go$|^pipeline/frontend/yaml/compiler/convert\.go$|^server/pipeline/items\.go$|^server/pipeline/create\.go$|^pipeline/backend/types/step\.go$|^server/logdrain/gcp\.go$|^server/config\.go$|^server/plugin/gcppubsub/client\.go$|^server/plugin/interfaces\.go$|^server/api/pipeline\.go$|^agent/runner\.go$|^agent/rpc/client_ws\.go$|^server/pipeline/start\.go$|^server/pipeline/queue\.go$|^server/forge/github/github\.go$|^server/forge/setup/setup\.go$|^shared/constant/constant\.go$'
+COV_WIRING_REGEX='^pipeline/const\.go$|^cmd/server/setup\.go$|^server/router/api\.go$|^cmd/|^server/store/datastore/migration/migration\.go$|^server/store/datastore/pipeline\.go$|^server/store/store\.go$|^server/api/ws_agent\.go$|^server/rpc/rpc\.go$|^server/rpc/server\.go$|^pipeline/frontend/yaml/compiler/convert\.go$|^server/pipeline/items\.go$|^server/pipeline/create\.go$|^pipeline/backend/types/step\.go$|^server/logdrain/gcp\.go$|^server/config\.go$|^server/model/feed\.go$|^server/plugin/gcppubsub/client\.go$|^server/plugin/interfaces\.go$|^server/api/pipeline\.go$|^agent/runner\.go$|^agent/rpc/client_ws\.go$|^server/pipeline/start\.go$|^server/pipeline/queue\.go$|^server/forge/github/github\.go$|^server/forge/setup/setup\.go$|^shared/constant/constant\.go$'
 
 if [ -n "$GO_FILES" ]; then
     # Format

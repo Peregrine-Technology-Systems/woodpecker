@@ -34,4 +34,10 @@ type Feed struct {
 	Author   string `json:"author,omitempty"        xorm:"pipeline_author"`
 	Avatar   string `json:"author_avatar,omitempty" xorm:"pipeline_avatar"`
 	Email    string `json:"author_email,omitempty"  xorm:"pipeline_email"`
+	// KillReason and CancelInfo make a cancel's attribution visible to feed
+	// consumers (#388). The scaler decides what to restart from this feed, and it
+	// carried only status and finished, so an attributed cancel was invisible to
+	// the one consumer whose behaviour depends on it.
+	KillReason string      `json:"kill_reason,omitempty"   xorm:"pipeline_kill_reason"`
+	CancelInfo *CancelInfo `json:"cancel_info,omitempty"   xorm:"json 'pipeline_cancel_info'"`
 } //	@name	Feed

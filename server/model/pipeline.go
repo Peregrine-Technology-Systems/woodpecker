@@ -107,6 +107,15 @@ type CancelInfo struct {
 	CanceledByUser string `json:"canceled_by_user,omitempty"`
 	SupersededBy   int64  `json:"superseded_by,omitempty"`
 	CanceledByStep string `json:"canceled_by_step,omitempty"`
+	// CanceledByActor names WHICH caller cancelled, as that caller declared it
+	// (#388). Every seat and automated actor shares one forge login, so
+	// CanceledByUser cannot say who cancelled; this can. It is SELF-DECLARED:
+	// callers are agent- or admin-token actors, so this is attribution, not
+	// authentication. It lives here and NOT in Pipeline.KillReason because
+	// KillReason says which SERVER code path moved the pipeline, and a
+	// caller-declared value must not share a column with server-observed ones —
+	// a consumer filtering on the column could not tell which kind it was reading.
+	CanceledByActor string `json:"canceled_by_actor,omitempty"`
 	// Trigger names WHO/WHAT initiated the cancel, derived from the populated
 	// evidence field(s) above. It is ORTHOGONAL to Pipeline.KillReason: a
 	// pending-only cancel masks KillReason to the "pending_only_canceled" STATE,

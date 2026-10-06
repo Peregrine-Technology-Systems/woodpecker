@@ -496,10 +496,21 @@ func GetPipelineMetadata(c *gin.Context) {
 //	@Param		Authorization	header	string	true	"Insert your personal access token"	default(Bearer <personal access token>)
 //	@Param		repo_id			path	int		true	"the repository id"
 //	@Param		number			path	int		true	"the number of the pipeline"
+//	@Param		source			query	string	false	"who is cancelling, self-declared (attribution, not authentication): 2-64 chars, lowercase letter first, then a-z 0-9 . _ -"
 func CancelPipeline(c *gin.Context) {
 	_store := store.FromContext(c)
 	repo := session.Repo(c)
 	user := session.User(c)
+
+	// #388: every seat and automated actor shares one forge login, so the stored
+	// cancel could not say WHO cancelled. Validated before any store access, and
+	// a malformed value is refused rather than dropped: dropping it would make an
+	// attributed cancel look unattributed.
+	actor, err := model.ParseCancelActor(c.Query("source"))
+	if err != nil {
+		_ = c.AbortWithError(http.StatusBadRequest, err)
+		return
+	}
 	_forge, err := server.Config.Services.Manager.ForgeFromRepo(repo)
 	if err != nil {
 		log.Error().Err(err).Msg("Cannot get forge from repo")
@@ -516,7 +527,8 @@ func CancelPipeline(c *gin.Context) {
 	}
 
 	if err := pipeline.Cancel(c, _forge, _store, repo, user, pl, &model.CancelInfo{
-		CanceledByUser: user.Login,
+		CanceledByUser:  user.Login,
+		CanceledByActor: actor,
 	}, false); err != nil {
 		handlePipelineErr(c, err)
 	} else {
