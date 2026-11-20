@@ -18,6 +18,8 @@ import (
 	"context"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/rs/zerolog/log"
 
 	"go.woodpecker-ci.org/woodpecker/v3/server"
@@ -25,6 +27,23 @@ import (
 	"go.woodpecker-ci.org/woodpecker/v3/server/queue"
 	"go.woodpecker-ci.org/woodpecker/v3/server/store"
 )
+
+// Reasons the steady-state reconciler declined to kill a running pipeline that
+// its tick-start queue snapshot showed as having no task (#394).
+const (
+	heldQueueRecheck   = "queue_recheck"   // task found in a fresh queue read
+	heldAgentLive      = "agent_live"      // a running workflow is on a live agent
+	heldTreeUnreadable = "tree_unreadable" // cannot show the pipeline is unheld
+)
+
+// reconcileHeldTotal is the positive signal for #394's acceptance: a busy fleet
+// reconciling without killing a live pipeline shows holds here, which tells
+// "reconcile ran and declined" apart from "reconcile did not run".
+var reconcileHeldTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+	Namespace: "woodpecker",
+	Name:      "reconcile_held_total",
+	Help:      "Running pipelines the orphan reconciler declined to kill, by reason (#394).",
+}, []string{"reason"})
 
 // activePipelineSet returns the set of pipeline IDs that have at least one
 // task in the in-memory queue (Pending, Running, or WaitingOnDeps). The
@@ -118,7 +137,53 @@ func ReconcileOrphaned(_store store.Store) int {
 // (#176) was a workaround for the same symptom — the queue check is the
 // principled replacement.
 type OrphanReconciler struct {
-	queue queue.Queue
+	queue     queue.Queue
+	agentLive func(agentID int64) bool
+}
+
+// SetAgentLiveness injects the oracle that says whether an agent is still live
+// (#394). Wired in cmd/server/setup.go to a transport-agnostic LastContact
+// check, so it covers gRPC agents and survives a server restart, which the
+// in-memory WS connection sets do not. Nil leaves the queue as the only signal.
+func (r *OrphanReconciler) SetAgentLiveness(fn func(agentID int64) bool) {
+	r.agentLive = fn
+}
+
+// holdReason reports why a running pipeline that the tick-start snapshot shows
+// without a queue task must not be killed, or "" if it is orphaned (#394).
+//
+// The snapshot is taken once, before a walk over every repo, and a pipeline is
+// only marked running by rpc.Init, which follows Poll moving its task into
+// q.running. So a pipeline read as running after the snapshot was taken can
+// have its task in the queue without the snapshot showing it: infra#18796 was
+// started at 14:20:42Z and killed at 14:20:43Z. A fresh queue read, taken after
+// the store read, is ordered correctly and is the root fix.
+//
+// The live-agent check is the backstop: whatever removed the task, a pipeline
+// with a running workflow on a live agent is not orphaned. A kill cannot be
+// undone, so a tree that cannot be read holds until the next tick.
+func (r *OrphanReconciler) holdReason(_store store.Store, pl *model.Pipeline) string {
+	if _, ok := activePipelineSet(r.queue)[pl.ID]; ok {
+		return heldQueueRecheck
+	}
+	if r.agentLive == nil {
+		return ""
+	}
+	workflows, err := _store.WorkflowGetTree(pl)
+	if err != nil {
+		log.Warn().Err(err).Int64("pipeline_id", pl.ID).
+			Msg("reconcile: cannot read workflows — holding until next tick")
+		return heldTreeUnreadable
+	}
+	for _, w := range workflows {
+		if w.State == model.StatusRunning && w.AgentID > 0 && r.agentLive(w.AgentID) {
+			log.Info().Int64("pipeline_id", pl.ID).Int64("workflow_id", w.ID).
+				Int64("agent_id", w.AgentID).
+				Msg("reconcile: holding pipeline with no queue task — its workflow is on a live agent")
+			return heldAgentLive
+		}
+	}
+	return ""
 }
 
 // NewOrphanReconciler builds a queue-aware reconciler. The queue MUST be
@@ -154,6 +219,12 @@ func (r *OrphanReconciler) Tick(_store store.Store) int {
 			}
 			if _, hasTask := active[pl.ID]; hasTask {
 				log.Debug().Msgf("reconcile: %s#%d has active queue task — skipping",
+					repo.FullName, pl.Number)
+				continue
+			}
+			if reason := r.holdReason(_store, pl); reason != "" {
+				reconcileHeldTotal.WithLabelValues(reason).Inc()
+				log.Info().Str("reason", reason).Msgf("reconcile: not killing %s#%d (running, no queue task in tick snapshot)",
 					repo.FullName, pl.Number)
 				continue
 			}

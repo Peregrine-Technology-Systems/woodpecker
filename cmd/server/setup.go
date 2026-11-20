@@ -217,6 +217,8 @@ func setupEvilGlobals(ctx context.Context, c *cli.Command, s store.Store) (err e
 	pipeline.ReconcileOrphanedAtStartup(s, server.Config.Services.Queue)
 
 	reconciler := pipeline.NewOrphanReconciler(server.Config.Services.Queue)
+	// #394: never kill a pipeline whose running workflow is on a live agent.
+	reconciler.SetAgentLiveness(func(agentID int64) bool { return api.IsAgentLiveForReconcile(agentID, s) })
 	go func() {
 		ticker := time.NewTicker(2 * time.Minute)
 		defer ticker.Stop()
