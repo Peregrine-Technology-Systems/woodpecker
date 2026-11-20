@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -17,6 +18,7 @@ import (
 	"go.woodpecker-ci.org/woodpecker/v3/rpc"
 	"go.woodpecker-ci.org/woodpecker/v3/server"
 	"go.woodpecker-ci.org/woodpecker/v3/server/model"
+	"go.woodpecker-ci.org/woodpecker/v3/server/pipeline"
 	grpcserver "go.woodpecker-ci.org/woodpecker/v3/server/rpc"
 	"go.woodpecker-ci.org/woodpecker/v3/server/store"
 	"go.woodpecker-ci.org/woodpecker/v3/version"
@@ -234,7 +236,9 @@ func (s *wsAgentState) handleRegister(_ context.Context, env Envelope, hostname 
 		LastContact:  time.Now().Unix(),
 		Token:        server.Config.Server.AgentToken,
 	}
-	if err := s.store.AgentCreate(agent); err != nil {
+	if prior := s.reboundAgent(p, hostname); prior != nil {
+		agent = prior
+	} else if err := s.store.AgentCreate(agent); err != nil {
 		// Agent may already exist — try to find by name
 		agents, listErr := s.store.AgentList(&model.ListOptions{All: true})
 		if listErr != nil {
@@ -277,6 +281,32 @@ func (s *wsAgentState) handleRegister(_ context.Context, env Envelope, hostname 
 
 	log.Info().Int64("agent_id", agent.ID).Str("hostname", hostname).Msg("ws-agent: registered")
 	s.send(MsgRegistered, env.Ref, RegisteredPayload{AgentID: agent.ID})
+}
+
+// reboundAgent returns the agents row a reconnecting client already owns, with
+// this registration's details applied, or nil to create a fresh one (#394).
+// The row must exist and carry the same hostname: an id the client remembers
+// from before a server-side delete, or one belonging to another host, is not
+// reused.
+func (s *wsAgentState) reboundAgent(p RegisterPayload, hostname string) *model.Agent {
+	if p.AgentID <= 0 {
+		return nil
+	}
+	agent, err := s.store.AgentFind(p.AgentID)
+	if err != nil || agent == nil || agent.Name != hostname {
+		return nil
+	}
+	agent.Backend = p.Backend
+	agent.Platform = p.Platform
+	agent.Capacity = int32(p.Capacity)
+	agent.Version = p.Version
+	agent.CustomLabels = p.CustomLabels
+	agent.LastContact = time.Now().Unix()
+	if err := s.store.AgentUpdate(agent); err != nil {
+		log.Warn().Err(err).Int64("agent_id", agent.ID).Msg("ws-agent: re-register update failed — keeping the row")
+	}
+	log.Info().Int64("agent_id", agent.ID).Str("hostname", hostname).Msg("ws-agent: re-registered on reconnect")
+	return agent
 }
 
 func (s *wsAgentState) handleNext(ctx context.Context, env Envelope, hostname string) {
@@ -413,10 +443,19 @@ func (s *wsAgentState) handleUpdate(ctx context.Context, env Envelope, hostname 
 		Canceled: p.Canceled,
 	})
 	if err != nil {
-		s.sendAck(env.Ref, err.Error())
+		s.send(MsgAck, env.Ref, AckPayload{Error: err.Error(), Code: ackCodeFor(err)})
 		return
 	}
 	s.sendAck(env.Ref, "")
+}
+
+// ackCodeFor types a step.update rejection (#394). Only a terminal-state
+// rejection is permanent; every other error stays untyped and retryable.
+func ackCodeFor(err error) string {
+	if errors.Is(err, pipeline.ErrStepUpdateRejectedTerminal) {
+		return rpc.AckCodeStepTerminal
+	}
+	return ""
 }
 
 func (s *wsAgentState) handleLog(ctx context.Context, env Envelope, hostname string) {

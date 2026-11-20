@@ -30,7 +30,7 @@ import (
 	"go.woodpecker-ci.org/woodpecker/v3/rpc"
 )
 
-func (r *Runner) createTracer(ctxMeta context.Context, uploads *sync.WaitGroup, logger zerolog.Logger, workflow *rpc.Workflow) tracing.TraceFunc {
+func (r *Runner) createTracer(ctxMeta context.Context, uploads *sync.WaitGroup, logger zerolog.Logger, workflow *rpc.Workflow, abandon func()) tracing.TraceFunc {
 	return func(state *state.State) error {
 		uploads.Add(1)
 		defer uploads.Done()
@@ -61,6 +61,11 @@ func (r *Runner) createTracer(ctxMeta context.Context, uploads *sync.WaitGroup, 
 			stepLogger.Debug().Msg("update step status")
 
 			if err := r.client.Update(ctxMeta, workflow.ID, stepState); err != nil {
+				// #394: the server has abandoned this workflow; stop it.
+				if errors.Is(err, rpc.ErrStepTerminal) {
+					abandon()
+					return
+				}
 				stepLogger.Debug().
 					Err(err).
 					Msg("update step status error")

@@ -161,6 +161,14 @@ func (r *Runner) Run(runnerCtx, shutdownCtx context.Context) error {
 		return err
 	}
 
+	// #394: a step update rejected as terminal means the server has already
+	// finished this workflow (killed, cancelled, reconciled). Stop running it,
+	// once, instead of executing steps whose results nobody will accept.
+	abandon := sync.OnceFunc(func() {
+		logger.Warn().Msg("server rejected a step update as terminal — stopping this workflow (#394)")
+		cancelWorkflowCtx(pipeline_errors.ErrCancel)
+	})
+
 	var uploads sync.WaitGroup
 
 	// Run pipeline
@@ -170,7 +178,7 @@ func (r *Runner) Run(runnerCtx, shutdownCtx context.Context) error {
 		pipeline_runtime.WithContext(workflowCtx),
 		pipeline_runtime.WithTaskUUID(fmt.Sprint(workflow.ID)),
 		pipeline_runtime.WithLogger(r.createLogger(logger, &uploads, workflow)),
-		pipeline_runtime.WithTracer(r.createTracer(ctxMeta, &uploads, logger, workflow)),
+		pipeline_runtime.WithTracer(r.createTracer(ctxMeta, &uploads, logger, workflow, abandon)),
 		pipeline_runtime.WithDescription(map[string]string{
 			"workflow_id":     workflow.ID,
 			"repo":            repoName,
