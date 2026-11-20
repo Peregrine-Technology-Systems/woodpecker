@@ -43,6 +43,12 @@ func TestWSClient_ServerRejection_IsBoundedAndKeepsConnection(t *testing.T) {
 			}
 			var env envelope
 			_ = json.Unmarshal(msg, &env)
+			if env.Type == "agent.next" {
+				reply, _ := json.Marshal(envelope{Type: "task.assign", Ref: env.Ref,
+					Payload: json.RawMessage(`{"id":"117400","timeout":60,"config":{}}`)})
+				_ = conn.WriteMessage(websocket.TextMessage, reply)
+				continue
+			}
 			requests.Add(1)
 			payload, _ := json.Marshal(map[string]any{"ok": false, "error": "sql: no rows in result set"})
 			reply, _ := json.Marshal(envelope{Type: "ack", Ref: env.Ref, Payload: payload})
@@ -64,4 +70,12 @@ func TestWSClient_ServerRejection_IsBoundedAndKeepsConnection(t *testing.T) {
 	assert.Equal(t, int64(wsMaxServerRejections), requests.Load())
 	assert.Equal(t, int64(1), conns.Load(), "a server-answered error must not tear down the connection")
 	assert.Less(t, time.Since(start), wsTestDeadline)
+
+	// Giving up on one request is not giving up on the agent: on the same
+	// connection it goes straight back to taking work (ENG's question on #396).
+	wf, err := c.Next(ctx, rpc.Filter{Labels: map[string]string{}})
+	require.NoError(t, err)
+	require.NotNil(t, wf, "after a bounded rejection the agent must take new work, not sit idle")
+	assert.Equal(t, "117400", wf.ID)
+	assert.Equal(t, int64(1), conns.Load())
 }

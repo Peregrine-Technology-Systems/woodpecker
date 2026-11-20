@@ -72,7 +72,9 @@ func (r *Runner) createTracer(ctxMeta context.Context, uploads *sync.WaitGroup, 
 					stepLogger.Debug().Err(err).Msg("server already recorded this step — update dropped")
 					return
 				}
-				stepLogger.Debug().
+				// Warn, not Debug (#394): a step update the server would not
+				// take must be visible in the agent journal.
+				stepLogger.Warn().
 					Err(err).
 					Msg("update step status error")
 			}
