@@ -1,0 +1,10 @@
+# pnpm settings for the web UI (#398). pnpm 11 and later no longer read the
+# `pnpm` field in package.json, so settings live here; pnpm 10 reads this too.
+
+# From pnpm 11 a dependency build script that is not approved fails the install
+# (ERR_PNPM_IGNORED_BUILDS). esbuild's postinstall only checks its platform binary.
+allowBuilds:
+  esbuild: true
+
+overrides:
+  semver@<7.5.2: '>=7.5.2'

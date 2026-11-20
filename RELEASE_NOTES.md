@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- fix: the pts-build web UI build works again under pnpm 11 (#398). Bake 623 failed at a cold-cache `pnpm install` with `[ERR_PNPM_IGNORED_BUILDS] Ignored build scripts: esbuild@0.25.12`. Reproduced with the repo's own `package.json` and lockfile: pnpm 10.34.6 only warns, while pnpm 11.28.12 and 12.21.0 fail. So the build VM now runs pnpm 11 or later. pnpm 11 also stops reading the `pnpm` field in `package.json`, so the `semver@<7.5.2` override was being dropped silently. Both settings move to `web/pnpm-workspace.yaml`: `allowBuilds: {esbuild: true}` plus the override. `onlyBuiltDependencies` was tried first, and pnpm 11 and 12 still refuse with it. The real `build_web_dist` now builds `dist/index.html` under both pnpm 11.28.12 and 10.34.6, and the lockfile is unchanged.
 - fix: a WS agent whose step update is rejected as terminal, or whose connection drops, now recovers. Before, it looped on `sql: no rows` until its VM was deleted (#394, part 2 of 2).
   - **Cause, reproduced against the real `api.WSAgent` handler and the real `WSClient`:**
     - `sendWithRetry` treated the server's terminal-state rejection like any other error. It closed the socket and re-sent the update.
