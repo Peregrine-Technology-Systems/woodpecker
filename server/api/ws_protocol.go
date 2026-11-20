@@ -42,6 +42,10 @@ type RegisterPayload struct {
 	Capacity     int               `json:"capacity"`
 	Version      string            `json:"version"`
 	CustomLabels map[string]string `json:"custom_labels,omitempty"`
+	// AgentID is the id this agent was given on an earlier connection. A
+	// client sends it when it re-registers after a reconnect, so the server
+	// re-binds the same agents row instead of minting a new one (#394).
+	AgentID int64 `json:"agent_id,omitempty"`
 }
 
 type NextPayload struct {
@@ -115,6 +119,13 @@ type TaskCancelPayload struct {
 type AckPayload struct {
 	OK    bool   `json:"ok"`
 	Error string `json:"error,omitempty"`
+	// Code types a rejection so the agent can classify it without matching
+	// Error's text (#394). Empty means untyped (retryable).
+	Code string `json:"code,omitempty"`
+	// StepState is the step's server-side state on a step_terminal rejection,
+	// so the agent can tell abandoned work (killed, canceled) from a result
+	// the server already recorded (#394).
+	StepState string `json:"step_state,omitempty"`
 }
 
 // Helper to create an envelope.

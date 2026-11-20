@@ -269,7 +269,13 @@ COV_SKIP_REGEX='_test\.go$|/mocks/|wire_gen\.go$|_easyjson\.go$|\.pb\.go$|/fixtu
 #   in constant_test.go (TestGRPCKeepaliveInvariant), and their wiring into the flag
 #   defaults is guarded by cmd/agent/core/flags_test.go (TestKeepaliveFlagsWired).
 #   Do NOT use this exemption for a file that gains executable statements.
-COV_WIRING_REGEX='^pipeline/const\.go$|^cmd/server/setup\.go$|^server/router/api\.go$|^cmd/|^server/store/datastore/migration/migration\.go$|^server/store/datastore/pipeline\.go$|^server/store/store\.go$|^server/api/ws_agent\.go$|^server/rpc/rpc\.go$|^server/rpc/server\.go$|^pipeline/frontend/yaml/compiler/convert\.go$|^server/pipeline/items\.go$|^server/pipeline/create\.go$|^pipeline/backend/types/step\.go$|^server/logdrain/gcp\.go$|^server/config\.go$|^server/model/feed\.go$|^server/plugin/gcppubsub/client\.go$|^server/plugin/interfaces\.go$|^server/api/pipeline\.go$|^agent/runner\.go$|^agent/rpc/client_ws\.go$|^server/pipeline/start\.go$|^server/pipeline/queue\.go$|^server/forge/github/github\.go$|^server/forge/setup/setup\.go$|^shared/constant/constant\.go$'
+# - rpc/errors.go: declaration-only (#394: the ErrStepTerminal sentinel and the
+#   AckCodeStepTerminal WS ack code, zero executable statements), so the cover
+#   profile reports NO_DATA like shared/constant/constant.go above. Both are
+#   exercised end to end by agent/rpc/client_ws_terminal_integration_test.go
+#   and server/api/ws_agent_rebind_test.go. Do NOT use this exemption for a file
+#   that gains executable statements.
+COV_WIRING_REGEX='^pipeline/const\.go$|^cmd/server/setup\.go$|^server/router/api\.go$|^cmd/|^server/store/datastore/migration/migration\.go$|^server/store/datastore/pipeline\.go$|^server/store/store\.go$|^server/api/ws_agent\.go$|^server/rpc/rpc\.go$|^server/rpc/server\.go$|^pipeline/frontend/yaml/compiler/convert\.go$|^server/pipeline/items\.go$|^server/pipeline/create\.go$|^pipeline/backend/types/step\.go$|^server/logdrain/gcp\.go$|^server/config\.go$|^server/model/feed\.go$|^server/plugin/gcppubsub/client\.go$|^server/plugin/interfaces\.go$|^server/api/pipeline\.go$|^agent/runner\.go$|^agent/rpc/client_ws\.go$|^server/pipeline/start\.go$|^server/pipeline/queue\.go$|^server/forge/github/github\.go$|^server/forge/setup/setup\.go$|^shared/constant/constant\.go$|^rpc/errors\.go$'
 
 if [ -n "$GO_FILES" ]; then
     # Format
@@ -283,9 +289,13 @@ if [ -n "$GO_FILES" ]; then
         pkg_dir=$(dirname "$f")
         if echo "$pkg_dir" | grep -qE '^(web|cmd/server|server/router)(/|$)'; then continue; fi
         pkg="go.woodpecker-ci.org/woodpecker/v3/${pkg_dir}"
-        if ! echo "$CHANGED_PKGS" | grep -qF "$pkg"; then
-            CHANGED_PKGS="$CHANGED_PKGS $pkg"
-        fi
+        # Whole-word match (#394): a substring test treated `.../agent` as
+        # already present once `.../agent/rpc` was, so the agent package's
+        # tests never ran and its files reported NO_DATA.
+        case " $CHANGED_PKGS " in
+            *" $pkg "*) ;;
+            *) CHANGED_PKGS="$CHANGED_PKGS $pkg" ;;
+        esac
     done
     CHANGED_PKGS=$(echo "$CHANGED_PKGS" | xargs)
 

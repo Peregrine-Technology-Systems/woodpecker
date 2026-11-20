@@ -36,6 +36,21 @@ import (
 // abandoned server-side and stops sending updates. (#31)
 var ErrStepUpdateRejectedTerminal = errors.New("step is in terminal state and does not expect rpc state updates")
 
+// StepTerminalError is the ErrStepUpdateRejectedTerminal rejection with the
+// step's server-side state as a typed field (#394). The WS ack forwards the
+// state so the agent can tell work the server abandoned (killed, canceled)
+// from a re-sent final update the server already recorded (success, failure),
+// without parsing the message.
+type StepTerminalError struct {
+	State model.StatusValue
+}
+
+func (e *StepTerminalError) Error() string {
+	return fmt.Sprintf("%s (state=%s)", ErrStepUpdateRejectedTerminal.Error(), e.State)
+}
+
+func (e *StepTerminalError) Unwrap() error { return ErrStepUpdateRejectedTerminal }
+
 // isTerminalStepState reports whether a step state cannot legitimately
 // receive further RPC updates from agents.
 func isTerminalStepState(state model.StatusValue) bool {
@@ -123,7 +138,7 @@ func UpdateStepStatus(ctx context.Context, store store.Store, step *model.Step, 
 		// to stop. For unrecognized non-terminal states (defensive — shouldn't
 		// happen with a well-formed model), keep the legacy unwrapped error.
 		if isTerminalStepState(step.State) {
-			return fmt.Errorf("%w (state=%s)", ErrStepUpdateRejectedTerminal, step.State)
+			return &StepTerminalError{State: step.State}
 		}
 		return fmt.Errorf("step has state %s and does not expect rpc state updates", step.State)
 	}

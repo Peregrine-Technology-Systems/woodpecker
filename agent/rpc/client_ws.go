@@ -3,6 +3,7 @@ package rpc
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"strings"
@@ -30,8 +31,9 @@ const (
 // drive the ensureConnected/sendWithRetry reconnect loops without real-time
 // waits; production never mutates these.
 var (
-	wsReconnectMin = 5 * time.Second
-	wsReconnectMax = 60 * time.Second
+	wsMaxServerRejections = 5
+	wsReconnectMin        = 5 * time.Second
+	wsReconnectMax        = 60 * time.Second
 )
 
 // Envelope matches server/api/ws_protocol.go
@@ -52,7 +54,11 @@ type WSClient struct {
 	writeMu sync.Mutex // protects WebSocket writes — gorilla/websocket panics on concurrent writes
 	conn    *websocket.Conn
 	agentID int64
-	refSeq  atomic.Int64
+	// registration is what RegisterAgent last sent. Set only after a
+	// successful register; a reconnect re-sends it so the server binds the new
+	// connection to this agent (#394). Guarded by mu.
+	registration *rpc.AgentInfo
+	refSeq       atomic.Int64
 
 	// Server → agent message routing
 	inbox   chan envelope            // all incoming messages
@@ -161,7 +167,11 @@ func (c *WSClient) ensureConnected(ctx context.Context) error {
 	b.MaxInterval = wsReconnectMax
 
 	for {
-		if err := c.connect(ctx); err != nil {
+		err := c.connect(ctx)
+		if err == nil {
+			err = c.reregister(ctx)
+		}
+		if err != nil {
 			log.Warn().Err(err).Msg("ws-client: connect failed, retrying")
 			select {
 			case <-ctx.Done():
@@ -339,11 +349,13 @@ func (c *WSClient) sendAndWait(ctx context.Context, msgType string, payload inte
 		}
 		if env.Type == "ack" {
 			var ack struct {
-				OK    bool   `json:"ok"`
-				Error string `json:"error"`
+				OK        bool   `json:"ok"`
+				Error     string `json:"error"`
+				Code      string `json:"code"`
+				StepState string `json:"step_state"`
 			}
 			if json.Unmarshal(env.Payload, &ack) == nil && !ack.OK {
-				return fmt.Errorf("server: %s", ack.Error)
+				return rejectionError(ack.Code, ack.StepState, ack.Error)
 			}
 		}
 		return nil
@@ -390,7 +402,56 @@ func (c *WSClient) RegisterAgent(ctx context.Context, info rpc.AgentInfo) (int64
 		return 0, err
 	}
 
-	_, ch, err := c.registerAndSend("agent.register", info)
+	id, err := c.register(ctx, info, 0)
+	if err != nil {
+		return 0, err
+	}
+	c.mu.Lock()
+	c.agentID = id
+	c.registration = &info
+	c.mu.Unlock()
+	return id, nil
+}
+
+// reregister binds a fresh connection to the agent RegisterAgent registered,
+// under the same id (#394). Without it the server's new connection has no
+// agent: every step.update fails `sql: no rows` and agent.next is refused
+// "agent not registered", forever. A no-op before the first RegisterAgent.
+func (c *WSClient) reregister(ctx context.Context) error {
+	c.mu.Lock()
+	info, id := c.registration, c.agentID
+	c.mu.Unlock()
+	if info == nil {
+		return nil
+	}
+	newID, err := c.register(ctx, *info, id)
+	if err != nil {
+		c.mu.Lock()
+		if c.conn != nil {
+			c.conn.Close()
+			c.conn = nil
+		}
+		c.mu.Unlock()
+		return fmt.Errorf("re-register: %w", err)
+	}
+	if newID != id {
+		log.Warn().Int64("old_agent_id", id).Int64("agent_id", newID).
+			Msg("ws-client: re-registered under a new agent id")
+	}
+	c.mu.Lock()
+	c.agentID = newID
+	c.mu.Unlock()
+	return nil
+}
+
+// register sends agent.register on the current connection and waits for the
+// assigned id. priorID, when set, asks the server to re-bind that row.
+func (c *WSClient) register(ctx context.Context, info rpc.AgentInfo, priorID int64) (int64, error) {
+	payload := struct {
+		rpc.AgentInfo
+		AgentID int64 `json:"agent_id,omitempty"`
+	}{AgentInfo: info, AgentID: priorID}
+	_, ch, err := c.registerAndSend("agent.register", payload)
 	if err != nil {
 		return 0, err
 	}
@@ -405,7 +466,6 @@ func (c *WSClient) RegisterAgent(ctx context.Context, info rpc.AgentInfo) (int64
 				AgentID int64 `json:"agent_id"`
 			}
 			json.Unmarshal(env.Payload, &p)
-			c.agentID = p.AgentID
 			return p.AgentID, nil
 		}
 		// Check for ack error
@@ -578,10 +638,27 @@ func (c *WSClient) ReportHealth(ctx context.Context) error {
 
 // ── Internal helpers ─────────────────────────────────────────────
 
+// errServerRejected marks an error the server answered with an ack. The
+// connection that carried it works, so re-dialling cannot change it (#394).
+var errServerRejected = errors.New("server rejected the request")
+
+// rejectionError types a server ack's rejection. The type comes from the ack's
+// code and step_state fields, never from the error text (#394).
+func rejectionError(code, stepState, msg string) error {
+	if code != rpc.AckCodeStepTerminal {
+		return fmt.Errorf("server: %w: %s", errServerRejected, msg)
+	}
+	if stepState == "killed" || stepState == "canceled" {
+		return fmt.Errorf("server: %w: %w: %s", rpc.ErrStepTerminal, rpc.ErrStepAbandoned, msg)
+	}
+	return fmt.Errorf("server: %w: %s", rpc.ErrStepTerminal, msg)
+}
+
 func (c *WSClient) sendWithRetry(ctx context.Context, msgType string, payload interface{}) error {
 	b := backoff.NewExponentialBackOff()
 	b.InitialInterval = 10 * time.Millisecond
 	b.MaxInterval = 10 * time.Second
+	rejections := 0
 
 	for {
 		if err := c.ensureConnected(ctx); err != nil {
@@ -597,15 +674,31 @@ func (c *WSClient) sendWithRetry(ctx context.Context, msgType string, payload in
 			return ctx.Err()
 		}
 
+		// #394: a permanent rejection is the server's final answer; re-sending
+		// cannot change it, and the connection that carried it is healthy.
+		if errors.Is(err, rpc.ErrStepTerminal) {
+			return err
+		}
+
 		log.Warn().Err(err).Str("type", msgType).Msg("ws-client: retrying")
 
-		// Connection might be dead — clear it for reconnect
-		c.mu.Lock()
-		if c.conn != nil {
-			c.conn.Close()
-			c.conn = nil
+		if errors.Is(err, errServerRejected) {
+			// #394: the server answered, so the connection is fine. Retry a
+			// bounded number of times for a transient server-side error, then
+			// give up: an endless loop here keeps a useless agent looking live.
+			rejections++
+			if rejections >= wsMaxServerRejections {
+				return err
+			}
+		} else {
+			// Connection might be dead — clear it for reconnect
+			c.mu.Lock()
+			if c.conn != nil {
+				c.conn.Close()
+				c.conn = nil
+			}
+			c.mu.Unlock()
 		}
-		c.mu.Unlock()
 
 		select {
 		case <-time.After(b.NextBackOff()):

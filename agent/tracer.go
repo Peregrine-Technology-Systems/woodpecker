@@ -30,7 +30,7 @@ import (
 	"go.woodpecker-ci.org/woodpecker/v3/rpc"
 )
 
-func (r *Runner) createTracer(ctxMeta context.Context, uploads *sync.WaitGroup, logger zerolog.Logger, workflow *rpc.Workflow) tracing.TraceFunc {
+func (r *Runner) createTracer(ctxMeta context.Context, uploads *sync.WaitGroup, logger zerolog.Logger, workflow *rpc.Workflow, abandon func()) tracing.TraceFunc {
 	return func(state *state.State) error {
 		uploads.Add(1)
 		defer uploads.Done()
@@ -61,7 +61,20 @@ func (r *Runner) createTracer(ctxMeta context.Context, uploads *sync.WaitGroup, 
 			stepLogger.Debug().Msg("update step status")
 
 			if err := r.client.Update(ctxMeta, workflow.ID, stepState); err != nil {
-				stepLogger.Debug().
+				// #394: the server has abandoned this workflow; stop it. A
+				// terminal rejection of a result the server already recorded
+				// is dropped, and the workflow carries on.
+				if errors.Is(err, rpc.ErrStepAbandoned) {
+					abandon()
+					return
+				}
+				if errors.Is(err, rpc.ErrStepTerminal) {
+					stepLogger.Debug().Err(err).Msg("server already recorded this step — update dropped")
+					return
+				}
+				// Warn, not Debug (#394): a step update the server would not
+				// take must be visible in the agent journal.
+				stepLogger.Warn().
 					Err(err).
 					Msg("update step status error")
 			}
