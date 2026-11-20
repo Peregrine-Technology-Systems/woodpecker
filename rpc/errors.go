@@ -26,3 +26,10 @@ var ErrStepTerminal = errors.New("step is in terminal state on the server")
 // ErrStepTerminal, so the agent classifies the rejection by type and never by
 // matching the error text (#394).
 const AckCodeStepTerminal = "step_terminal"
+
+// ErrStepAbandoned accompanies ErrStepTerminal when the step's server-side
+// state is killed or canceled: the server has finished the workflow without
+// this agent, so the agent should stop running it (#394). A terminal rejection
+// without it (the step is already success or failure, typically a re-sent final
+// update whose first ack was lost) is dropped, and the workflow carries on.
+var ErrStepAbandoned = errors.New("server abandoned the workflow")

@@ -56,7 +56,7 @@ func runTrace(t *testing.T, updateErr error, exited bool) (abandoned int, st *st
 // abandoned this workflow. The tracer must hand that to the runner to stop the
 // workflow, instead of the agent carrying on with work nobody will accept.
 func TestTracer_TerminalRejectionAbandonsWorkflow(t *testing.T) {
-	err := fmt.Errorf("server: %w: state=killed", rpc.ErrStepTerminal)
+	err := fmt.Errorf("server: %w: %w: state=killed", rpc.ErrStepTerminal, rpc.ErrStepAbandoned)
 	abandoned, _ := runTrace(t, err, true)
 	assert.Equal(t, 1, abandoned)
 }
@@ -72,4 +72,12 @@ func TestTracer_RunningStepGetsMachineEnv(t *testing.T) {
 	assert.Equal(t, 0, abandoned)
 	assert.Equal(t, "ci-spot-us-eas-sfxz", st.Pipeline.Step.Environment["CI_MACHINE"])
 	assert.NotEmpty(t, st.Pipeline.Step.Environment["CI_SYSTEM_PLATFORM"])
+}
+
+// A terminal rejection of a result the server already recorded is dropped, and
+// the workflow carries on.
+func TestTracer_RecordedResultRejectionDoesNotAbandon(t *testing.T) {
+	err := fmt.Errorf("server: %w: state=success", rpc.ErrStepTerminal)
+	abandoned, _ := runTrace(t, err, true)
+	assert.Equal(t, 0, abandoned)
 }

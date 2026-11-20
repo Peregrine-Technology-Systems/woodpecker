@@ -122,6 +122,10 @@ type AckPayload struct {
 	// Code types a rejection so the agent can classify it without matching
 	// Error's text (#394). Empty means untyped (retryable).
 	Code string `json:"code,omitempty"`
+	// StepState is the step's server-side state on a step_terminal rejection,
+	// so the agent can tell abandoned work (killed, canceled) from a result
+	// the server already recorded (#394).
+	StepState string `json:"step_state,omitempty"`
 }
 
 // Helper to create an envelope.

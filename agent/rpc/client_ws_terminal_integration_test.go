@@ -44,7 +44,10 @@ import (
 // an agents table, so a lookup by an id it never issued fails the way the real
 // one does (sql: no rows), which is how the incident surfaced.
 
-const killedStepUUID = "01M7WN8VWY93-killed"
+const (
+	killedStepUUID  = "01M7WN8VWY93-killed"
+	successStepUUID = "01M7WN8TX5JR-success"
+)
 
 type terminalFixture struct {
 	url        string
@@ -96,6 +99,9 @@ func newTerminalFixture(t *testing.T) *terminalFixture {
 	s.On("StepByUUID", killedStepUUID).Return(&model.Step{
 		ID: 1, UUID: killedStepUUID, PipelineID: 100, State: model.StatusKilled,
 	}, nil).Run(func(mock.Arguments) { f.stepReads.Add(1) }).Maybe()
+	s.On("StepByUUID", successStepUUID).Return(&model.Step{
+		ID: 2, UUID: successStepUUID, PipelineID: 100, State: model.StatusSuccess,
+	}, nil).Maybe()
 
 	q := queue_mocks.NewMockQueue(t)
 	data, _ := json.Marshal(rpc.Workflow{ID: "117400"})
@@ -157,6 +163,7 @@ func TestWSClient_TerminalRejection_IsDroppedNotRetried(t *testing.T) {
 	err := updateKilledStep(c)
 
 	require.ErrorIs(t, err, rpc.ErrStepTerminal, "a terminal-state rejection must come back typed, not be retried")
+	assert.ErrorIs(t, err, rpc.ErrStepAbandoned, "a killed step means the server abandoned the workflow")
 	assert.Equal(t, int64(1), f.stepReads.Load(), "a permanent rejection is sent once")
 	assertTakesNewWork(t, c, f, id)
 }
@@ -187,4 +194,19 @@ func TestWSClient_Reconnect_ReregistersUnderSameID(t *testing.T) {
 	require.ErrorIs(t, err, rpc.ErrStepTerminal, "after a reconnect the server must know the agent (no `sql: no rows`)")
 	assert.Equal(t, int64(1), f.creates.Load(), "a reconnect re-binds the same agent row, it does not mint a new one")
 	assertTakesNewWork(t, c, f, id)
+}
+
+// A final update re-sent after its first ack was lost finds the step already
+// recorded (success). That is still permanent, so it is not retried, but it is
+// NOT the server abandoning the workflow: the agent must not stop healthy work.
+func TestWSClient_TerminalRejectionOfRecordedResult_IsNotAbandonment(t *testing.T) {
+	f := newTerminalFixture(t)
+	c, _ := registeredClient(t, f)
+
+	ctx, cancel := context.WithTimeout(context.Background(), wsTestDeadline)
+	defer cancel()
+	err := c.Update(ctx, "117374", rpc.StepState{StepUUID: successStepUUID, Exited: true})
+
+	require.ErrorIs(t, err, rpc.ErrStepTerminal)
+	assert.NotErrorIs(t, err, rpc.ErrStepAbandoned)
 }

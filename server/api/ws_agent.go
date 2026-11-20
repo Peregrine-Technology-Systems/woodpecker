@@ -174,6 +174,13 @@ func (s *wsAgentState) cleanup() {
 	// re-registers within the grace window, handleRegister cancels the
 	// pending release. Otherwise the release fires.
 	if agentID > 0 && rpcPeer != nil {
+		// #394: a connection superseded by a re-register must not release the
+		// agent that now lives on the newer connection.
+		if !releaseAgentConnection(agentID, s) {
+			log.Info().Int64("agent_id", agentID).
+				Msg("ws-agent: superseded connection closed — agent re-registered elsewhere, no release")
+			return
+		}
 		scheduleAgentRelease(agentID, rpcPeer)
 	}
 }
@@ -269,6 +276,7 @@ func (s *wsAgentState) handleRegister(_ context.Context, env Envelope, hostname 
 	s.mu.Lock()
 	s.agentID = agent.ID
 	s.mu.Unlock()
+	claimAgentConnection(agent.ID, s)
 
 	// #243: record the live connection so the queue's owner-liveness reclaim
 	// treats this agent's running tasks as alive. A reconnect re-asserts it.
@@ -443,7 +451,12 @@ func (s *wsAgentState) handleUpdate(ctx context.Context, env Envelope, hostname 
 		Canceled: p.Canceled,
 	})
 	if err != nil {
-		s.send(MsgAck, env.Ref, AckPayload{Error: err.Error(), Code: ackCodeFor(err)})
+		ack := AckPayload{Error: err.Error(), Code: ackCodeFor(err)}
+		var terr *pipeline.StepTerminalError
+		if errors.As(err, &terr) {
+			ack.StepState = string(terr.State)
+		}
+		s.send(MsgAck, env.Ref, ack)
 		return
 	}
 	s.sendAck(env.Ref, "")

@@ -31,8 +31,9 @@ const (
 // drive the ensureConnected/sendWithRetry reconnect loops without real-time
 // waits; production never mutates these.
 var (
-	wsReconnectMin = 5 * time.Second
-	wsReconnectMax = 60 * time.Second
+	wsMaxServerRejections = 5
+	wsReconnectMin        = 5 * time.Second
+	wsReconnectMax        = 60 * time.Second
 )
 
 // Envelope matches server/api/ws_protocol.go
@@ -348,15 +349,13 @@ func (c *WSClient) sendAndWait(ctx context.Context, msgType string, payload inte
 		}
 		if env.Type == "ack" {
 			var ack struct {
-				OK    bool   `json:"ok"`
-				Error string `json:"error"`
-				Code  string `json:"code"`
+				OK        bool   `json:"ok"`
+				Error     string `json:"error"`
+				Code      string `json:"code"`
+				StepState string `json:"step_state"`
 			}
 			if json.Unmarshal(env.Payload, &ack) == nil && !ack.OK {
-				if ack.Code == rpc.AckCodeStepTerminal {
-					return fmt.Errorf("server: %w: %s", rpc.ErrStepTerminal, ack.Error)
-				}
-				return fmt.Errorf("server: %s", ack.Error)
+				return rejectionError(ack.Code, ack.StepState, ack.Error)
 			}
 		}
 		return nil
@@ -639,10 +638,27 @@ func (c *WSClient) ReportHealth(ctx context.Context) error {
 
 // ── Internal helpers ─────────────────────────────────────────────
 
+// errServerRejected marks an error the server answered with an ack. The
+// connection that carried it works, so re-dialling cannot change it (#394).
+var errServerRejected = errors.New("server rejected the request")
+
+// rejectionError types a server ack's rejection. The type comes from the ack's
+// code and step_state fields, never from the error text (#394).
+func rejectionError(code, stepState, msg string) error {
+	if code != rpc.AckCodeStepTerminal {
+		return fmt.Errorf("server: %w: %s", errServerRejected, msg)
+	}
+	if stepState == "killed" || stepState == "canceled" {
+		return fmt.Errorf("server: %w: %w: %s", rpc.ErrStepTerminal, rpc.ErrStepAbandoned, msg)
+	}
+	return fmt.Errorf("server: %w: %s", rpc.ErrStepTerminal, msg)
+}
+
 func (c *WSClient) sendWithRetry(ctx context.Context, msgType string, payload interface{}) error {
 	b := backoff.NewExponentialBackOff()
 	b.InitialInterval = 10 * time.Millisecond
 	b.MaxInterval = 10 * time.Second
+	rejections := 0
 
 	for {
 		if err := c.ensureConnected(ctx); err != nil {
@@ -666,13 +682,23 @@ func (c *WSClient) sendWithRetry(ctx context.Context, msgType string, payload in
 
 		log.Warn().Err(err).Str("type", msgType).Msg("ws-client: retrying")
 
-		// Connection might be dead — clear it for reconnect
-		c.mu.Lock()
-		if c.conn != nil {
-			c.conn.Close()
-			c.conn = nil
+		if errors.Is(err, errServerRejected) {
+			// #394: the server answered, so the connection is fine. Retry a
+			// bounded number of times for a transient server-side error, then
+			// give up: an endless loop here keeps a useless agent looking live.
+			rejections++
+			if rejections >= wsMaxServerRejections {
+				return err
+			}
+		} else {
+			// Connection might be dead — clear it for reconnect
+			c.mu.Lock()
+			if c.conn != nil {
+				c.conn.Close()
+				c.conn = nil
+			}
+			c.mu.Unlock()
 		}
-		c.mu.Unlock()
 
 		select {
 		case <-time.After(b.NextBackOff()):

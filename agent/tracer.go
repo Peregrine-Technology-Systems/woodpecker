@@ -61,9 +61,15 @@ func (r *Runner) createTracer(ctxMeta context.Context, uploads *sync.WaitGroup, 
 			stepLogger.Debug().Msg("update step status")
 
 			if err := r.client.Update(ctxMeta, workflow.ID, stepState); err != nil {
-				// #394: the server has abandoned this workflow; stop it.
-				if errors.Is(err, rpc.ErrStepTerminal) {
+				// #394: the server has abandoned this workflow; stop it. A
+				// terminal rejection of a result the server already recorded
+				// is dropped, and the workflow carries on.
+				if errors.Is(err, rpc.ErrStepAbandoned) {
 					abandon()
+					return
+				}
+				if errors.Is(err, rpc.ErrStepTerminal) {
+					stepLogger.Debug().Err(err).Msg("server already recorded this step — update dropped")
 					return
 				}
 				stepLogger.Debug().
