@@ -116,18 +116,34 @@ func TestPersistentQueue_Poll_KeepsStoreRowUntilDone(t *testing.T) {
 	defer cancel()
 
 	task := &model.Task{ID: "polled"}
-	s.On("TaskInsert", task).Return(nil)
+	s.On("TaskInsert", task).Return(nil).Once()
 	s.On("TaskDelete", "polled").Return(nil)
+	// #400: Poll rewrites the row with the claiming agent instead of deleting it.
+	s.On("TaskInsert", mock.MatchedBy(func(t *model.Task) bool { return t.ID == "polled" && t.AgentID == 1 })).Return(nil).Once()
 
 	assert.NoError(t, pq.PushAtOnce(ctx, []*model.Task{task}))
 	got, err := pq.Poll(ctx, 1, func(*model.Task) (bool, int) { return true, 1 })
 	assert.NoError(t, err)
 	assert.Equal(t, "polled", got.ID)
-	// #400: the row outlives Poll so a restart can restore running work.
-	s.AssertNotCalled(t, "TaskDelete", "polled")
+	s.AssertNumberOfCalls(t, "TaskInsert", 2)
+	s.AssertNumberOfCalls(t, "TaskDelete", 1)
 
 	assert.NoError(t, pq.Done(ctx, "polled", model.StatusSuccess))
-	s.AssertCalled(t, "TaskDelete", "polled")
+	s.AssertNumberOfCalls(t, "TaskDelete", 2)
+}
+
+func TestPersistentQueue_Poll_RecordFailureDoesntFailPoll(t *testing.T) {
+	pq, s, ctx, cancel := freshPersistentQueue(t)
+	defer cancel()
+
+	task := &model.Task{ID: "recfail"}
+	s.On("TaskInsert", task).Return(nil)
+	s.On("TaskDelete", "recfail").Return(fmt.Errorf("disk read-only"))
+
+	assert.NoError(t, pq.PushAtOnce(ctx, []*model.Task{task}))
+	got, err := pq.Poll(ctx, 1, func(*model.Task) (bool, int) { return true, 1 })
+	assert.NoError(t, err, "the agent still gets its task when the claim cannot be recorded")
+	assert.Equal(t, "recfail", got.ID)
 }
 
 func TestPersistentQueue_Done_StoreDeleteRealError(t *testing.T) {
@@ -246,7 +262,8 @@ func TestPersistentQueue_Error_StoreDeleteRecordNotExist(t *testing.T) {
 	defer cancel()
 
 	task := &model.Task{ID: "err-gone"}
-	s.On("TaskInsert", task).Return(nil)
+	s.On("TaskInsert", mock.Anything).Return(nil)
+	s.On("TaskDelete", "err-gone").Return(nil)
 
 	assert.NoError(t, pq.PushAtOnce(ctx, []*model.Task{task}))
 	_, _ = pq.Poll(ctx, 1, func(*model.Task) (bool, int) { return true, 1 })
@@ -256,7 +273,6 @@ func TestPersistentQueue_Error_StoreDeleteRecordNotExist(t *testing.T) {
 	// Now the test: Error path with TaskDelete=ErrRecordNotExist returns nil.
 	// Use a fresh task to avoid Poll entanglement.
 	task2 := &model.Task{ID: "err-gone-2"}
-	s.On("TaskInsert", task2).Return(nil)
 	s.On("TaskDelete", "err-gone-2").Return(types.ErrRecordNotExist)
 
 	assert.NoError(t, pq.PushAtOnce(ctx, []*model.Task{task2}))

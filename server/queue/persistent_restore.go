@@ -32,8 +32,8 @@ type runningAdopter interface {
 //
 // A task row now lives from push until Done/Error, so the store holds the work
 // agents were running when the server stopped, not only the work still waiting.
-// The workflow row says which: running on an agent goes back to q.running on
-// that agent, so its lease, its dependents and the reconcilers all see it; an
+// Work an agent holds (started, or only claimed) goes back to q.running on that
+// agent, so its lease, its dependents and the reconcilers all see it; an
 // already-finished workflow (its Done was lost in the restart) is evicted and
 // its outcome handed to its dependents; anything else waits, as before.
 type restorePlan struct {
@@ -52,20 +52,17 @@ func planRestore(s store.Store, tasks []*model.Task) restorePlan {
 			continue
 		}
 		wf := loadWorkflow(s, task.ID)
-		switch {
-		case wf == nil:
-			// Unreadable: restore as waiting, which is what every stored row
-			// meant before #400.
-			plan.pending = append(plan.pending, task)
-		case isTerminalPipeline(wf.State):
+		if wf != nil && isTerminalPipeline(wf.State) {
 			plan.evict = append(plan.evict, task.ID)
 			plan.finished[task.ID] = wf.State
-		case wf.State == model.StatusRunning && wf.AgentID > 0:
-			task.AgentID = wf.AgentID
-			plan.running = append(plan.running, task)
-		default:
-			plan.pending = append(plan.pending, task)
+			continue
 		}
+		if holder := holderOf(task, wf); holder > 0 {
+			task.AgentID = holder
+			plan.running = append(plan.running, task)
+			continue
+		}
+		plan.pending = append(plan.pending, task)
 	}
 	for _, task := range plan.pending {
 		for _, dep := range task.Dependencies {
@@ -80,6 +77,16 @@ func planRestore(s store.Store, tasks []*model.Task) restorePlan {
 	return plan
 }
 
+// holderOf is the agent holding a task, or 0. The workflow row names it once
+// the agent has started the work (rpc.Init); the task row names it from the
+// moment the agent claimed it (Poll), which the workflow row does not show yet.
+func holderOf(task *model.Task, wf *model.Workflow) int64 {
+	if wf != nil && wf.State == model.StatusRunning && wf.AgentID > 0 {
+		return wf.AgentID
+	}
+	return task.AgentID
+}
+
 func loadWorkflow(s store.Store, taskID string) *model.Workflow {
 	id, err := strconv.ParseInt(taskID, 10, 64)
 	if err != nil {
@@ -87,7 +94,7 @@ func loadWorkflow(s store.Store, taskID string) *model.Workflow {
 	}
 	wf, err := s.WorkflowLoad(id)
 	if err != nil {
-		log.Warn().Err(err).Str("task", taskID).Msg("queue restore: cannot read workflow — restoring task as waiting")
+		log.Warn().Err(err).Str("task", taskID).Msg("queue restore: cannot read workflow — deciding from the task row alone")
 		return nil
 	}
 	return wf

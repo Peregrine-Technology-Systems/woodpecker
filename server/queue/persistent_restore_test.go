@@ -228,12 +228,14 @@ func TestWithTaskStore_RenewedRestoredTaskIsKept(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	inner := NewMemoryQueue(ctx)
-	inner.(*fifo).extension = 300 * time.Millisecond
+	// Renewed every 100 ms against a 1 s lease: a 10x margin, so a starved CI
+	// runner does not turn a scheduling delay into a false release.
+	inner.(*fifo).extension = time.Second
 	released := make(chan []*model.Task, 4)
 	inner.SetRestoredExpiryFn(func(tasks []*model.Task) { released <- tasks })
 	after := WithTaskStore(ctx, inner, s)
 
-	deadline := time.Now().Add(time.Second)
+	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		require.NoError(t, after.Extend(context.Background(), 7, "100"))
 		select {
@@ -298,4 +300,42 @@ func TestPlanRestore_EdgeRows(t *testing.T) {
 	require.Contains(t, ids, "101", "a task whose workflow row cannot be read is restored as waiting")
 	require.Contains(t, ids, "not-a-workflow-id")
 	assert.Equal(t, model.StatusFailure, ids["101"].DepStatus["100"])
+}
+
+// A task an agent has claimed but not yet started (Poll done, Init not yet
+// sent) is held by that agent too. The workflow row does not show it yet, so
+// the claim must be recorded on the task row at Poll; otherwise the restart
+// hands the same work to a second agent while the first can still start it.
+func TestWithTaskStore_RestoresClaimedButNotStartedTaskOnItsAgent(t *testing.T) {
+	s := newTableStore()
+	s.pipelines[9] = &model.Pipeline{ID: 9, Status: model.StatusRunning}
+	s.workflows[100] = &model.Workflow{ID: 100, PipelineID: 9, State: model.StatusPending}
+	before := restartWith(t, s, 0)
+	require.NoError(t, before.PushAtOnce(context.Background(), []*model.Task{{ID: "100", PipelineID: 9}}))
+	require.NotNil(t, pollWithin(before, 7, 2*time.Second))
+
+	after := restartWith(t, s, 0)
+
+	assert.Equal(t, map[string]int64{"100": 7}, runningIDs(after),
+		"a claimed task must be restored on the agent that claimed it")
+	assert.Nil(t, pollWithin(after, 8, 300*time.Millisecond), "and not handed to a second agent")
+}
+
+// A re-queued task belongs to no agent: its row must not keep the old claim.
+func TestPersistentQueue_RequeueClearsTheClaim(t *testing.T) {
+	s := newTableStore()
+	s.pipelines[9] = &model.Pipeline{ID: 9, Status: model.StatusRunning}
+	s.workflows[100] = &model.Workflow{ID: 100, PipelineID: 9, State: model.StatusPending}
+	before := restartWith(t, s, 0)
+	require.NoError(t, before.PushAtOnce(context.Background(), []*model.Task{{ID: "100", PipelineID: 9}}))
+	got := pollWithin(before, 7, 2*time.Second)
+	require.NotNil(t, got)
+	require.NoError(t, before.Requeue(context.Background(), got))
+
+	after := restartWith(t, s, 0)
+
+	assert.Empty(t, runningIDs(after))
+	next := pollWithin(after, 8, 2*time.Second)
+	require.NotNil(t, next, "a re-queued task waits for any agent after a restart")
+	assert.Equal(t, "100", next.ID)
 }

@@ -102,10 +102,28 @@ func (q *persistentQueue) PushAtOnce(c context.Context, tasks []*model.Task) err
 }
 
 // Poll retrieves and removes a task head of this queue. The stored row is
-// kept until the work is finished (Done/Error), so a restart can restore the
-// work agents are running instead of forgetting it (#400).
+// kept until the work is finished (Done/Error), and now records which agent
+// claimed it, so a restart can restore the work agents hold instead of
+// forgetting it or handing it to a second agent (#400). A failed write is
+// logged, not raised: the agent still gets its task.
 func (q *persistentQueue) Poll(c context.Context, agentID int64, f FilterFn) (*model.Task, error) {
-	return q.Queue.Poll(c, agentID, f)
+	task, err := q.Queue.Poll(c, agentID, f)
+	if task != nil {
+		claimed := *task
+		claimed.AgentID = agentID
+		if recErr := q.record(&claimed); recErr != nil {
+			log.Error().Err(recErr).Msgf("pull queue item: %s: failed to record the claim", task.ID)
+		}
+	}
+	return task, err
+}
+
+// record replaces a task's stored row with the given one.
+func (q *persistentQueue) record(task *model.Task) error {
+	if err := q.forget(task.ID); err != nil {
+		return err
+	}
+	return q.store.TaskInsert(task)
 }
 
 // Done signals the task is finished and removes it from the store (#400).
@@ -158,12 +176,11 @@ func (q *persistentQueue) ErrorAtOnce(c context.Context, ids []string, err error
 // Requeue rewrites the task's stored row before delegating to the in-memory
 // queue, so it survives a restart as waiting work (#225). The row normally
 // still exists, because it lives until Done/Error (#400); it is replaced
-// because the re-queued task no longer belongs to its old agent.
+// without the claim, because the re-queued task belongs to no agent.
 func (q *persistentQueue) Requeue(c context.Context, task *model.Task) error {
-	if err := q.forget(task.ID); err != nil {
-		return err
-	}
-	if err := q.store.TaskInsert(task); err != nil {
+	unclaimed := *task
+	unclaimed.AgentID = 0
+	if err := q.record(&unclaimed); err != nil {
 		return err
 	}
 	return q.Queue.Requeue(c, task)
