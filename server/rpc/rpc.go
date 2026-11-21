@@ -257,6 +257,34 @@ func (s *RPC) ReleaseAgentTasks(c context.Context, agentID int64) {
 	}
 	log.Warn().Int64("agent_id", agentID).Int("tasks", len(orphaned)).
 		Msg("releasing tasks from disconnecting agent")
+	s.releaseTasks(c, agentID, orphaned, taskByID)
+}
+
+// ReleaseTasks releases exactly the given running tasks, with the same
+// kill-or-requeue rule as a disconnecting agent (#72, #235). It is the release
+// for a task restored as running after a restart whose agent never renewed its
+// lease (#400). Only the given tasks are touched: an agent that restarted with
+// the server keeps its id and may already be running new work.
+func (s *RPC) ReleaseTasks(c context.Context, tasks []*model.Task) {
+	byAgent := map[int64][]*model.Task{}
+	for _, task := range tasks {
+		byAgent[task.AgentID] = append(byAgent[task.AgentID], task)
+	}
+	for agentID, owned := range byAgent {
+		ids := make([]string, 0, len(owned))
+		taskByID := make(map[string]*model.Task, len(owned))
+		for _, task := range owned {
+			ids = append(ids, task.ID)
+			taskByID[task.ID] = task
+		}
+		log.Warn().Int64("agent_id", agentID).Int("tasks", len(ids)).
+			Msg("releasing restored tasks whose agent did not renew them (#400)")
+		s.releaseTasks(c, agentID, ids, taskByID)
+	}
+}
+
+// releaseTasks partitions the given tasks into re-queue and kill and applies both.
+func (s *RPC) releaseTasks(c context.Context, agentID int64, orphaned []string, taskByID map[string]*model.Task) {
 
 	// Partition into re-queue vs kill using step execution as the signal. (#72,#224,#225)
 	// wf.Started > 0 is insufficient — Init sets Started before any step runs.

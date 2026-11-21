@@ -275,6 +275,13 @@ func setupEvilGlobals(ctx context.Context, c *cli.Command, s store.Store) (err e
 		func(agentID int64) { api.ReclaimAgentTasks(agentID, wsAgentRPC) },
 	)
 
+	// #400: a task restored as running after a restart whose agent never renews
+	// its lease has started, so it is released (killed if it ran, re-queued if
+	// not), never resubmitted to run a second time.
+	server.Config.Services.Queue.SetRestoredExpiryFn(func(tasks []*model.Task) {
+		wsAgentRPC.ReleaseTasks(context.Background(), tasks)
+	})
+
 	// #248: observe-only transport-agnostic liveness. The queue counts running
 	// tasks whose owning agent's LastContact has aged out (covering gRPC/local
 	// agents the WS known-dead registry never sees) into the running_owner_stale

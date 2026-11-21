@@ -57,6 +57,7 @@ func (q *stubQueue) KickAgentWorkers(int64)                          {}
 func (q *stubQueue) SetDispatchHook(queue.DispatchFunc)              {}
 func (q *stubQueue) SetAgentReclaimFn(func(int64) bool, func(int64)) {}
 func (q *stubQueue) SetAgentStaleFn(func(int64) bool)                {}
+func (q *stubQueue) SetRestoredExpiryFn(func([]*model.Task))         {}
 func (q *stubQueue) UpdatePriority(string, int64) (int64, error) {
 	return 0, queue.ErrNotFound
 }
@@ -351,4 +352,24 @@ func TestReleaseAgentTasks_RequeueFailureFallsBackToKill(t *testing.T) {
 	rpc.ReleaseAgentTasks(context.Background(), 77)
 
 	assert.Contains(t, q.errored, "300", "Requeue failure must fall back to kill via ErrorAtOnce")
+}
+
+// TestReleaseTasks_ReleasesOnlyTheGivenTasks: a restored task whose lease ran
+// out is released on its own (#400). An agent that restarted with the server
+// keeps its id and may already be running new work, which must not be touched.
+func TestReleaseTasks_ReleasesOnlyTheGivenTasks(t *testing.T) {
+	expired := &model.Task{ID: "100", AgentID: 42}
+	q := &stubQueue{info: queue.InfoT{Running: []*model.Task{expired, {ID: "200", AgentID: 42}}}}
+	s := store_mocks.NewMockStore(t)
+	wf := &model.Workflow{ID: 100, PipelineID: 1, State: model.StatusRunning, Started: 1}
+	s.On("WorkflowLoad", int64(100)).Return(wf, nil)
+	s.On("StepListFromWorkflowFind", wf).Return([]*model.Step{{ID: 1, State: model.StatusPending}}, nil)
+	s.On("WorkflowUpdate", mock.Anything).Return(nil).Maybe()
+	s.On("StepUpdate", mock.Anything).Return(nil).Maybe()
+
+	rpc := RPC{queue: q, store: s}
+	rpc.ReleaseTasks(context.Background(), []*model.Task{expired})
+
+	s.AssertNotCalled(t, "WorkflowLoad", int64(200))
+	assert.Equal(t, []*model.Task{expired}, q.requeued, "only the expired task is released")
 }
