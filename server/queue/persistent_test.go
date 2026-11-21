@@ -111,7 +111,7 @@ func TestPersistentQueue_PushAtOnce_StoreErrorAborts(t *testing.T) {
 	assert.Error(t, err, "store insert failure should propagate")
 }
 
-func TestPersistentQueue_Poll_DeletesFromStore(t *testing.T) {
+func TestPersistentQueue_Poll_KeepsStoreRowUntilDone(t *testing.T) {
 	pq, s, ctx, cancel := freshPersistentQueue(t)
 	defer cancel()
 
@@ -123,7 +123,32 @@ func TestPersistentQueue_Poll_DeletesFromStore(t *testing.T) {
 	got, err := pq.Poll(ctx, 1, func(*model.Task) (bool, int) { return true, 1 })
 	assert.NoError(t, err)
 	assert.Equal(t, "polled", got.ID)
+	// #400: the row outlives Poll so a restart can restore running work.
+	s.AssertNotCalled(t, "TaskDelete", "polled")
+
+	assert.NoError(t, pq.Done(ctx, "polled", model.StatusSuccess))
 	s.AssertCalled(t, "TaskDelete", "polled")
+}
+
+func TestPersistentQueue_Done_StoreDeleteRealError(t *testing.T) {
+	pq, s, ctx, cancel := freshPersistentQueue(t)
+	defer cancel()
+
+	task := &model.Task{ID: "done-fail"}
+	s.On("TaskInsert", task).Return(nil)
+	s.On("TaskDelete", "done-fail").Return(fmt.Errorf("disk read-only"))
+
+	assert.NoError(t, pq.PushAtOnce(ctx, []*model.Task{task}))
+	_, _ = pq.Poll(ctx, 1, func(*model.Task) (bool, int) { return true, 1 })
+	assert.Error(t, pq.Done(ctx, "done-fail", model.StatusSuccess), "a real store error on Done is surfaced")
+}
+
+func TestPersistentQueue_Done_QueueErrorSkipsStore(t *testing.T) {
+	pq, s, ctx, cancel := freshPersistentQueue(t)
+	defer cancel()
+
+	assert.Error(t, pq.Done(ctx, "never-queued", model.StatusSuccess))
+	s.AssertNotCalled(t, "TaskDelete", "never-queued")
 }
 
 func TestPersistentQueue_Error_DeletesFromStore(t *testing.T) {
@@ -213,24 +238,6 @@ func TestPersistentQueue_UpdatePriority_DBErrorReturnsErr(t *testing.T) {
 	assert.EqualValues(t, 0, old, "old priority should still be reported even on DB failure")
 }
 
-// TestPersistentQueue_Poll_StoreDeleteErrorDoesntFailPoll covers the log
-// branch in Poll where TaskDelete returns an error after a successful poll.
-// The poll itself must still succeed — agent gets the task — and the store
-// drift is tolerated until next restart.
-func TestPersistentQueue_Poll_StoreDeleteErrorDoesntFailPoll(t *testing.T) {
-	pq, s, ctx, cancel := freshPersistentQueue(t)
-	defer cancel()
-
-	task := &model.Task{ID: "delfail"}
-	s.On("TaskInsert", task).Return(nil)
-	s.On("TaskDelete", "delfail").Return(fmt.Errorf("disk read-only"))
-
-	assert.NoError(t, pq.PushAtOnce(ctx, []*model.Task{task}))
-	got, err := pq.Poll(ctx, 1, func(*model.Task) (bool, int) { return true, 1 })
-	assert.NoError(t, err, "poll succeeds even if store delete fails (logged, not raised)")
-	assert.Equal(t, "delfail", got.ID)
-}
-
 // TestPersistentQueue_Error_StoreDeleteRecordNotExist covers the lenient
 // path: TaskDelete returning ErrRecordNotExist is treated as "already gone"
 // and downgraded to debug log, not an error.
@@ -240,7 +247,6 @@ func TestPersistentQueue_Error_StoreDeleteRecordNotExist(t *testing.T) {
 
 	task := &model.Task{ID: "err-gone"}
 	s.On("TaskInsert", task).Return(nil)
-	s.On("TaskDelete", "err-gone").Return(types.ErrRecordNotExist).Once()
 
 	assert.NoError(t, pq.PushAtOnce(ctx, []*model.Task{task}))
 	_, _ = pq.Poll(ctx, 1, func(*model.Task) (bool, int) { return true, 1 })
@@ -453,6 +459,7 @@ func (q *failingPushQueue) KickAgentWorkers(int64)                              
 func (q *failingPushQueue) SetDispatchHook(DispatchFunc)                          {}
 func (q *failingPushQueue) SetAgentReclaimFn(func(int64) bool, func(int64))       {}
 func (q *failingPushQueue) SetAgentStaleFn(func(int64) bool)                      {}
+func (q *failingPushQueue) SetRestoredExpiryFn(func([]*model.Task))               {}
 func (q *failingPushQueue) UpdatePriority(string, int64) (int64, error) {
 	return 0, ErrNotFound
 }
@@ -466,6 +473,7 @@ func TestPersistentQueue_Requeue_PersistsThenDelegates(t *testing.T) {
 	defer cancel()
 
 	task := &model.Task{ID: "requeue-persist"}
+	s.On("TaskDelete", "requeue-persist").Return(nil)
 	s.On("TaskInsert", task).Return(nil)
 
 	assert.NoError(t, pq.Requeue(ctx, task))
@@ -489,6 +497,7 @@ func TestPersistentQueue_Requeue_StoreErrorAborts(t *testing.T) {
 	defer cancel()
 
 	task := &model.Task{ID: "requeue-fail"}
+	s.On("TaskDelete", "requeue-fail").Return(types.ErrRecordNotExist)
 	s.On("TaskInsert", task).Return(fmt.Errorf("disk full"))
 
 	err := pq.Requeue(ctx, task)
@@ -496,4 +505,18 @@ func TestPersistentQueue_Requeue_StoreErrorAborts(t *testing.T) {
 
 	info := pq.Info(ctx)
 	assert.Empty(t, info.Pending, "task must not appear in pending when store insert fails")
+}
+
+// TestPersistentQueue_Requeue_DeleteErrorAborts: the old row cannot be
+// replaced, so the task is not re-queued under a stale row (#400).
+func TestPersistentQueue_Requeue_DeleteErrorAborts(t *testing.T) {
+	pq, s, ctx, cancel := freshPersistentQueue(t)
+	defer cancel()
+
+	task := &model.Task{ID: "requeue-delfail"}
+	s.On("TaskDelete", "requeue-delfail").Return(fmt.Errorf("disk read-only"))
+
+	assert.Error(t, pq.Requeue(ctx, task))
+	s.AssertNotCalled(t, "TaskInsert", task)
+	assert.Empty(t, pq.Info(ctx).Pending)
 }

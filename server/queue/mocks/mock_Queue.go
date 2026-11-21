@@ -722,6 +722,46 @@ func (_c *MockQueue_SetAgentStaleFn_Call) RunAndReturn(run func(stale func(agent
 	return _c
 }
 
+// SetRestoredExpiryFn provides a mock function for the type MockQueue
+func (_mock *MockQueue) SetRestoredExpiryFn(release func(tasks []*model.Task)) {
+	_mock.Called(release)
+	return
+}
+
+// MockQueue_SetRestoredExpiryFn_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'SetRestoredExpiryFn'
+type MockQueue_SetRestoredExpiryFn_Call struct {
+	*mock.Call
+}
+
+// SetRestoredExpiryFn is a helper method to define mock.On call
+//   - release func(tasks []*model.Task)
+func (_e *MockQueue_Expecter) SetRestoredExpiryFn(release interface{}) *MockQueue_SetRestoredExpiryFn_Call {
+	return &MockQueue_SetRestoredExpiryFn_Call{Call: _e.mock.On("SetRestoredExpiryFn", release)}
+}
+
+func (_c *MockQueue_SetRestoredExpiryFn_Call) Run(run func(release func(tasks []*model.Task))) *MockQueue_SetRestoredExpiryFn_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		var arg0 func(tasks []*model.Task)
+		if args[0] != nil {
+			arg0 = args[0].(func(tasks []*model.Task))
+		}
+		run(
+			arg0,
+		)
+	})
+	return _c
+}
+
+func (_c *MockQueue_SetRestoredExpiryFn_Call) Return() *MockQueue_SetRestoredExpiryFn_Call {
+	_c.Call.Return()
+	return _c
+}
+
+func (_c *MockQueue_SetRestoredExpiryFn_Call) RunAndReturn(run func(release func(tasks []*model.Task))) *MockQueue_SetRestoredExpiryFn_Call {
+	_c.Run(run)
+	return _c
+}
+
 // SetDispatchHook provides a mock function for the type MockQueue
 func (_mock *MockQueue) SetDispatchHook(fn queue.DispatchFunc) {
 	_mock.Called(fn)

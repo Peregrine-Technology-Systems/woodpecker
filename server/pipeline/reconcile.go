@@ -81,9 +81,12 @@ func activePipelineSet(q queue.Queue) map[int64]struct{} {
 // the only way the row will ever transition is if we kill it.
 //
 // At startup the queue HAS been populated by `WithTaskStore` from the
-// persistent task store (per `server/queue/persistent.go`), so a row
-// running with no queue task is provably lost. Killing immediately is
-// safe.
+// persistent task store (per `server/queue/persistent.go`), including the
+// work agents were running when the server stopped, which goes back into
+// q.running on its agent (#400). Before #400 the store row was deleted on
+// Poll, so every running workflow was missing here and every running pipeline
+// with nothing left to dispatch was killed on each restart. Now a row running
+// with no queue task is provably lost, and killing immediately is safe.
 func ReconcileOrphanedAtStartup(_store store.Store, q queue.Queue) int {
 	active := activePipelineSet(q)
 	repos, err := _store.RepoListAll(true, &model.ListOptions{Page: 1, PerPage: 200})

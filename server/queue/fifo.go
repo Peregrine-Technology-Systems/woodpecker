@@ -33,6 +33,7 @@ type entry struct {
 	done     chan bool
 	error    error
 	deadline time.Time
+	restored bool // restored as running after a restart (#400)
 }
 
 type worker struct {
@@ -64,7 +65,9 @@ type fifo struct {
 	// I/O) is still settling.
 	agentKnownDead func(agentID int64) bool
 	reclaimOrphan  func(agentID int64)
-	reclaimFiredAt map[int64]time.Time
+	// #400: release for restored running tasks whose lease expired unrenewed.
+	releaseRestored func(tasks []*model.Task)
+	reclaimFiredAt  map[int64]time.Time
 
 	// #248: transport-agnostic, OBSERVE-ONLY liveness. agentStale reports whether
 	// a running task's owning agent has not refreshed LastContact within the
@@ -214,6 +217,31 @@ func (q *fifo) finished(ids []string, exitStatus model.StatusValue, err error) e
 	}
 
 	return errors.Join(errs...)
+}
+
+// adoptRunning puts tasks a restarted server restored as running straight into
+// q.running, on the agent that holds them, with a fresh lease (#400). The
+// agent's next Extend renews it; if none comes, the lease expires and the task
+// is resubmitted, exactly as for any running task whose agent went quiet.
+func (q *fifo) adoptRunning(tasks []*model.Task) {
+	q.Lock()
+	defer q.Unlock()
+	for _, task := range tasks {
+		q.running[task.ID] = &entry{
+			item:     task,
+			done:     make(chan bool),
+			deadline: time.Now().Add(q.extension),
+			restored: true,
+		}
+	}
+}
+
+// SetRestoredExpiryFn injects the release for restored tasks whose lease
+// expired unrenewed (#400).
+func (q *fifo) SetRestoredExpiryFn(release func(tasks []*model.Task)) {
+	q.Lock()
+	defer q.Unlock()
+	q.releaseRestored = release
 }
 
 // Wait waits until the item is done executing.
@@ -481,7 +509,8 @@ func (q *fifo) process() {
 			continue
 		}
 
-		q.resubmitExpiredPipelines()
+		expiredRestored := q.resubmitExpiredPipelines()
+		releaseRestored := q.releaseRestored
 		q.filterWaiting()
 
 		// External dispatch: offer pending tasks to the hook before agent assignment
@@ -522,6 +551,9 @@ func (q *fifo) process() {
 		reclaim := q.reclaimOrphan
 		q.Unlock()
 
+		if len(expiredRestored) > 0 && releaseRestored != nil {
+			go releaseRestored(expiredRestored)
+		}
 		for _, agentID := range orphanAgents {
 			recordOrphanReclaim()
 			if reclaim != nil {
@@ -582,19 +614,32 @@ func (q *fifo) assignToWorker() (*list.Element, *worker) {
 	return nil, nil
 }
 
-func (q *fifo) resubmitExpiredPipelines() {
+// resubmitExpiredPipelines puts running tasks whose lease expired back into
+// pending. A restored task (#400) is instead returned for release when a release
+// is wired: it has started, and resubmitting started work runs it twice. Its
+// deadline is pushed out so one expiry is released once.
+func (q *fifo) resubmitExpiredPipelines() []*model.Task {
+	var release []*model.Task
 	for taskID, taskState := range q.running {
-		if time.Now().After(taskState.deadline) {
-			log.Info().Msgf("queue: resubmitting expired task %s", taskID)
-			taskState.error = ErrTaskExpired
-			// Re-queue at the back of the task's own priority bucket
-			// (#46) — pre-#46 PushFront would let a priority-0 expired
-			// task jump ahead of priority-5 pending tasks.
-			q.insertByPriority(taskState.item)
-			delete(q.running, taskID)
-			close(taskState.done)
+		if !time.Now().After(taskState.deadline) {
+			continue
 		}
+		if taskState.restored && q.releaseRestored != nil {
+			log.Warn().Msgf("queue: restored task %s was not renewed by its agent — releasing (#400)", taskID)
+			taskState.deadline = time.Now().Add(q.extension)
+			release = append(release, taskState.item)
+			continue
+		}
+		log.Info().Msgf("queue: resubmitting expired task %s", taskID)
+		taskState.error = ErrTaskExpired
+		// Re-queue at the back of the task's own priority bucket
+		// (#46) — pre-#46 PushFront would let a priority-0 expired
+		// task jump ahead of priority-5 pending tasks.
+		q.insertByPriority(taskState.item)
+		delete(q.running, taskID)
+		close(taskState.done)
 	}
+	return release
 }
 
 func (q *fifo) depsInQueue(task *model.Task) bool {

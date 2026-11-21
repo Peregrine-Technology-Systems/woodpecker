@@ -31,37 +31,34 @@ import (
 // ensures the task Queue can be restored when the system starts.
 // Zombie tasks — tasks whose parent pipeline is in a terminal state — are
 // evicted from the store and not loaded into the in-memory queue (#154).
+// Tasks an agent was running are restored as running on that agent (#400).
 func WithTaskStore(ctx context.Context, q Queue, s store.Store) Queue {
 	tasks, _ := s.TaskList()
+	plan := planRestore(s, tasks)
 
-	var valid []*model.Task
 	evicted := 0
-	for _, task := range tasks {
-		pl, err := s.GetPipeline(task.PipelineID)
-		if err != nil {
-			// Pipeline not found — orphaned task; evict it.
-			log.Warn().Msgf("queue restore: task %s has no pipeline %d — evicting", task.ID, task.PipelineID)
-			_ = s.TaskDelete(task.ID)
-			evicted++
+	for _, id := range plan.evict {
+		if deleteErr := s.TaskDelete(id); deleteErr != nil {
+			log.Error().Err(deleteErr).Msgf("queue restore: failed to delete zombie task %s", id)
 			continue
 		}
-		if isTerminalPipeline(pl.Status) {
-			if deleteErr := s.TaskDelete(task.ID); deleteErr != nil {
-				log.Error().Err(deleteErr).Msgf("queue restore: failed to delete zombie task %s", task.ID)
-			} else {
-				log.Info().Msgf("queue restore: evicted zombie task %s (pipeline %d status=%s)", task.ID, task.PipelineID, pl.Status)
-				evicted++
-			}
-			continue
-		}
-		valid = append(valid, task)
+		log.Info().Msgf("queue restore: evicted finished task %s", id)
+		evicted++
 	}
 	if evicted > 0 {
-		log.Info().Msgf("queue restore: evicted %d zombie tasks from terminal pipelines (#154)", evicted)
+		log.Info().Msgf("queue restore: evicted %d zombie tasks from terminal pipelines or workflows (#154, #400)", evicted)
 	}
 
-	if err := q.PushAtOnce(ctx, valid); err != nil {
+	if err := q.PushAtOnce(ctx, plan.pending); err != nil {
 		log.Error().Err(err).Msg("PushAtOnce failed")
+	}
+	if len(plan.running) > 0 {
+		if adopter, ok := q.(runningAdopter); ok {
+			adopter.adoptRunning(plan.running)
+			log.Info().Msgf("queue restore: restored %d running tasks on their agents (#400)", len(plan.running))
+		} else {
+			log.Error().Msgf("queue restore: %d running tasks not restored — queue cannot adopt running work", len(plan.running))
+		}
 	}
 	return &persistentQueue{q, s}
 }
@@ -104,26 +101,23 @@ func (q *persistentQueue) PushAtOnce(c context.Context, tasks []*model.Task) err
 	return err
 }
 
-// Poll retrieves and removes a task head of this queue.
+// Poll retrieves and removes a task head of this queue. The stored row is
+// kept until the work is finished (Done/Error), so a restart can restore the
+// work agents are running instead of forgetting it (#400).
 func (q *persistentQueue) Poll(c context.Context, agentID int64, f FilterFn) (*model.Task, error) {
-	task, err := q.Queue.Poll(c, agentID, f)
-	if task != nil {
-		log.Debug().Msgf("pull queue item: %s: remove from backup", task.ID)
-		if deleteErr := q.store.TaskDelete(task.ID); deleteErr != nil {
-			log.Error().Err(deleteErr).Msgf("pull queue item: %s: failed to remove from backup", task.ID)
-		} else {
-			log.Debug().Msgf("pull queue item: %s: successfully removed from backup", task.ID)
-		}
-	}
-	return task, err
+	return q.Queue.Poll(c, agentID, f)
 }
 
-// Error signals the task is done with an error.
-func (q *persistentQueue) Error(c context.Context, id string, err error) error {
-	if err := q.Queue.Error(c, id, err); err != nil {
+// Done signals the task is finished and removes it from the store (#400).
+func (q *persistentQueue) Done(c context.Context, id string, exitStatus model.StatusValue) error {
+	if err := q.Queue.Done(c, id, exitStatus); err != nil {
 		return err
 	}
+	return q.forget(id)
+}
 
+// forget removes a finished task's row; a row already gone is not an error.
+func (q *persistentQueue) forget(id string) error {
 	if deleteErr := q.store.TaskDelete(id); deleteErr != nil {
 		if !errors.Is(deleteErr, types.ErrRecordNotExist) {
 			return deleteErr
@@ -131,6 +125,14 @@ func (q *persistentQueue) Error(c context.Context, id string, err error) error {
 		log.Debug().Msgf("task %s already removed from store", id)
 	}
 	return nil
+}
+
+// Error signals the task is done with an error.
+func (q *persistentQueue) Error(c context.Context, id string, err error) error {
+	if err := q.Queue.Error(c, id, err); err != nil {
+		return err
+	}
+	return q.forget(id)
 }
 
 // ErrorAtOnce signals multiple tasks are done and complete with an error.
@@ -153,10 +155,14 @@ func (q *persistentQueue) ErrorAtOnce(c context.Context, ids []string, err error
 	return nil
 }
 
-// Requeue re-inserts the task into the persistent task store before delegating
-// to the in-memory queue. The task was removed from the store on Poll (#107);
-// without re-inserting here it would be lost on server restart (#225).
+// Requeue rewrites the task's stored row before delegating to the in-memory
+// queue, so it survives a restart as waiting work (#225). The row normally
+// still exists, because it lives until Done/Error (#400); it is replaced
+// because the re-queued task no longer belongs to its old agent.
 func (q *persistentQueue) Requeue(c context.Context, task *model.Task) error {
+	if err := q.forget(task.ID); err != nil {
+		return err
+	}
 	if err := q.store.TaskInsert(task); err != nil {
 		return err
 	}

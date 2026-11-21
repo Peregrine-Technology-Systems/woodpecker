@@ -173,6 +173,13 @@ type Queue interface {
 	// task" manifestation measurable. It NEVER drives a reclaim. May be nil.
 	SetAgentStaleFn(stale func(agentID int64) bool)
 
+	// SetRestoredExpiryFn injects what happens to a task restored as running
+	// after a restart (#400) whose lease runs out without its agent renewing it.
+	// Such work has started, so it is handed to release (kill work that ran,
+	// re-queue work that did not) rather than resubmitted to run again. Nil
+	// keeps the plain resubmit, the default for tests.
+	SetRestoredExpiryFn(release func(tasks []*model.Task))
+
 	// UpdatePriority finds a pending or waiting-on-deps task by ID and
 	// updates its Priority, re-inserting at the correct position in the
 	// pending list if it was pending. Returns the old priority on success.
