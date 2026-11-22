@@ -24,11 +24,14 @@ import (
 	"go.woodpecker-ci.org/woodpecker/v3/version"
 )
 
-const (
+// var (not const) only so tests can shrink the keepalive; production never
+// mutates these.
+var (
 	wsPingInterval = 30 * time.Second // server sends ping every 30s
 	wsPongWait     = 60 * time.Second // client must respond within 60s
-	wsWriteWait    = 10 * time.Second // write deadline for control frames
 )
+
+const wsWriteWait = 10 * time.Second // write deadline for control frames
 
 var agentUpgrader = websocket.Upgrader{
 	CheckOrigin: func(_ *http.Request) bool { return true },
@@ -124,6 +127,11 @@ func WSAgent(c *gin.Context) {
 		}
 
 		state.handleMessage(connCtx, env, hostname)
+		// #404: handling runs inline, and pongs are only read between messages.
+		// A store write slower than wsPongWait would otherwise let the deadline
+		// lapse while the agent was answering every ping, and the next read
+		// would close a live agent's socket. The agent just spoke, so it is live.
+		_ = conn.SetReadDeadline(time.Now().Add(wsPongWait))
 	}
 }
 
