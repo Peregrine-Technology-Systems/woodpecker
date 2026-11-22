@@ -802,8 +802,9 @@ func (s *RPC) Done(c context.Context, strWorkflowID string, state rpc.WorkflowSt
 	// to provision — is never evaluated and the pipeline reports "running"
 	// forever. Runs before IsThereRunningStage so the pipeline can finalize in
 	// the same pass, and only ever turns a hung pipeline into a settled one.
-	if n := pipeline.SkipUnrunnableWorkflows(c, s.store, s.queue, currentPipeline); n > 0 {
-		logger.Info().Int("skipped_workflows", n).
+	skipped := pipeline.SkipUnrunnableWorkflows(c, s.store, s.queue, currentPipeline)
+	if len(skipped) > 0 {
+		logger.Info().Int("skipped_workflows", len(skipped)).
 			Msg("skip-unrunnable: settled workflow(s) that can never run (#382)")
 		if currentPipeline.Workflows, err = s.store.WorkflowGetTree(currentPipeline); err != nil {
 			return err
@@ -818,6 +819,11 @@ func (s *RPC) Done(c context.Context, strWorkflowID string, state rpc.WorkflowSt
 	}
 
 	s.updateForgeStatus(c, repo, currentPipeline, workflow)
+	// #403: a workflow skipped above never reports Done itself, so this is the
+	// only place its commit status can leave the "pending" posted at creation.
+	for _, settled := range skipped {
+		s.updateForgeStatus(c, repo, currentPipeline, settled)
+	}
 
 	// make sure writes to pubsub are non blocking (https://github.com/woodpecker-ci/woodpecker/blob/c919f32e0b6432a95e1a6d3d0ad662f591adf73f/server/logging/log.go#L9)
 	go func() {

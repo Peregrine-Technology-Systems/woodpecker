@@ -27,7 +27,8 @@ import (
 )
 
 // SkipUnrunnableWorkflows settles workflows of pl that can never run, and
-// returns how many it skipped (#382).
+// returns the workflows it skipped (#382), so the caller can post each one's
+// commit status (#403).
 //
 // Woodpecker only decides "this task should be skipped" inside the agent poll
 // loop, so a workflow pinned to a label no agent advertises is never evaluated.
@@ -42,29 +43,29 @@ import (
 // task stops occupying it). Going through queue.Done also cascades the new
 // status onto that task's own dependents, so a chain settles across passes
 // without this function knowing the graph.
-func SkipUnrunnableWorkflows(ctx context.Context, _store store.Store, q queue.Queue, pl *model.Pipeline) int {
+func SkipUnrunnableWorkflows(ctx context.Context, _store store.Store, q queue.Queue, pl *model.Pipeline) []*model.Workflow {
 	if q == nil || pl == nil {
-		return 0
+		return nil
 	}
-	skipped := 0
+	var skipped []*model.Workflow
 	// Bounded by the workflow count: each pass settles at least one workflow or
 	// stops. A chain needs one pass per link because a link only becomes
 	// evaluable once its predecessor has reported a terminal status.
 	for range len(pl.Workflows) + 1 {
-		n := skipUnrunnablePass(ctx, _store, q, pl)
-		if n == 0 {
+		settled := skipUnrunnablePass(ctx, _store, q, pl)
+		if len(settled) == 0 {
 			break
 		}
-		skipped += n
+		skipped = append(skipped, settled...)
 	}
 	return skipped
 }
 
 // skipUnrunnablePass skips every currently-decidable workflow, once.
-func skipUnrunnablePass(ctx context.Context, _store store.Store, q queue.Queue, pl *model.Pipeline) int {
+func skipUnrunnablePass(ctx context.Context, _store store.Store, q queue.Queue, pl *model.Pipeline) []*model.Workflow {
 	info := q.Info(ctx)
 	byID := workflowsByTaskID(pl)
-	skipped := 0
+	var skipped []*model.Workflow
 
 	for _, task := range append(append([]*model.Task{}, info.Pending...), info.WaitingOnDeps...) {
 		workflow, mine := byID[task.ID]
@@ -72,7 +73,7 @@ func skipUnrunnablePass(ctx context.Context, _store store.Store, q queue.Queue, 
 			continue
 		}
 		if skipWorkflow(ctx, _store, q, workflow, task.ID) {
-			skipped++
+			skipped = append(skipped, workflow)
 		}
 	}
 	return skipped
