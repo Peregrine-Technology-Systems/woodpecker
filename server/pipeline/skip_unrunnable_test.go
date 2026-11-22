@@ -72,7 +72,8 @@ func TestSkipUnrunnableWorkflowsSettlesChainWithNoAgents(t *testing.T) {
 
 	skipped := SkipUnrunnableWorkflows(ctx, mockStore, q, pl)
 
-	assert.Equal(t, 2, skipped, "both the pinned dependent and its own dependent should settle")
+	assert.Equal(t, []*model.Workflow{pl.Workflows[1], pl.Workflows[2]}, skipped,
+		"both the pinned dependent and its own dependent settle, and are returned so their commit statuses can be posted (#403)")
 	assert.Equal(t, model.StatusSkipped, pl.Workflows[1].State, "pts-build-compile")
 	assert.Equal(t, model.StatusSkipped, pl.Workflows[2].State, "pts-build-cleanup")
 	assert.NotZero(t, pl.Workflows[1].Finished, "a settled workflow must carry a finish time")
@@ -197,7 +198,7 @@ func TestSkipUnrunnableWorkflowsSkipsEvenIfQueueReleaseFails(t *testing.T) {
 	mockStore := store_mocks.NewMockStore(t)
 	mockStore.On("WorkflowUpdate", mock.Anything).Return(nil)
 
-	assert.Equal(t, 1, SkipUnrunnableWorkflows(ctx, mockStore, mockQueue, pl),
+	assert.Equal(t, []*model.Workflow{pl.Workflows[1]}, SkipUnrunnableWorkflows(ctx, mockStore, mockQueue, pl),
 		"a failed queue release must still count as skipped")
 	assert.Equal(t, model.StatusSkipped, pl.Workflows[1].State)
 }
