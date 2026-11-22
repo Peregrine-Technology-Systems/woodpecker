@@ -45,6 +45,15 @@ var reconcileHeldTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 	Help:      "Running pipelines the orphan reconciler declined to kill, by reason (#394).",
 }, []string{"reason"})
 
+// A labelled counter publishes nothing until its first increment, which made
+// "never held" and "metric missing" look the same on /metrics (#394). Publish
+// every reason at 0 from boot.
+func init() {
+	for _, reason := range []string{heldQueueRecheck, heldAgentLive, heldTreeUnreadable} {
+		reconcileHeldTotal.WithLabelValues(reason)
+	}
+}
+
 // activePipelineSet returns the set of pipeline IDs that have at least one
 // task in the in-memory queue (Pending, Running, or WaitingOnDeps). The
 // reconciler uses this to skip pipelines that are actively being worked on
