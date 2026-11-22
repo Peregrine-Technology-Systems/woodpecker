@@ -52,6 +52,10 @@ type WSClient struct {
 
 	mu      sync.Mutex
 	writeMu sync.Mutex // protects WebSocket writes — gorilla/websocket panics on concurrent writes
+	// dialMu makes one caller redial at a time (#404). Health, extend, Next and
+	// sendWithRetry can all notice one drop together; a second connect would
+	// close the first's fresh socket, which the server sees as another drop.
+	dialMu  sync.Mutex
 	conn    *websocket.Conn
 	agentID int64
 	// registration is what RegisterAgent last sent. Set only after a
@@ -127,6 +131,9 @@ func (c *WSClient) connect(ctx context.Context) error {
 }
 
 func (c *WSClient) ensureConnected(ctx context.Context) error {
+	c.dialMu.Lock()
+	defer c.dialMu.Unlock()
+
 	c.mu.Lock()
 	connected := c.conn != nil
 	lastConnected := c.lastConnectedAt
@@ -588,7 +595,14 @@ func (c *WSClient) Done(ctx context.Context, workflowID string, state rpc.Workfl
 	})
 }
 
+// Extend and ReportHealth redial before sending (#404). They are what a busy
+// agent keeps calling during a long step, so after a server-side drop they are
+// its only way back inside the server's reconnect grace; a bare send would
+// just return "not connected" until the step ends and the grace has expired.
 func (c *WSClient) Extend(ctx context.Context, workflowID string) error {
+	if err := c.ensureConnected(ctx); err != nil {
+		return err
+	}
 	_, err := c.send("extend", struct {
 		WorkflowIDs []string `json:"workflow_ids"`
 	}{WorkflowIDs: []string{workflowID}})
@@ -630,6 +644,9 @@ func (c *WSClient) ReportHealth(ctx context.Context) error {
 	}
 	c.cancelsMu.Unlock()
 
+	if err := c.ensureConnected(ctx); err != nil {
+		return err
+	}
 	_, err := c.send("health", struct {
 		WorkflowIDs []string `json:"workflow_ids,omitempty"`
 	}{WorkflowIDs: wfIDs})
