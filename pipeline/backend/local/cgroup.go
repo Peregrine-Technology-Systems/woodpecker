@@ -214,13 +214,12 @@ func readPopulated(dir string) (bool, error) {
 // checkDelegation asserts the service manager delegated root to the agent.
 // Write access is not evidence: the agent is root and could create a cgroup
 // under a slice it does not own. systemd marks a delegated cgroup with a
-// delegate xattr; the agent's own leaf is "agent" (DelegateSubgroup=agent),
-// or wf-* when this code runs inside a workflow: the agent itself is always
-// in "agent", and the wf-* case is this package's own tests running as a CI
-// job on a contained agent. The xattr that matched is named in the log.
+// delegate xattr, and the agent's own leaf is "agent" (DelegateSubgroup=agent).
+// Exactly that shape passes: a process inside a workflow's cgroup must not
+// count as delegated (INF ruling on #412). The xattr that matched is logged.
 func checkDelegation(root, leaf string, getxattr func(path, attr string, dest []byte) (int, error)) error {
-	if leaf != "agent" && !strings.HasPrefix(leaf, wfCgroupPrefix) {
-		return fmt.Errorf("process cgroup %q is neither the agent leaf nor a workflow", filepath.Join(root, leaf))
+	if leaf != "agent" {
+		return fmt.Errorf("process cgroup %q is not the agent leaf", filepath.Join(root, leaf))
 	}
 	var errs []error
 	for _, attr := range []string{"trusted.delegate", "user.delegate"} {

@@ -363,12 +363,12 @@ func TestCheckDelegation(t *testing.T) {
 		set   map[string]string
 		cause string
 	}{
-		"trusted mark, agent leaf":       {leaf: "agent", set: map[string]string{"trusted.delegate": "1"}},
-		"user mark, agent leaf":          {leaf: "agent", set: map[string]string{"user.delegate": "1"}},
-		"trusted mark, workflow leaf":    {leaf: "wf-abc", set: map[string]string{"trusted.delegate": "1"}},
-		"no mark":                        {leaf: "agent", cause: "no delegate xattr on /u (trusted.delegate: ENODATA\nuser.delegate: ENODATA)"},
-		"mark not 1":                     {leaf: "agent", set: map[string]string{"trusted.delegate": "0"}, cause: `trusted.delegate: value "0"`},
-		"marked root but a foreign leaf": {leaf: "init.scope", set: map[string]string{"trusted.delegate": "1"}, cause: "neither the agent leaf nor a workflow"},
+		"trusted mark, agent leaf":        {leaf: "agent", set: map[string]string{"trusted.delegate": "1"}},
+		"user mark, agent leaf":           {leaf: "agent", set: map[string]string{"user.delegate": "1"}},
+		"marked root but a workflow leaf": {leaf: "wf-abc", set: map[string]string{"trusted.delegate": "1"}, cause: "is not the agent leaf"},
+		"no mark":                         {leaf: "agent", cause: "no delegate xattr on /u (trusted.delegate: ENODATA\nuser.delegate: ENODATA)"},
+		"mark not 1":                      {leaf: "agent", set: map[string]string{"trusted.delegate": "0"}, cause: `trusted.delegate: value "0"`},
+		"marked root but a foreign leaf":  {leaf: "init.scope", set: map[string]string{"trusted.delegate": "1"}, cause: "is not the agent leaf"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			err := checkDelegation("/u", tc.leaf, xattrs(tc.set))

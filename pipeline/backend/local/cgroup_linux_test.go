@@ -45,11 +45,20 @@ import (
 
 func requireCgroupScratch(t *testing.T) (scratch string) {
 	t.Helper()
-	// The real delegation check, on the cgroup this test runs in: on the
-	// fleet that is the workflow cgroup of a delegated agent. An undelegated
-	// host fails here rather than have the test write into a subtree the
-	// service manager owns.
-	_, own, err := newCgroupFS().resolve()
+	// The real delegation mark, on the parent of the cgroup this test runs
+	// in. On the fleet the test is a CI job, so its own leaf is the job's
+	// wf-<uuid>; the binary accepts only the agent leaf, so the helper widens
+	// the accepted leaves for itself and still reads the real xattr (#412).
+	// An undelegated host fails here rather than have the test write into a
+	// subtree the service manager owns.
+	probe := newCgroupFS()
+	probe.checkDelegated = func(root, leaf string) error {
+		if !strings.HasPrefix(leaf, wfCgroupPrefix) && leaf != "agent" {
+			return fmt.Errorf("test runs in %q, neither the agent leaf nor a workflow", leaf)
+		}
+		return checkDelegatedSubtree(root, "agent")
+	}
+	_, own, err := probe.resolve()
 	require.NoError(t, err, "workflow-cgroup tests need cgroup v2 and a delegated subtree (#412)")
 	scratch = filepath.Join(own, fmt.Sprintf("itest-%d-%d", os.Getpid(), time.Now().UnixNano()))
 	require.NoError(t, os.Mkdir(scratch, 0o755), "workflow-cgroup tests need a cgroup they can create children in (#412)")
@@ -235,6 +244,6 @@ func TestCheckDelegatedSubtree(t *testing.T) {
 
 	require.NoError(t, unix.Setxattr(scratch, "trusted.delegate", []byte("1"), 0))
 	assert.NoError(t, checkDelegatedSubtree(scratch, "agent"))
-	assert.NoError(t, checkDelegatedSubtree(scratch, "wf-abc"), "a job running this code sits in a workflow cgroup")
-	assert.ErrorContains(t, checkDelegatedSubtree(scratch, "init.scope"), "neither the agent leaf nor a workflow")
+	assert.ErrorContains(t, checkDelegatedSubtree(scratch, "wf-abc"), "is not the agent leaf", "a process in a workflow cgroup is not delegated")
+	assert.ErrorContains(t, checkDelegatedSubtree(scratch, "init.scope"), "is not the agent leaf")
 }
