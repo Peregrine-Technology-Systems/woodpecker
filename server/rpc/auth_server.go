@@ -25,6 +25,7 @@ import (
 	"go.woodpecker-ci.org/woodpecker/v3/server/model"
 	"go.woodpecker-ci.org/woodpecker/v3/server/store"
 	"go.woodpecker-ci.org/woodpecker/v3/server/store/types"
+	"go.woodpecker-ci.org/woodpecker/v3/shared/token"
 )
 
 type WoodpeckerAuthServer struct {
@@ -59,7 +60,8 @@ func (s *WoodpeckerAuthServer) Auth(_ context.Context, req *proto.AuthRequest) (
 func (s *WoodpeckerAuthServer) getAgent(agentID int64, agentToken string) (*model.Agent, error) {
 	// global agent secret auth
 	if s.agentMasterToken != "" {
-		if agentToken == s.agentMasterToken && agentID == -1 {
+		isMaster := token.Equal(agentToken, s.agentMasterToken)
+		if isMaster && agentID == -1 {
 			agent := &model.Agent{
 				OwnerID:  model.IDNotSet,
 				OrgID:    model.IDNotSet,
@@ -74,7 +76,7 @@ func (s *WoodpeckerAuthServer) getAgent(agentID int64, agentToken string) (*mode
 			return agent, nil
 		}
 
-		if agentToken == s.agentMasterToken {
+		if isMaster {
 			agent, err := s.store.AgentFind(agentID)
 			if err != nil {
 				if errors.Is(err, types.ErrRecordNotExist) {
