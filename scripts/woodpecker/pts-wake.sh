@@ -16,16 +16,12 @@
 # Build cache lives in GCS — no persistent disk needed.
 set -euo pipefail
 
-# #353: which project/image/identity set to build in. DEFAULT IS `legacy` —
-# current behaviour — so landing this change is inert. pts-build.yaml is
-# `event: manual` restricted to `branch: main` and runs this script from the
-# checked-out workspace, so a change cannot be exercised from a PR branch and
-# merging arms the next bake; with the create path still unproven, the default
-# must be what already works. One switch selects the whole coherent set (see
-# resolve_build_target) rather than three independent knobs that could combine
-# incorrectly. Set PTS_BUILD_TARGET=peregrine-production on a manual run to
-# exercise the cutover; flipping the default is a separate one-line change once a
-# real bake has passed.
+# #353: which project/image/identity set to build in. The default is
+# peregrine-production since #433 (proven by bake 659); see
+# PTS_BUILD_TARGET_DEFAULT in lib/wake-helpers.sh. One switch selects the whole
+# coherent set (see resolve_build_target) rather than three independent knobs
+# that could combine incorrectly. PTS_BUILD_TARGET=legacy on a manual run still
+# selects the old project until it is decommissioned (infra#8873).
 # (resolved below, AFTER lib/wake-helpers.sh is sourced — it owns the default.)
 PTS_WAKE_MINT_SCRIPT="${PTS_WAKE_MINT_SCRIPT:-/opt/woodpecker/pts-build-wake-mint-token.sh}"
 
