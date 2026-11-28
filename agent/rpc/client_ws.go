@@ -665,10 +665,17 @@ func rejectionError(code, stepState, msg string) error {
 	if code != rpc.AckCodeStepTerminal {
 		return fmt.Errorf("server: %w: %s", errServerRejected, msg)
 	}
+	return stepTerminalError(stepState, errors.New(msg))
+}
+
+// stepTerminalError types a terminal-step rejection for both transports. Only
+// a killed or canceled step means the server abandoned the workflow; any other
+// state, or none (a server that does not send it), is terminal only (#394, #397).
+func stepTerminalError(stepState string, cause error) error {
 	if stepState == "killed" || stepState == "canceled" {
-		return fmt.Errorf("server: %w: %w: %s", rpc.ErrStepTerminal, rpc.ErrStepAbandoned, msg)
+		return fmt.Errorf("server: %w: %w: %w", rpc.ErrStepTerminal, rpc.ErrStepAbandoned, cause)
 	}
-	return fmt.Errorf("server: %w: %s", rpc.ErrStepTerminal, msg)
+	return fmt.Errorf("server: %w: %w", rpc.ErrStepTerminal, cause)
 }
 
 func (c *WSClient) sendWithRetry(ctx context.Context, msgType string, payload interface{}) error {
