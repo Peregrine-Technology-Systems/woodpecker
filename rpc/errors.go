@@ -33,3 +33,9 @@ const AckCodeStepTerminal = "step_terminal"
 // without it (the step is already success or failure, typically a re-sent final
 // update whose first ack was lost) is dropped, and the workflow carries on.
 var ErrStepAbandoned = errors.New("server abandoned the workflow")
+
+// StepStateMetadataKey is the gRPC trailer key that carries the step's
+// server-side state with a terminal-step rejection (codes.FailedPrecondition),
+// the gRPC counterpart of the WebSocket ack's step_state field. The agent
+// reads the state from it, never from the error text (#397).
+const StepStateMetadataKey = "woodpecker-step-state"

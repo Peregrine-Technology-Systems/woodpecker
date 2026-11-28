@@ -24,6 +24,7 @@ import (
 	"github.com/rs/zerolog/log"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	grpcMetadata "google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 	grpcproto "google.golang.org/protobuf/proto"
 
@@ -351,7 +352,8 @@ func (c *client) Update(ctx context.Context, workflowID string, state rpc.StepSt
 	req.State.Error = state.Error
 	req.State.Canceled = state.Canceled
 	for {
-		_, err = c.client.Update(ctx, req)
+		var trailer grpcMetadata.MD
+		_, err = c.client.Update(ctx, req, grpc.Trailer(&trailer))
 		if err == nil {
 			break
 		}
@@ -359,6 +361,10 @@ func (c *client) Update(ctx context.Context, workflowID string, state rpc.StepSt
 		log.Error().Err(err).Msgf("grpc error: update(): code: %v", status.Code(err))
 
 		switch status.Code(err) {
+		case codes.FailedPrecondition:
+			// #397: the server's permanent terminal-step answer, typed as the
+			// WS client types it so the tracer can stop abandoned work.
+			return stepTerminalError(trailerValue(trailer, rpc.StepStateMetadataKey), err)
 		case codes.Canceled:
 			if ctx.Err() != nil {
 				// expected as context was canceled
@@ -546,4 +552,12 @@ func (c *client) ReportHealth(ctx context.Context) (err error) {
 			return ctx.Err()
 		}
 	}
+}
+
+// trailerValue returns the first value of key in a response trailer, or "".
+func trailerValue(md grpcMetadata.MD, key string) string {
+	if v := md.Get(key); len(v) > 0 {
+		return v[0]
+	}
+	return ""
 }

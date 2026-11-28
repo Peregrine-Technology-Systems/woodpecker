@@ -24,7 +24,9 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	prometheus_auto "github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/rs/zerolog/log"
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	grpcMetadata "google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
 	"go.woodpecker-ci.org/woodpecker/v3/rpc"
@@ -201,9 +203,23 @@ func (s *WoodpeckerServer) Update(c context.Context, req *proto.UpdateRequest) (
 	// than treating it like a generic unknown error and retrying. Other errors
 	// pass through unchanged (they are typically transient store errors).
 	if err != nil && errors.Is(err, pipeline.ErrStepUpdateRejectedTerminal) {
+		setStepStateTrailer(c, err)
 		return res, status.Error(codes.FailedPrecondition, err.Error())
 	}
 	return res, err
+}
+
+// setStepStateTrailer forwards a terminal rejection's step state in the
+// response trailer, so a gRPC agent can tell work the server abandoned (killed,
+// canceled) from a final result it already recorded, as a WS agent can (#397).
+func setStepStateTrailer(c context.Context, err error) {
+	var terr *pipeline.StepTerminalError
+	if !errors.As(err, &terr) {
+		return
+	}
+	if serr := grpc.SetTrailer(c, grpcMetadata.Pairs(rpc.StepStateMetadataKey, string(terr.State))); serr != nil {
+		log.Warn().Err(serr).Msg("grpc update: could not attach the step state to a terminal rejection")
+	}
 }
 
 // Done let agent signal to server the workflow has stopped.
