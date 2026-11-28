@@ -19,6 +19,8 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+
+	"go.woodpecker-ci.org/woodpecker/v3/shared/token"
 )
 
 // Handler implements plugin.StatusHook, providing REST endpoints for
@@ -55,8 +57,8 @@ func (h *Handler) Close() error { return nil }
 func (h *Handler) bearerAuth() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		auth := c.GetHeader("Authorization")
-		token := strings.TrimPrefix(auth, "Bearer ")
-		if token == "" || token == auth || token != h.token {
+		bearer, ok := strings.CutPrefix(auth, "Bearer ")
+		if !ok || !token.Equal(bearer, h.token) {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
 			return
 		}

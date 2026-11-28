@@ -21,6 +21,7 @@ import (
 	"go.woodpecker-ci.org/woodpecker/v3/server/pipeline"
 	grpcserver "go.woodpecker-ci.org/woodpecker/v3/server/rpc"
 	"go.woodpecker-ci.org/woodpecker/v3/server/store"
+	"go.woodpecker-ci.org/woodpecker/v3/shared/token"
 	"go.woodpecker-ci.org/woodpecker/v3/version"
 )
 
@@ -40,8 +41,7 @@ var agentUpgrader = websocket.Upgrader{
 // WSAgent handles the full agent↔server WebSocket lifecycle.
 // Replaces gRPC for agent communication (#474).
 func WSAgent(c *gin.Context) {
-	token := c.Query("token")
-	if token == "" || token != server.Config.Server.AgentToken {
+	if !token.Equal(c.Query("token"), server.Config.Server.AgentToken) {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid token"})
 		return
 	}
