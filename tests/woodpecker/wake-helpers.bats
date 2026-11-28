@@ -198,8 +198,8 @@ setup() {
 # because independent vars permit incoherent combinations — a PP project with the
 # legacy image family, say — that fail in a way that looks like something else.
 
-@test "resolve_build_target: DEFAULT is legacy, so merging is inert" {
-  assert_equal "$PTS_BUILD_TARGET_DEFAULT" "legacy"
+@test "resolve_build_target: DEFAULT is peregrine-production (#433, proven by bake 659)" {
+  assert_equal "$PTS_BUILD_TARGET_DEFAULT" "peregrine-production"
 }
 
 @test "resolve_build_target: legacy -> current behaviour, ambient auth, no mint" {

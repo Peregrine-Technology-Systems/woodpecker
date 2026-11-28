@@ -298,41 +298,14 @@ upload_asset() {
 upload_asset "woodpecker-server-linux-amd64" "bin/woodpecker-server"
 upload_asset "woodpecker-agent-linux-amd64"  "bin/woodpecker-agent"
 
-echo ""; echo "==> Phase 3c: wake ci-image-builder"
-BUILDER_PROJECT="ci-runners-de"
-BUILDER_ZONE="us-central1-a"
-BUILDER_VM="ci-image-builder"
-BUILDER_BUCKET="${BUILDER_PROJECT}-image-builder-state"
-REQUEST_ID=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n' | awk '{printf "%s-%s-%s-%s-%s", substr($0,1,8), substr($0,9,4), substr($0,13,4), substr($0,17,4), substr($0,21,12)}')
-NOW_ISO=$(date -u +%FT%TZ)
-JOB_FILE=$(mktemp)
-cat > "${JOB_FILE}" << JOB
-{"request_id":"${REQUEST_ID}","wp_version":"${VERSION}","scaler_version":"","triggered_by":"woodpecker-pts-build-${CI_PIPELINE_NUMBER:-?}","created_at":"${NOW_ISO}"}
-JOB
-if gsutil -q cp "${JOB_FILE}" "gs://${BUILDER_BUCKET}/jobs/${REQUEST_ID}.json" 2>/dev/null; then
-    echo "    Wrote builder job: ${REQUEST_ID}"
-    gcloud --quiet compute instances start "${BUILDER_VM}" --zone="${BUILDER_ZONE}" --project="${BUILDER_PROJECT}" 2>/dev/null && \
-        echo "    Started ${BUILDER_VM}" || echo "    ⚠️  Could not start builder VM"
-else
-    echo "    ⚠️  Could not write builder job — non-blocking"
-fi
-rm -f "${JOB_FILE}"
+# Phase 3c (wake ci-image-builder in ci-runners-de) was removed (#433): it ran
+# on every bake whatever the build target, and that builder's image family is
+# pinned by nothing any more; the fleet image is baked in peregrine-production
+# (infra#8873).
 
-# ── Create infra tracking issue (SOC 2 CC7.2 traceability) ──
-echo ""; echo "==> Phase 3d: create infra tracking issue"
-if [ -n "${GH_TOKEN:-}" ]; then
-    INFRA_REPO="Peregrine-Technology-Systems/peregrine-infrastructure"
-    ISSUE_BODY="## Build record\n\n- **Version:** ${VERSION}\n- **Pipeline:** #${CI_PIPELINE_NUMBER:-?}\n- **Commit:** \`${COMMIT_SHA:0:8}\` on woodpecker fork\n- **Binary SHA256:** \`${SHA256:0:16}...\`\n- **GitHub Release:** https://github.com/Peregrine-Technology-Systems/woodpecker/releases/tag/${VERSION}\n\n## Action\n\nReview and merge the auto-generated \`chore/agent-image-bump\` PR to pin the new ci-agent image to this agent binary. The PR is opened automatically by ci-image-builder.\n\nLink that PR to this issue before merging (SOC 2 CC7.2 traceability)."
-    ISSUE_RESP=$(curl -sS -X POST \
-        -H "Authorization: Bearer ${GH_TOKEN}" \
-        -H "Content-Type: application/json" \
-        "https://api.github.com/repos/${INFRA_REPO}/issues" \
-        -d "{\"title\":\"chore: pin ci-agent image built from ${VERSION}\",\"body\":\"${ISSUE_BODY}\"}")
-    ISSUE_URL=$(echo "${ISSUE_RESP}" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("html_url",""))' 2>/dev/null || echo "")
-    [ -n "${ISSUE_URL}" ] && echo "    Tracking issue: ${ISSUE_URL}" || echo "    ⚠️  Could not create tracking issue (non-blocking)"
-else
-    echo "    Skipping: GH_TOKEN not set"
-fi
+# Phase 3d (open a peregrine-infrastructure tracking issue per build) was
+# removed (#433): the infrastructure team no longer wants it, it described the
+# retired ci-image-builder, and it had been failing silently.
 
 # ── Write pending-deploy marker (#227) ──
 # Done here on the pts-build-vm, immediately after binary upload, so the
