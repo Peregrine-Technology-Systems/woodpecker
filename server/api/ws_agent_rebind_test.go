@@ -37,21 +37,27 @@ func TestReboundAgent(t *testing.T) {
 
 	t.Run("no prior id registers fresh", func(t *testing.T) {
 		s := &wsAgentState{store: store_mocks.NewMockStore(t)}
-		assert.Nil(t, s.reboundAgent(RegisterPayload{}, host))
+		got, err := s.reboundAgent(RegisterPayload{}, host)
+		assert.NoError(t, err)
+		assert.Nil(t, got)
 	})
 
 	t.Run("deleted row registers fresh", func(t *testing.T) {
 		st := store_mocks.NewMockStore(t)
 		st.On("AgentFind", int64(61493)).Return((*model.Agent)(nil), types.ErrRecordNotExist)
 		s := &wsAgentState{store: st}
-		assert.Nil(t, s.reboundAgent(RegisterPayload{AgentID: 61493}, host))
+		got, err := s.reboundAgent(RegisterPayload{AgentID: 61493}, host)
+		assert.NoError(t, err)
+		assert.Nil(t, got)
 	})
 
 	t.Run("another host's row is not taken", func(t *testing.T) {
 		st := store_mocks.NewMockStore(t)
 		st.On("AgentFind", int64(61493)).Return(&model.Agent{ID: 61493, Name: "other-host"}, nil)
 		s := &wsAgentState{store: st}
-		assert.Nil(t, s.reboundAgent(RegisterPayload{AgentID: 61493}, host))
+		got, err := s.reboundAgent(RegisterPayload{AgentID: 61493}, host)
+		assert.NoError(t, err)
+		assert.Nil(t, got)
 		st.AssertNotCalled(t, "AgentUpdate", mock.Anything)
 	})
 
@@ -62,7 +68,8 @@ func TestReboundAgent(t *testing.T) {
 			return a.ID == 61493 && a.Version == "pts.540" && a.Capacity == 2 && a.LastContact > 0
 		})).Return(nil)
 		s := &wsAgentState{store: st}
-		got := s.reboundAgent(RegisterPayload{AgentID: 61493, Version: "pts.540", Capacity: 2}, host)
+		got, err := s.reboundAgent(RegisterPayload{AgentID: 61493, Version: "pts.540", Capacity: 2}, host)
+		assert.NoError(t, err)
 		assert.Equal(t, int64(61493), got.ID)
 	})
 
@@ -71,7 +78,9 @@ func TestReboundAgent(t *testing.T) {
 		st.On("AgentFind", int64(61493)).Return(&model.Agent{ID: 61493, Name: host}, nil)
 		st.On("AgentUpdate", mock.Anything).Return(errors.New("db busy"))
 		s := &wsAgentState{store: st}
-		assert.Equal(t, int64(61493), s.reboundAgent(RegisterPayload{AgentID: 61493}, host).ID)
+		got, err := s.reboundAgent(RegisterPayload{AgentID: 61493}, host)
+		assert.NoError(t, err)
+		assert.Equal(t, int64(61493), got.ID)
 	})
 }
 
