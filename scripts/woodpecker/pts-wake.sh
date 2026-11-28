@@ -164,7 +164,7 @@ for ZONE in ${ZONE_LIST}; do
             --network="buildkite-network" \
             --subnet="${SUBNET}" \
             --tags=pts-build,woodpecker-agent \
-            --metadata="agent-label=pts-build,pts-build-pipeline=${CI_PIPELINE_NUMBER:-0},pts-build-zone=${ZONE}" \
+            --metadata="$(build_vm_metadata "${CI_PIPELINE_NUMBER:-0}" "${ZONE}")" \
             --no-restart-on-failure \
             --maintenance-policy=MIGRATE \
             --quiet 2>&1 | tee "${PTS_WAKE_CREATE_ERR}"; then

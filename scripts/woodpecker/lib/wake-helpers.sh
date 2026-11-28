@@ -99,6 +99,15 @@ zone_failure_is_retryable() {
   return 1
 }
 
+# build_vm_metadata PIPELINE ZONE — the build VM's instance metadata (#435).
+# ci-tier must be set: the agent image turns it into the agent's `tier` label
+# and defaults it to "spot" when absent, which put the build VM in the spot
+# pool, where it took other repos' CI (bakes 654 and 655). "pts-build" is a
+# tier no fleet workflow routes on.
+build_vm_metadata() {
+  echo "agent-label=pts-build,ci-tier=pts-build,pts-build-pipeline=${1},pts-build-zone=${2}"
+}
+
 # PTS_BUILD_TARGET_DEFAULT — the target pts-wake.sh selects when nothing asks for
 # another. It is `legacy`, i.e. CURRENT behaviour, deliberately.
 #
