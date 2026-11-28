@@ -67,6 +67,12 @@ func (t *Task) ApplyLabelsFromRepo(r *Repo) error {
 
 // ShouldRun tells if a task should be run or skipped, based on dependencies.
 func (t *Task) ShouldRun() bool {
+	// [pts] #435: `when: status: killed` runs the task after a dependency was
+	// killed. Checked first so the success/failure rows below stay unchanged.
+	if t.RunsOnKilled() && t.anyDepKilled() {
+		return true
+	}
+
 	if t.runsOnFailure() && t.runsOnSuccess() {
 		return true
 	}
@@ -89,6 +95,20 @@ func (t *Task) ShouldRun() bool {
 		return true
 	}
 
+	return false
+}
+
+// RunsOnKilled reports the `when: status: killed` opt-in (#435).
+func (t *Task) RunsOnKilled() bool {
+	return slices.Contains(t.RunOn, string(StatusKilled))
+}
+
+func (t *Task) anyDepKilled() bool {
+	for _, status := range t.DepStatus {
+		if status == StatusKilled {
+			return true
+		}
+	}
 	return false
 }
 

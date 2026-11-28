@@ -45,6 +45,7 @@ type workflowState struct {
 type stepState struct {
 	cmd    *exec.Cmd
 	output io.ReadCloser
+	cgroup *workflowCgroup // the step's own cgroup when contained (#423)
 }
 
 type local struct {
@@ -306,8 +307,18 @@ func (e *local) DestroyStep(_ context.Context, step *types.Step, taskUUID string
 	if err != nil {
 		return err
 	}
-
 	workflowState.stepState.Delete(step.UUID)
+
+	// Kill what the step started, detached children included (#423). A step
+	// cgroup that would not empty is an error and stays as evidence.
+	if state.cgroup != nil && workflowState.cgroup != nil {
+		sc := state.cgroup
+		state.cgroup = nil
+		if err := e.cgroups.destroyStep(workflowState.cgroup, sc); err != nil {
+			log.Error().Err(err).Str("taskUUID", taskUUID).Str("step", step.Name).Msg("local backend: step processes survived teardown")
+			return err
+		}
+	}
 	return nil
 }
 
@@ -329,6 +340,9 @@ func (e *local) DestroyWorkflow(_ context.Context, _ *types.Config, taskUUID str
 			if state.cmd != nil {
 				_ = state.cmd.Cancel()
 				state.cmd = nil
+			}
+			if state.cgroup != nil {
+				state.cgroup.close() // the workflow kill below covers it (#423)
 			}
 		}
 		return true

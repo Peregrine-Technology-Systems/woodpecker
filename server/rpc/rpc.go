@@ -435,7 +435,7 @@ func (s *RPC) releaseTasks(c context.Context, agentID int64, orphaned []string, 
 		}
 
 		if !model.IsThereRunningStage(currentPipeline.Workflows) {
-			if _, err := pipeline.UpdateStatusToDone(s.store, *currentPipeline, pipeline.PipelineStatus(currentPipeline.Workflows), now); err != nil {
+			if _, err := pipeline.UpdateStatusToDone(s.store, *currentPipeline, pipeline.FinalPipelineStatus(currentPipeline), now); err != nil {
 				log.Error().Err(err).Int64("pipeline_id", currentPipeline.ID).
 					Msg("release: failed to finalize pipeline")
 			}
@@ -838,7 +838,7 @@ func (s *RPC) Done(c context.Context, strWorkflowID string, state rpc.WorkflowSt
 	}
 
 	if !model.IsThereRunningStage(currentPipeline.Workflows) {
-		if currentPipeline, err = pipeline.UpdateStatusToDone(s.store, *currentPipeline, pipeline.PipelineStatus(currentPipeline.Workflows), workflow.Finished); err != nil {
+		if currentPipeline, err = pipeline.UpdateStatusToDone(s.store, *currentPipeline, pipeline.FinalPipelineStatus(currentPipeline), workflow.Finished); err != nil {
 			logger.Error().Err(err).Msgf("pipeline.UpdateStatusToDone: cannot update workflows final state")
 		}
 		pipeline.EmitEvent(plugin.EventPipelineCompleted, repo, currentPipeline, "")

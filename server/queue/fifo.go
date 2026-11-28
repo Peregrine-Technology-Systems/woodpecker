@@ -52,6 +52,7 @@ type fifo struct {
 	pending       *list.List
 	waitingOnDeps *list.List
 	extension     time.Duration
+	restoredLease time.Duration // first lease of a task restored after a restart (#427)
 	paused        bool
 	dispatchHook  DispatchFunc
 
@@ -106,6 +107,7 @@ func NewMemoryQueue(ctx context.Context) Queue {
 		pending:        list.New(),
 		waitingOnDeps:  list.New(),
 		extension:      constant.TaskTimeout,
+		restoredLease:  defaultRestoredLease(),
 		paused:         false,
 		reclaimFiredAt: map[int64]time.Time{},
 	}
@@ -220,9 +222,9 @@ func (q *fifo) finished(ids []string, exitStatus model.StatusValue, err error) e
 }
 
 // adoptRunning puts tasks a restarted server restored as running straight into
-// q.running, on the agent that holds them, with a fresh lease (#400). The
-// agent's next Extend renews it; if none comes, the lease expires and the task
-// is resubmitted, exactly as for any running task whose agent went quiet.
+// q.running, on the agent that holds them (#400), with a short first lease
+// (#427). The agent's next Extend puts it back on the normal lease; if none
+// comes, the lease expires and the task is released.
 func (q *fifo) adoptRunning(tasks []*model.Task) {
 	q.Lock()
 	defer q.Unlock()
@@ -230,7 +232,7 @@ func (q *fifo) adoptRunning(tasks []*model.Task) {
 		q.running[task.ID] = &entry{
 			item:     task,
 			done:     make(chan bool),
-			deadline: time.Now().Add(q.extension),
+			deadline: time.Now().Add(q.restoredLease),
 			restored: true,
 		}
 	}

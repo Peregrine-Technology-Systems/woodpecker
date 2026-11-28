@@ -30,7 +30,6 @@ import (
 	pipeline_errors "go.woodpecker-ci.org/woodpecker/v3/pipeline/errors"
 	pipeline_runtime "go.woodpecker-ci.org/woodpecker/v3/pipeline/runtime"
 	"go.woodpecker-ci.org/woodpecker/v3/rpc"
-	"go.woodpecker-ci.org/woodpecker/v3/shared/constant"
 	"go.woodpecker-ci.org/woodpecker/v3/shared/utils"
 )
 
@@ -133,21 +132,7 @@ func (r *Runner) Run(runnerCtx, shutdownCtx context.Context) error {
 	}()
 
 	// Periodically extend the workflow lease while running
-	go func() {
-		for {
-			select {
-			case <-workflowCtx.Done():
-				logger.Debug().Msg("workflow context done")
-				return
-
-			case <-time.After(constant.TaskTimeout / 3):
-				logger.Debug().Msg("renewing workflow lease")
-				if err := r.client.Extend(workflowCtx, workflow.ID); err != nil {
-					logger.Error().Err(err).Msg("failed to extend workflow lease")
-				}
-			}
-		}
-	}()
+	go r.renewLease(workflowCtx, workflow.ID, logger)
 
 	state := rpc.WorkflowState{
 		Started: time.Now().Unix(),

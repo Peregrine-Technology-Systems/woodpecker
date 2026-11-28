@@ -150,7 +150,8 @@ func TestContainedStepIsBornInsideItsWorkflowCgroup(t *testing.T) {
 
 	out := runCommands(t, b, "born", "cat /proc/self/cgroup")
 
-	assert.Contains(t, out, "/wf-born\n", "the step must run in its workflow cgroup, not the agent's")
+	// #423: the step runs in its own cgroup inside the workflow's.
+	assert.Contains(t, out, "/wf-born/", "the step must run in its workflow cgroup, not the agent's")
 	require.NoError(t, b.DestroyWorkflow(context.Background(), nil, "born"))
 }
 
@@ -228,7 +229,11 @@ func TestDestroyWorkflowReportsAnUnkillableCgroup(t *testing.T) {
 	b.cgroups.kill = func(string) error { return nil }
 	b.cgroups.killBound = 300 * time.Millisecond
 	require.NoError(t, b.SetupWorkflow(context.Background(), nil, "stuck"))
-	runCommands(t, b, "stuck", "setsid sleep 300 >/dev/null 2>&1 < /dev/null &")
+	token := fmt.Sprintf("wp412-stuck-%d", time.Now().UnixNano())
+	runCommands(t, b, "stuck", "setsid sh -c 'sleep 300; true' "+token+" >/dev/null 2>&1 < /dev/null &")
+	// Baseline: the child has left the step's process group (#423 kills that
+	// group at teardown), so only the cgroup kill could reach it.
+	waitFor(t, "the escaped child", func() bool { return len(pidsWithToken(token)) == 1 })
 
 	err := b.DestroyWorkflow(context.Background(), nil, "stuck")
 

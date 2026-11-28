@@ -197,6 +197,10 @@ func (b *StepBuilder) genItemForWorkflow(workflow *model.Workflow, axis matrix.A
 	if !slices.Contains(item.RunsOn, "success") && parsed.When.IncludesStatusSuccess(workflowMetadata, true, environ) {
 		item.RunsOn = append(item.RunsOn, "success")
 	}
+	// [pts] #435: `killed` reaches the task so Cancel can keep the workflow.
+	if !slices.Contains(item.RunsOn, "killed") && parsed.When.IncludesStatusKilled(workflowMetadata, true, environ) {
+		item.RunsOn = append(item.RunsOn, "killed")
+	}
 
 	// "woodpecker-ci.org" namespace is reserved for internal use
 	for key := range item.Labels {

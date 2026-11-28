@@ -45,10 +45,13 @@ func (e *local) execCommands(ctx context.Context, step *types.Step, state *workf
 	}
 
 	// Use "image name" as run command (indicate shell)
-	cmd := exec.CommandContext(ctx, step.Image, args...)
+	cmd := newCmd(ctx, step.Image, args...)
 	cmd.Env = env
 	cmd.Dir = state.workspaceDir
-	bornInCgroup(cmd, state.cgroup)
+	sc, err := e.containStep(cmd, state, step.UUID)
+	if err != nil {
+		return err
+	}
 
 	reader, err := cmd.StdoutPipe()
 	if err != nil {
@@ -68,6 +71,7 @@ func (e *local) execCommands(ctx context.Context, step *types.Step, state *workf
 	state.stepState.Store(step.UUID, &stepState{
 		cmd:    cmd,
 		output: reader,
+		cgroup: sc,
 	})
 
 	return cmd.Start()

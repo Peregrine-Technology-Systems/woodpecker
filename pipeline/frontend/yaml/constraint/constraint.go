@@ -31,6 +31,9 @@ import (
 const (
 	statusFailure = "failure"
 	statusSuccess = "success"
+	// statusKilled is an explicit opt-in (#435): never implied by an empty
+	// when or by success/failure.
+	statusKilled = "killed"
 )
 
 type (
@@ -84,6 +87,20 @@ func (when *When) IncludesStatusFailure(metadata metadata.Metadata, global bool,
 	for _, c := range when.Constraints {
 		if matches, err := c.Match(metadata, global, env); err == nil && matches {
 			if slices.Contains(c.Status, statusFailure) {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
+// IncludesStatusKilled reports whether the workflow opted in to run after a
+// dependency was killed, with `when: status: killed` (#435, fork divergence).
+func (when *When) IncludesStatusKilled(metadata metadata.Metadata, global bool, env map[string]string) bool {
+	for _, c := range when.Constraints {
+		if matches, err := c.Match(metadata, global, env); err == nil && matches {
+			if slices.Contains(c.Status, statusKilled) {
 				return true
 			}
 		}

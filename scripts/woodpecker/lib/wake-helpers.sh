@@ -99,19 +99,26 @@ zone_failure_is_retryable() {
   return 1
 }
 
-# PTS_BUILD_TARGET_DEFAULT — the target pts-wake.sh selects when nothing asks for
-# another. It is `legacy`, i.e. CURRENT behaviour, deliberately.
+# build_vm_metadata PIPELINE ZONE — the build VM's instance metadata (#435).
+# ci-tier must be set: the agent image turns it into the agent's `tier` label
+# and defaults it to "spot" when absent, which put the build VM in the spot
+# pool, where it took other repos' CI (bakes 654 and 655). "pts-build" is a
+# tier no fleet workflow routes on.
+build_vm_metadata() {
+  echo "agent-label=pts-build,ci-tier=pts-build,pts-build-pipeline=${1},pts-build-zone=${2}"
+}
+
+# PTS_BUILD_TARGET_DEFAULT — the target pts-wake.sh, pts-build.sh and
+# pts-cleanup.sh select when nothing asks for another (#353, #433).
 #
-# pts-build.yaml is `event: manual` restricted to `branch: main`, and the wake
-# step runs the script from the checked-out workspace, so a change cannot be
-# exercised from a PR branch at all and merging arms the next bake. Until the
-# create path has been proven by a real bake, the default must therefore be the
-# behaviour that already works — the estate's feature-switch rule: a missing
-# switch falls back to the committed default set to current behaviour, never to
-# the new one. Flipping this line is the cutover, and it is a one-line change
-# reviewable on its own once a bake has passed with PTS_BUILD_TARGET set
-# explicitly (#353).
-PTS_BUILD_TARGET_DEFAULT="legacy"
+# It was `legacy` until a real bake proved the production create path end to
+# end, because pts-build.yaml runs these scripts from main and a merge arms the
+# next bake. Bake 659 (2026-11-28, PTS_BUILD_TARGET=peregrine-production set
+# explicitly) did: VM created in peregrine-production, agent registered with
+# tier=pts-build (#435), compile green, cleanup deleted the VM. The operator's
+# direction is that nothing runs in the legacy project any more (infra#8873).
+# `legacy` stays selectable on a manual run until that project is gone.
+PTS_BUILD_TARGET_DEFAULT="peregrine-production"
 
 # resolve_build_target TARGET
 #   Selects the whole coherent set for a build target, rather than leaving the

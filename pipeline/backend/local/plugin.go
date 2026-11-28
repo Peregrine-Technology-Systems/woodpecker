@@ -29,10 +29,13 @@ func (e *local) execPlugin(ctx context.Context, step *types.Step, state *workflo
 		return fmt.Errorf("lookup plugin binary: %w", err)
 	}
 
-	cmd := exec.CommandContext(ctx, binary)
+	cmd := newCmd(ctx, binary)
 	cmd.Env = env
 	cmd.Dir = state.workspaceDir
-	bornInCgroup(cmd, state.cgroup)
+	sc, err := e.containStep(cmd, state, step.UUID)
+	if err != nil {
+		return err
+	}
 
 	reader, err := cmd.StdoutPipe()
 	if err != nil {
@@ -46,6 +49,7 @@ func (e *local) execPlugin(ctx context.Context, step *types.Step, state *workflo
 	state.stepState.Store(step.UUID, &stepState{
 		cmd:    cmd,
 		output: reader,
+		cgroup: sc,
 	})
 
 	return cmd.Start()
