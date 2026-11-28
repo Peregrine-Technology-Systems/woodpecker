@@ -48,6 +48,7 @@ func (e *local) execCommands(ctx context.Context, step *types.Step, state *workf
 	cmd := exec.CommandContext(ctx, step.Image, args...)
 	cmd.Env = env
 	cmd.Dir = state.workspaceDir
+	bornInCgroup(cmd, state.cgroup)
 
 	reader, err := cmd.StdoutPipe()
 	if err != nil {

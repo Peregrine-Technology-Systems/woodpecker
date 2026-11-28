@@ -53,4 +53,11 @@ fi
 echo "==> Running timing-sensitive packages in isolation..."
 "${GO}" test -v -count=1 "${TIMING_PACKAGES[@]}"
 
+# The local backend (#412) starts real processes and kills real cgroups, so
+# it gets its own invocation: nothing else runs in the cgroups it makes. Its
+# containment tests need the delegated subtree a contained agent gives this
+# job, and FAIL on an undelegated agent rather than skip.
+echo "==> Running the local backend's containment tests..."
+"${GO}" test -v -count=1 go.woodpecker-ci.org/woodpecker/v3/pipeline/backend/local
+
 echo "==> Tests passed"
