@@ -9,6 +9,11 @@
   assert_failure
 }
 
+@test "pts-build.sh no longer opens an infra tracking issue per build" {
+  run grep -nE '^[^#]*(INFRA_REPO|Phase 3d|chore: pin ci-agent image)' "${BATS_TEST_DIRNAME}/../../scripts/woodpecker/pts-build.sh"
+  assert_failure
+}
+
 setup() {
   load 'bats-deps/bats-support/load'
   load 'bats-deps/bats-assert/load'
