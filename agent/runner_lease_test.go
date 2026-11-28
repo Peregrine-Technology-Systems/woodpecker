@@ -73,12 +73,27 @@ func (p *renewingPeer) announce() {
 	p.reconnect = make(chan struct{})
 }
 
+// startLease runs the lease loop and, at cleanup, ends it and waits for it,
+// so no loop outlives its test (one test changes constant.TaskTimeout).
+func startLease(t *testing.T, r *Runner) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { r.renewLease(ctx, "117400", log.Logger); close(done) }()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(time.Second):
+			t.Error("the lease loop must end with its workflow")
+		}
+	})
+}
+
 func TestLeaseRenewsAtOnceOnReconnect(t *testing.T) {
 	p := &renewingPeer{reconnect: make(chan struct{})}
 	r := &Runner{client: p}
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go r.renewLease(ctx, "117400", log.Logger)
+	startLease(t, r)
 	assert.Eventually(t, func() bool { return p.subscriptions() == 1 }, time.Second, 5*time.Millisecond)
 
 	p.announce()
@@ -93,9 +108,7 @@ func TestLeaseRenewsAtOnceOnReconnect(t *testing.T) {
 func TestLeaseWithoutReconnectSignalWaitsForTheTick(t *testing.T) {
 	p := &countingPeer{}
 	r := &Runner{client: p}
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go r.renewLease(ctx, "117400", log.Logger)
+	startLease(t, r)
 
 	time.Sleep(200 * time.Millisecond)
 	assert.Zero(t, p.n.Load())
@@ -124,16 +137,7 @@ func TestLeaseRenewsOnTheTickAndSurvivesAFailure(t *testing.T) {
 	constant.TaskTimeout = 60 * time.Millisecond
 	t.Cleanup(func() { constant.TaskTimeout = orig })
 	p := &failingPeer{}
-	r := &Runner{client: p}
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	go func() { r.renewLease(ctx, "117400", log.Logger); close(done) }()
+	startLease(t, &Runner{client: p})
 
 	assert.Eventually(t, func() bool { return p.n.Load() >= 2 }, 2*time.Second, 5*time.Millisecond)
-	cancel()
-	select {
-	case <-done:
-	case <-time.After(time.Second):
-		t.Fatal("the lease loop must end with its workflow")
-	}
 }
