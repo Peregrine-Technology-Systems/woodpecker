@@ -1,0 +1,51 @@
+#!/bin/bash
+# Pre-push hook template: a SECRET SCAN and nothing else (global-claude#1161).
+#
+# Operator ruling 2026-11-22: pre-push runs a secret scan only, estate-wide. Tests,
+# coverage, lint, type checks, format checks and SRP run in pre-commit and CI. This
+# gate stays because it is the one local check over commits pre-commit never sees
+# (clean merges, rebases, cherry-picks, other worktrees, another machine), and a
+# secret that reaches GitHub has to be rotated (#935).
+#
+# Copy to .githooks/pre-push. Installed copies do not update themselves: check with
+#   python3 ~/.claude/scripts/verify_hooks.py .
+# and migrate with scripts/migrate_pre_push.py (docs/DEVELOPMENT_AND_RELEASE_GUIDE.md).
+
+# Git sets GIT_DIR/GIT_INDEX_FILE/GIT_WORK_TREE for THIS hook's own invocation, and
+# every subprocess inherits them. Scrub once here (peregrine-identity#2040: a test
+# that ran `git config` leaked into the real .git/config and rewrote 400 commits).
+unset $(git rev-parse --local-env-vars 2>/dev/null)
+
+RED='\033[0;31m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m'
+
+print_error() { echo -e "${RED}❌ $1${NC}"; }
+print_warning() { echo -e "${YELLOW}⚠️  $1${NC}"; }
+print_info() { echo -e "${BLUE}ℹ️  $1${NC}"; }
+
+# There is no quality gate left to waive. Say so, so a habit of setting it is not
+# read as having skipped something.
+if [ -n "$BYPASS_PUSH_CHECKS" ]; then
+    print_warning "BYPASS_PUSH_CHECKS is set: nothing to bypass. Pre-push runs only the secret gate, and that cannot be bypassed."
+fi
+
+# Secret gate (#935). Exit 1 (found) and 2 (could not read the range) both block. A
+# machine that cannot run the scan blocks too (engineering's D1 on #1161): this hook has
+# one job, and a skip that exits 0 is the silent-OK the estate keeps paying for. git
+# hands the refs on stdin. It runs on every push to every branch, main included.
+PUSH_REFS=$(cat)
+SECRET_SCAN="$HOME/.claude/.hook-runtime/secret_scan.py"
+if [ ! -f "$SECRET_SCAN" ] || ! command -v python3 >/dev/null 2>&1; then
+    print_error "SECRET GATE NOT RUN, push refused: $SECRET_SCAN or python3 is missing, so nothing was scanned."
+    print_error "Fix: python3 ~/.claude/scripts/install_hook_runtime.py"
+    exit 1
+fi
+if ! printf '%s\n' "$PUSH_REFS" | python3 "$SECRET_SCAN" --push-refs; then
+    print_error "Secret gate refused this push -- see above. BYPASS does not apply to it."
+    exit 1
+fi
+print_info "Pre-push: secret scan only (clean). Tests, lint and types run in pre-commit and CI."
+
+exit 0

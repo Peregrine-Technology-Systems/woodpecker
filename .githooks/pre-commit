@@ -22,15 +22,19 @@ print_success() { print_status "✅ $1" "$GREEN"; }
 print_info()    { print_status "ℹ️  $1" "$BLUE"; }
 print_warning() { print_status "⚠️  $1" "$YELLOW"; }
 
-# Step 0: iCloud sweep
-ICLOUD_CLEANED=0
-while IFS= read -r -d '' dupe; do
-    git reset -q HEAD -- "$dupe" 2>/dev/null || true
-    rm -rf "$dupe"
-    ICLOUD_CLEANED=$((ICLOUD_CLEANED + 1))
-done < <(find . -not -path './.git/*' \( -name "* 2" -o -name "* 2.*" -o -name "* 3" -o -name "* 3.*" \) -print0 2>/dev/null)
-if [ "$ICLOUD_CLEANED" -gt 0 ]; then
-    print_warning "iCloud sweep: removed $ICLOUD_CLEANED duplicate(s)"
+# Step 0: iCloud conflict-copy sweep, the narrowed shared version (#414,
+# global-claude#324). The original here `rm -rf`'d every path named "* 2" or
+# "* 3", tracked files and directories included. The library removes only an
+# untracked file whose original sits beside it, and names what it removes.
+# A hook that cannot find its library fails loudly rather than skip the sweep.
+HOOK_LIB_DIR="$(cd "$(dirname "$0")" 2>/dev/null && pwd)/lib"
+if [ -f "$HOOK_LIB_DIR/icloud-sweep.sh" ]; then
+    # shellcheck source=lib/icloud-sweep.sh
+    . "$HOOK_LIB_DIR/icloud-sweep.sh"
+    icloud_sweep
+else
+    print_error "hook library missing: $HOOK_LIB_DIR/icloud-sweep.sh"
+    exit 1
 fi
 
 STAGED_FILES=$(git diff --cached --name-only --diff-filter=ACM)
