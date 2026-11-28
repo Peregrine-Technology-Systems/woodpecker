@@ -123,8 +123,9 @@ func (c *WSClient) connect(ctx context.Context) error {
 	c.connCtx, c.connCancel = context.WithCancel(ctx)
 	c.lastConnectedAt = time.Now()
 
-	// Start read pump
-	go c.readPump()
+	// Start read pump. It is handed the connection it serves, so its cleanup
+	// cannot reach a connection dialled after it (#429).
+	go c.readPump(conn, c.connCancel)
 
 	log.Info().Msg("ws-client: connected")
 	return nil
@@ -191,18 +192,27 @@ func (c *WSClient) ensureConnected(ctx context.Context) error {
 	}
 }
 
-// readPump reads messages from the WebSocket and routes them.
-func (c *WSClient) readPump() {
+// readPump reads messages from conn and routes them. It owns conn: when it
+// exits it closes conn and cancels conn's context, and clears the client's
+// connection only if that is still conn (#429). A redial can install a new
+// connection before this cleanup runs; closing "whatever is current" then
+// killed the new connection, whose pump killed the next, so the agent
+// reconnected forever with every session dying at once (#425).
+func (c *WSClient) readPump(conn *websocket.Conn, cancel context.CancelFunc) {
 	defer func() {
+		conn.Close()
+		cancel()
 		c.mu.Lock()
-		if c.conn != nil {
-			c.conn.Close()
+		current := c.conn == conn
+		if current {
 			c.conn = nil
 		}
-		if c.connCancel != nil {
-			c.connCancel()
-		}
 		c.mu.Unlock()
+		if !current {
+			// A newer connection owns the reply waiters now; requests sent on
+			// this one time out on their own.
+			return
+		}
 
 		// Unblock all pending request/response channels so callers can reconnect.
 		// Without this, Next() hangs forever after server restart.
@@ -215,7 +225,7 @@ func (c *WSClient) readPump() {
 	}()
 
 	for {
-		_, message, err := c.conn.ReadMessage()
+		_, message, err := conn.ReadMessage()
 		if err != nil {
 			if websocket.IsUnexpectedCloseError(err,
 				websocket.CloseGoingAway, websocket.CloseNormalClosure) {
