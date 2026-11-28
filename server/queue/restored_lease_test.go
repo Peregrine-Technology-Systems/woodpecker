@@ -87,3 +87,38 @@ func TestUnrenewedRestoredTaskIsReleasedAtTheShortLease(t *testing.T) {
 		t.Fatal("an unrenewed restored task must be released at the short lease, not the running one")
 	}
 }
+
+// ENG's condition on #431: a restored task whose agent renews at the gRPC
+// cadence (every TaskTimeout/3, agent/runner.go) is never released. Scaled
+// down: with TaskTimeout = 6 s the first lease is 2.4 s and the renewal comes
+// at 2 s, so the 0.4 s margin is the one the default config has (1 of 6 min).
+func TestRestoredTaskRenewedAtTheGRPCCadenceIsKept(t *testing.T) {
+	orig := constant.TaskTimeout
+	constant.TaskTimeout = 6 * time.Second
+	t.Cleanup(func() { constant.TaskTimeout = orig })
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	q, _ := NewMemoryQueue(ctx).(*fifo)
+	q.extension = constant.TaskTimeout
+	released := make(chan []*model.Task, 1)
+	q.SetRestoredExpiryFn(func(tasks []*model.Task) { released <- tasks })
+
+	q.adoptRunning([]*model.Task{{ID: "r", AgentID: 7}})
+
+	renewAt := time.After(constant.TaskTimeout / 3)
+	watchUntil := time.After(constant.TaskTimeout/3 + 2*time.Second) // past the first lease
+	for {
+		select {
+		case <-renewAt:
+			require.NoError(t, q.Extend(ctx, 7, "r"), "the gRPC agent's first renewal")
+		case <-released:
+			t.Fatal("a restored task renewed at the gRPC cadence was released")
+		case <-watchUntil:
+			q.Lock()
+			_, running := q.running["r"]
+			q.Unlock()
+			assert.True(t, running, "still running on its agent")
+			return
+		}
+	}
+}
