@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+# peregrine-vault-hook: post-checkout — verify_hooks.py's ownership marker (#392).
+# See hook-templates/post-merge for why this line exists.
+#
+# Relink vault mirrors after git rewrites files underneath them (#319).
+#
+# Hard links do not only break on clone. **Any git operation that rewrites a
+# linked file severs it** — merge, pull, a checkout where the file differs, a
+# rebase. git writes a new inode and moves it into place; the canonical path
+# gets the new content and the mirror keeps the old one, and *nothing looks
+# wrong*: both paths exist, both are readable, and `git status` is clean.
+#
+# Measured on both sides of this convention on 2026-08-14: one merge severed
+# 4 of 16 mirrors in `peregrine-group-marketing`, and a single `git pull`
+# severed all 30 here.
+#
+# Installed at `post-merge` and `post-checkout`, which is exactly where
+# `git-lfs` puts its own smudge hooks — the mechanism is proven, not
+# speculative.
+#
+# Silent on success, and quiet even when repairing: it names the mirrors it
+# relinked, not the 30 it found healthy. A hook that narrates every merge
+# trains people to stop reading hooks.
+#
+# Reads the INSTALLED copy, never global-claude's live working tree (#386) —
+# ~/.claude/.hook-runtime/, published by that repo's own hooks from git
+# HEAD, so this can never observe a multi-file edit in progress there.
+#
+# git-lfs and the vault relink CHAIN, not compete for this slot (#562). See
+# hook-templates/post-merge for the full rationale (ordering, why the gate
+# is `.gitattributes` and not `command -v git-lfs`) — identical here except
+# the subcommand and args, which post-checkout has its own three-argument
+# form for (prev HEAD, new HEAD, branch-checkout flag).
+
+set -uo pipefail
+
+root=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
+
+lfs_rc=0
+if git -C "$root" grep -q -I -e "filter=lfs" -- '*.gitattributes' 2>/dev/null; then
+    if command -v git-lfs >/dev/null 2>&1; then
+        git lfs post-checkout "$@" || lfs_rc=$?
+    else
+        printf >&2 '\n%s\n\n' "This repository is set up to use Git LFS, but 'git-lfs' was not found on this machine's PATH. LFS-tracked files were not smudged."
+        lfs_rc=2
+    fi
+fi
+
+[ -f "$root/.vault-links.json" ] || exit $lfs_rc
+
+linker="$HOME/.claude/.hook-runtime/link_vault.py"
+if [ ! -f "$linker" ]; then
+    echo "vault: $linker not found — mirrors may be stale; skipping relink" >&2
+    exit $lfs_rc                # never block a merge over a missing helper
+fi
+
+# --verify first, so the common case (nothing severed) stays silent.
+if python3 "$linker" --verify --quiet >/dev/null 2>&1; then
+    exit $lfs_rc
+fi
+
+echo "vault: mirrors severed by this git operation — relinking" >&2
+python3 "$linker" --quiet >&2 || echo "vault: relink FAILED — run link_vault.py by hand" >&2
+exit $lfs_rc                    # a failed relink must not fail the merge

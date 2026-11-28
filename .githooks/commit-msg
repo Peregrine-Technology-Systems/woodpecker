@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# peregrine-vault-hook: commit-msg — verify_hooks.py's ownership marker (#392).
+# See hook-templates/post-merge for why this line exists.
+#
+# commit-msg — new-bash + vault/log discipline
+#
+# 1. New-bash gate (amalc/global-claude#407) — UNCONDITIONAL, every repo that
+#    installs this hook: a genuinely NEW .sh file needs a `Bash-justified:`
+#    trailer. Runs first because it doesn't depend on vault adoption at all.
+# 2. Vault/log discipline (amalc/global-claude#284) — opt-in per repo: does
+#    nothing unless the repo has a .vault-links.json.
+#      a. vault mirrors must be hard links to their canonical files (hard fail)
+#      b. a commit touching source with no record needs a `Vault:` trailer
+#
+# Both read the INSTALLED copy, never global-claude's live working tree
+# (#386) — ~/.claude/.hook-runtime/, published by that repo's own
+# post-commit/post-merge/post-checkout from git HEAD, so a multi-file edit in
+# progress there is never visible here, only a complete atomic commit is.
+#
+# Install alongside the other hooks (post-merge/post-checkout carry the vault
+# relink — a repo installing commit-msg without them gets a mirror check that
+# blocks on drift the other two hooks would otherwise have repaired first):
+#   cp -r ~/.claude/hook-templates/{pre-commit,pre-push,commit-msg,post-merge,post-checkout,lib} .githooks/
+#   chmod +x .githooks/* && git config core.hooksPath .githooks
+set -euo pipefail
+
+NEW_BASH_CHECK="$HOME/.claude/.hook-runtime/check_new_bash.py"
+if [ -x "$NEW_BASH_CHECK" ] || [ -f "$NEW_BASH_CHECK" ]; then
+    python3 "$NEW_BASH_CHECK" "$1" || exit $?
+else
+    echo "commit-msg: new-bash gate NOT RUN: $NEW_BASH_CHECK is not installed on this machine" >&2
+fi
+
+CHECK="$HOME/.claude/.hook-runtime/check_vault_discipline.py"
+if ! [ -x "$CHECK" ] && ! [ -f "$CHECK" ]; then
+    if [ -f .vault-meta.json ] || [ -f .vault-links.json ]; then
+        echo "commit-msg: vault-discipline check NOT RUN: $CHECK is not installed on this machine" >&2
+    fi
+    exit 0
+fi
+exec python3 "$CHECK" "$1"
