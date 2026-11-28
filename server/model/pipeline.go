@@ -124,6 +124,10 @@ type CancelInfo struct {
 	// always carries the true trigger, so a forensic or SSE reader never has to
 	// infer it from which evidence field happens to be set. (#263 part 2)
 	Trigger string `json:"trigger,omitempty"`
+	// KillHandlers are the workflows this cancel left to run because they opted
+	// in with `when: status: killed` (#435, fork divergence). Their own success
+	// does not turn the killed pipeline partial.
+	KillHandlers []int64 `json:"kill_handlers,omitempty"`
 } //	@name	CancelInfo
 
 // Cancel trigger taxonomy — names WHO/WHAT initiated a cancel. Orthogonal to the

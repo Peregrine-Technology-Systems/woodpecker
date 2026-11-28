@@ -115,6 +115,37 @@ Workflows that need to run even on failures should set the `status` filter.
 
 This works just like the [`status` filter for steps](./20-workflow-syntax.md#status).
 
+### Running after a cancel: `status: killed` (Peregrine fork)
+
+:::warning
+This is a fork divergence from upstream Woodpecker, which has no `killed`
+status for workflows (Peregrine-Technology-Systems/woodpecker#435).
+:::
+
+A cancel normally evicts every workflow that has not started, including one
+with `status: [ success, failure ]`. A workflow that must run even then, such as
+cleanup that deletes a machine an earlier workflow created, opts in with
+`killed`:
+
+```yaml
+depends_on:
+  - compile
+
+when:
+  - status: [ success, failure, killed ]
+```
+
+- `killed` is never implied. A workflow that does not list it is evicted by a
+  cancel as before.
+- It applies to a deliberate cancel (from the UI, the API or a step). A pipeline
+  superseded by a newer push, and a pipeline cancelled before anything started,
+  still evict it.
+- The kept workflow runs to completion or its timeout; the pipeline already reads
+  `killed` and cannot be cancelled a second time.
+- Its success does not turn the pipeline `partial`: a cancelled pipeline ends
+  `killed`.
+- `status: [ killed ]` alone runs the workflow only when a dependency was killed.
+
 :::info
 Some workflows don't need the source code, like creating a notification on failure.
 Read more about `skip_clone` at [pipeline syntax](./20-workflow-syntax.md#skip_clone)

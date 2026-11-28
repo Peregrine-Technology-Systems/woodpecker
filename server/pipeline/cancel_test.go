@@ -29,6 +29,7 @@ import (
 	"go.woodpecker-ci.org/woodpecker/v3/server"
 	"go.woodpecker-ci.org/woodpecker/v3/server/model"
 	"go.woodpecker-ci.org/woodpecker/v3/server/pubsub"
+	"go.woodpecker-ci.org/woodpecker/v3/server/queue"
 	queue_mocks "go.woodpecker-ci.org/woodpecker/v3/server/queue/mocks"
 	"go.woodpecker-ci.org/woodpecker/v3/server/store/mocks"
 )
@@ -127,6 +128,8 @@ func setupCancelTest(t *testing.T) (*mocks.MockStore, *queue_mocks.MockQueue) {
 
 	server.Config.Services.Queue = mockQueue
 	server.Config.Services.Pubsub = pubsub.New()
+	// #435: Cancel reads the queue for `when: status: killed` opt-ins.
+	mockQueue.On("Info", mock.Anything).Return(queue.InfoT{}).Maybe()
 
 	return mockStore, mockQueue
 }
