@@ -116,10 +116,31 @@ func GetAgentTasks(c *gin.Context) {
 //	@Param		Authorization	header	string	true	"Insert your personal access token"	default(Bearer <personal access token>)
 //	@Param		agent_id		path	int		true	"the agent's id"
 //	@Param		agentData		body	Agent	true	"the agent's data"
+//
+// agentPatch holds the fields a PATCH may change; nil means "not sent".
+type agentPatch struct {
+	Name       *string `json:"name"`
+	NoSchedule *bool   `json:"no_schedule"`
+}
+
+// applyTo changes only the fields the request sent (#440).
+func (p *agentPatch) applyTo(agent *model.Agent) {
+	if p.Name != nil {
+		agent.Name = *p.Name
+	}
+	if p.NoSchedule != nil {
+		agent.NoSchedule = *p.NoSchedule
+	}
+}
+
 func PatchAgent(c *gin.Context) {
 	_store := store.FromContext(c)
 
-	in := &model.Agent{}
+	// [pts] #440: a PATCH changes only the fields it sends. Binding into a whole
+	// Agent and copying both fields turned the scaler's cordon,
+	// {"no_schedule": true}, into a blanked name, and a blanked name cannot be
+	// re-bound on the next reconnect, so the agent's running task was orphaned.
+	in := &agentPatch{}
 	err := c.Bind(in)
 	if err != nil {
 		c.AbortWithStatus(http.StatusBadRequest)
@@ -138,9 +159,8 @@ func PatchAgent(c *gin.Context) {
 		return
 	}
 
-	// Update allowed fields
-	agent.Name = in.Name
-	agent.NoSchedule = in.NoSchedule
+	// Update allowed fields, only those the request sent.
+	in.applyTo(agent)
 	if agent.NoSchedule {
 		server.Config.Services.Queue.KickAgentWorkers(agent.ID)
 	}
@@ -335,15 +355,13 @@ func PatchOrgAgent(c *gin.Context) {
 		return
 	}
 
-	in := new(model.Agent)
+	// [pts] #440: only the fields the request sent, as in PatchAgent.
+	in := &agentPatch{}
 	if err := c.Bind(in); err != nil {
 		c.String(http.StatusBadRequest, err.Error())
 		return
 	}
-
-	// Update allowed fields
-	agent.Name = in.Name
-	agent.NoSchedule = in.NoSchedule
+	in.applyTo(agent)
 	if agent.NoSchedule {
 		server.Config.Services.Queue.KickAgentWorkers(agent.ID)
 	}

@@ -21,6 +21,7 @@ import (
 	"go.woodpecker-ci.org/woodpecker/v3/server/pipeline"
 	grpcserver "go.woodpecker-ci.org/woodpecker/v3/server/rpc"
 	"go.woodpecker-ci.org/woodpecker/v3/server/store"
+	"go.woodpecker-ci.org/woodpecker/v3/server/store/types"
 	"go.woodpecker-ci.org/woodpecker/v3/shared/token"
 	"go.woodpecker-ci.org/woodpecker/v3/version"
 )
@@ -251,7 +252,12 @@ func (s *wsAgentState) handleRegister(_ context.Context, env Envelope, hostname 
 		LastContact:  time.Now().Unix(),
 		Token:        server.Config.Server.AgentToken,
 	}
-	if prior := s.reboundAgent(p, hostname); prior != nil {
+	prior, err := s.reboundAgent(p, hostname)
+	if err != nil {
+		s.sendAck(env.Ref, err.Error())
+		return
+	}
+	if prior != nil {
 		agent = prior
 	} else if err := s.store.AgentCreate(agent); err != nil {
 		// Agent may already exist — try to find by name
@@ -303,14 +309,37 @@ func (s *wsAgentState) handleRegister(_ context.Context, env Envelope, hostname 
 // this registration's details applied, or nil to create a fresh one (#394).
 // The row must exist and carry the same hostname: an id the client remembers
 // from before a server-side delete, or one belonging to another host, is not
-// reused.
-func (s *wsAgentState) reboundAgent(p RegisterPayload, hostname string) *model.Agent {
+// reused, nor is a row whose name was blanked (the cordon bug, #440), since
+// nothing else on it proves which host it was. A lookup that errors is
+// returned as an error, so the
+// registration fails and the agent retries rather than taking a fresh id and
+// orphaning its running task (#440). Every refusal is logged with its reason.
+func (s *wsAgentState) reboundAgent(p RegisterPayload, hostname string) (*model.Agent, error) {
 	if p.AgentID <= 0 {
-		return nil
+		return nil, nil
+	}
+	refuse := func(reason, rowName string) {
+		log.Warn().Int64("prior_agent_id", p.AgentID).Str("hostname", hostname).Str("row_name", rowName).
+			Str("reason", reason).Msg("ws-agent: not re-binding the prior agent id, registering fresh (#440)")
 	}
 	agent, err := s.store.AgentFind(p.AgentID)
-	if err != nil || agent == nil || agent.Name != hostname {
-		return nil
+	switch {
+	case errors.Is(err, types.ErrRecordNotExist), err == nil && agent == nil:
+		refuse("no row", "")
+		return nil, nil
+	case err != nil:
+		log.Error().Err(err).Int64("prior_agent_id", p.AgentID).Str("hostname", hostname).
+			Str("reason", "find error").Msg("ws-agent: cannot look up the prior agent id, failing the registration so the agent retries (#440)")
+		return nil, fmt.Errorf("re-bind agent %d: %w", p.AgentID, err)
+	case agent.Name == "":
+		// A name blanked by the old cordon bug cannot show the row is this
+		// host's: system agents share one token and carry no org, so nothing
+		// else on the row identifies its host. Refuse, as for a mismatch.
+		refuse("blank name", "")
+		return nil, nil
+	case agent.Name != hostname:
+		refuse("name mismatch", agent.Name)
+		return nil, nil
 	}
 	agent.Backend = p.Backend
 	agent.Platform = p.Platform
@@ -322,7 +351,7 @@ func (s *wsAgentState) reboundAgent(p RegisterPayload, hostname string) *model.A
 		log.Warn().Err(err).Int64("agent_id", agent.ID).Msg("ws-agent: re-register update failed — keeping the row")
 	}
 	log.Info().Int64("agent_id", agent.ID).Str("hostname", hostname).Msg("ws-agent: re-registered on reconnect")
-	return agent
+	return agent, nil
 }
 
 func (s *wsAgentState) handleNext(ctx context.Context, env Envelope, hostname string) {
