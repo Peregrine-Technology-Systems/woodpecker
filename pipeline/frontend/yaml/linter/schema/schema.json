@@ -196,12 +196,12 @@
               "minLength": 1,
               "items": {
                 "type": "string",
-                "enum": ["success", "failure"]
+                "enum": ["success", "failure", "killed"]
               }
             },
             {
               "type": "string",
-              "enum": ["success", "failure"]
+              "enum": ["success", "failure", "killed"]
             }
           ]
         },

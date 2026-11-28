@@ -144,14 +144,20 @@ func (c *cgroupFS) destroy(root string, wc *workflowCgroup) error {
 	if !isWorkflowCgroup(root, wc.dir) {
 		return fmt.Errorf("local backend: refusing to kill %s: not a workflow cgroup under %s", wc.dir, root)
 	}
-	if err := c.kill(wc.dir); err != nil {
-		return fmt.Errorf("local backend: kill workflow cgroup %s: %w", wc.dir, err)
+	return c.killAndRemove(wc.dir, "workflow")
+}
+
+// killAndRemove kills every process in dir, waits for it to empty within the
+// bound, and removes it with any child cgroups. what names it in errors.
+func (c *cgroupFS) killAndRemove(dir, what string) error {
+	if err := c.kill(dir); err != nil {
+		return fmt.Errorf("local backend: kill %s cgroup %s: %w", what, dir, err)
 	}
-	if err := c.waitEmpty(wc.dir); err != nil {
+	if err := c.waitEmpty(dir); err != nil {
 		return err
 	}
-	if err := c.removeTree(wc.dir); err != nil {
-		return fmt.Errorf("local backend: remove workflow cgroup %s: %w", wc.dir, err)
+	if err := c.removeTree(dir); err != nil {
+		return fmt.Errorf("local backend: remove %s cgroup %s: %w", what, dir, err)
 	}
 	return nil
 }

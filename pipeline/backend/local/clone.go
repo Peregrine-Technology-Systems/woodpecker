@@ -89,17 +89,20 @@ func (e *local) execClone(ctx context.Context, step *types.Step, state *workflow
 			if err != nil {
 				return err
 			}
-			cmd = exec.CommandContext(ctx, pwsh, "-Command", fmt.Sprintf("%s ; $code=$? ; %s ; if (!$code) {[Environment]::Exit(1)}", state.pluginGitBinary, rmCmd))
+			cmd = newCmd(ctx, pwsh, "-Command", fmt.Sprintf("%s ; $code=$? ; %s ; if (!$code) {[Environment]::Exit(1)}", state.pluginGitBinary, rmCmd))
 		} else {
-			cmd = exec.CommandContext(ctx, "/bin/sh", "-c", fmt.Sprintf("%s ; export code=$? ; %s ; exit $code", state.pluginGitBinary, rmCmd))
+			cmd = newCmd(ctx, "/bin/sh", "-c", fmt.Sprintf("%s ; export code=$? ; %s ; exit $code", state.pluginGitBinary, rmCmd))
 		}
 	} else {
 		// if we have NO netrc, we can just exec the clone directly
-		cmd = exec.CommandContext(ctx, state.pluginGitBinary)
+		cmd = newCmd(ctx, state.pluginGitBinary)
 	}
 	cmd.Env = env
 	cmd.Dir = state.workspaceDir
-	bornInCgroup(cmd, state.cgroup)
+	sc, err := e.containStep(cmd, state, step.UUID)
+	if err != nil {
+		return err
+	}
 
 	reader, err := cmd.StdoutPipe()
 	if err != nil {
@@ -110,6 +113,7 @@ func (e *local) execClone(ctx context.Context, step *types.Step, state *workflow
 	state.stepState.Store(step.UUID, &stepState{
 		cmd:    cmd,
 		output: reader,
+		cgroup: sc,
 	})
 
 	// Get output and redirect Stderr to Stdout

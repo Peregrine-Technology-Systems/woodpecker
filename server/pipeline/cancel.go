@@ -51,10 +51,18 @@ func Cancel(ctx context.Context, _forge forge.Forge, _store store.Store, repo *m
 		independentIDs = findIndependentWorkflows(workflows)
 	}
 
+	// [pts] #435: workflows that opted in with `when: status: killed` stay in
+	// the queue and run once their dependencies are killed.
+	kept := killHandlers(ctx, server.Config.Services.Queue, workflows, cancelInfo, neverStarted(workflows))
+
 	// First cancel/evict workflows in the queue in one go
 	var workflowsToCancel []string
 	for _, w := range workflows {
 		if w.State == model.StatusRunning || w.State == model.StatusPending {
+			if kept[w.ID] {
+				log.Info().Msgf("cancel: keeping workflow %d (%s), it runs on killed (#435)", w.ID, w.Name)
+				continue
+			}
 			if independentIDs[w.ID] {
 				log.Info().Msgf("cancel: preserving independent workflow %d (%s) (#822)", w.ID, w.Name)
 				continue
@@ -88,6 +96,9 @@ func Cancel(ctx context.Context, _forge forge.Forge, _store store.Store, repo *m
 	// Then update the DB status for pending pipelines
 	// Running ones will be set when the agents stop on the cancel signal
 	for _, workflow := range workflows {
+		if kept[workflow.ID] {
+			continue
+		}
 		if independentIDs[workflow.ID] {
 			if workflow.State == model.StatusRunning || workflow.State == model.StatusPending {
 				hasPreservedRunning = true
@@ -129,6 +140,16 @@ func Cancel(ctx context.Context, _forge forge.Forge, _store store.Store, repo *m
 	if hasPendingOnly {
 		plState = model.StatusCanceled
 		reason = "pending_only_canceled"
+	}
+	if len(kept) > 0 {
+		if cancelInfo == nil {
+			cancelInfo = &model.CancelInfo{}
+		}
+		for _, w := range workflows {
+			if kept[w.ID] {
+				cancelInfo.KillHandlers = append(cancelInfo.KillHandlers, w.ID)
+			}
+		}
 	}
 	// #193: every pipeline kill/cancel/supersede gets a structured INFO log
 	// with explicit reason + never_dispatched flag. Lets ops grep for mode-B

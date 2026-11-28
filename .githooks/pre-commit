@@ -297,7 +297,14 @@ COV_SKIP_REGEX='_test\.go$|/mocks/|wire_gen\.go$|_easyjson\.go$|\.pb\.go$|/fixtu
 #   they feed is checkDelegation in cgroup.go, which stays gated. Measured 100%
 #   under Linux by cgroup_linux_test.go, which CI runs. Do NOT use this
 #   exemption for logic: keep it in cgroup.go.
-COV_WIRING_REGEX='^pipeline/const\.go$|^cmd/server/setup\.go$|^server/router/api\.go$|^cmd/|^server/store/datastore/migration/migration\.go$|^server/store/datastore/pipeline\.go$|^server/store/store\.go$|^server/api/ws_agent\.go$|^server/rpc/rpc\.go$|^server/rpc/server\.go$|^pipeline/frontend/yaml/compiler/convert\.go$|^server/pipeline/items\.go$|^server/pipeline/create\.go$|^pipeline/backend/types/step\.go$|^server/logdrain/gcp\.go$|^server/config\.go$|^server/model/feed\.go$|^server/plugin/gcppubsub/client\.go$|^server/plugin/interfaces\.go$|^server/api/pipeline\.go$|^agent/runner\.go$|^agent/rpc/client_ws\.go$|^server/pipeline/start\.go$|^server/pipeline/queue\.go$|^server/forge/github/github\.go$|^server/forge/setup/setup\.go$|^shared/constant/constant\.go$|^rpc/errors\.go$|^pipeline/backend/local/local\.go$|^pipeline/backend/local/command\.go$|^pipeline/backend/local/clone\.go$|^pipeline/backend/local/plugin\.go$|^pipeline/backend/local/cgroup_linux\.go$'
+# - pipeline/backend/local/cmd_win.go: Windows-only by build tag, so it is
+#   never compiled on darwin or on the Linux CI and its cover profile is
+#   NO_DATA by construction (#423; operator approved 2026-11-28). It is
+#   upstream's newCmd for Windows taken verbatim (woodpecker-ci/woodpecker
+#   #6609): exec.CommandContext with no process group. The process-group kill
+#   lives in cmd_unix.go, which stays gated. Do NOT use this exemption for
+#   logic.
+COV_WIRING_REGEX='^pipeline/const\.go$|^cmd/server/setup\.go$|^server/router/api\.go$|^cmd/|^server/store/datastore/migration/migration\.go$|^server/store/datastore/pipeline\.go$|^server/store/store\.go$|^server/api/ws_agent\.go$|^server/rpc/rpc\.go$|^server/rpc/server\.go$|^pipeline/frontend/yaml/compiler/convert\.go$|^server/pipeline/items\.go$|^server/pipeline/create\.go$|^pipeline/backend/types/step\.go$|^server/logdrain/gcp\.go$|^server/config\.go$|^server/model/feed\.go$|^server/plugin/gcppubsub/client\.go$|^server/plugin/interfaces\.go$|^server/api/pipeline\.go$|^agent/runner\.go$|^agent/rpc/client_ws\.go$|^server/pipeline/start\.go$|^server/pipeline/queue\.go$|^server/forge/github/github\.go$|^server/forge/setup/setup\.go$|^shared/constant/constant\.go$|^rpc/errors\.go$|^pipeline/backend/local/local\.go$|^pipeline/backend/local/command\.go$|^pipeline/backend/local/clone\.go$|^pipeline/backend/local/plugin\.go$|^pipeline/backend/local/cgroup_linux\.go$|^pipeline/backend/local/cmd_win\.go$'
 
 if [ -n "$GO_FILES" ]; then
     # Format
