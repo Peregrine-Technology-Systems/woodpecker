@@ -47,9 +47,10 @@ const (
 )
 
 type client struct {
-	client proto.WoodpeckerClient
-	conn   *grpc.ClientConn
-	logs   chan *proto.LogEntry
+	client     proto.WoodpeckerClient
+	conn       *grpc.ClientConn
+	logs       chan *proto.LogEntry
+	reconnects *reconnects // #432
 }
 
 // NewGrpcClient returns a new grpc Client.
@@ -58,7 +59,9 @@ func NewGrpcClient(ctx context.Context, conn *grpc.ClientConn) rpc.Peer {
 	client.client = proto.NewWoodpeckerClient(conn)
 	client.conn = conn
 	client.logs = make(chan *proto.LogEntry, 10) // max memory use: 10 lines * 1 MiB
+	client.reconnects = newReconnects()
 	go client.processLogs(ctx)
+	go watchReconnects(ctx, conn, client.reconnects)
 	return client
 }
 
