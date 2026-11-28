@@ -32,7 +32,17 @@ func (q *stubQueue) PushAtOnce(_ context.Context, tasks []*model.Task) error {
 func (q *stubQueue) Poll(context.Context, int64, queue.FilterFn) (*model.Task, error) {
 	return nil, nil
 }
-func (q *stubQueue) Extend(context.Context, int64, string) error           { return nil }
+func (q *stubQueue) Extend(context.Context, int64, string) error { return nil }
+
+// Holder reads the stub's running set, as the real queue does (#418).
+func (q *stubQueue) Holder(taskID string) (int64, error) {
+	for _, task := range q.info.Running {
+		if task.ID == taskID {
+			return task.AgentID, nil
+		}
+	}
+	return 0, queue.ErrNotFound
+}
 func (q *stubQueue) Done(context.Context, string, model.StatusValue) error { return nil }
 func (q *stubQueue) Error(context.Context, string, error) error            { return nil }
 func (q *stubQueue) ErrorAtOnce(_ context.Context, ids []string, _ error) error {

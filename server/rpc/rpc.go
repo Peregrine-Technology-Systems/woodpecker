@@ -189,6 +189,10 @@ func (s *RPC) Wait(c context.Context, workflowID string) (canceled bool, err err
 		return false, err
 	}
 
+	if err := s.checkWorkflowOwnerByID(agent, workflowID); err != nil {
+		return false, err
+	}
+
 	if err := s.queue.Wait(c, workflowID); err != nil {
 		if errors.Is(err, queue.ErrCancel) {
 			// we explicit send a cancel signal
@@ -215,6 +219,10 @@ func (s *RPC) Extend(c context.Context, workflowID string) error {
 	}
 
 	if err := s.checkAgentPermissionByWorkflow(c, agent, workflowID, nil, nil); err != nil {
+		return err
+	}
+
+	if err := s.checkWorkflowOwnerByID(agent, workflowID); err != nil {
 		return err
 	}
 
@@ -552,6 +560,14 @@ func (s *RPC) Update(c context.Context, strWorkflowID string, state rpc.StepStat
 		return err
 	}
 
+	// #418: only the holder updates, and only its own workflow's steps.
+	if err := checkStepInWorkflow(step, workflow); err != nil {
+		return err
+	}
+	if err := s.checkWorkflowOwner(agent, workflow, false); err != nil {
+		return abandonedRejection(err)
+	}
+
 	if err := pipeline.UpdateStepStatus(c, s.store, step, state); err != nil {
 		// #31: if the step is in a terminal state server-side, propagate the
 		// sentinel back to the gRPC layer so it can return FailedPrecondition.
@@ -619,8 +635,6 @@ func (s *RPC) Init(c context.Context, strWorkflowID string, state rpc.WorkflowSt
 		return err
 	}
 
-	workflow.AgentID = agent.ID
-
 	currentPipeline, err := s.store.GetPipeline(workflow.PipelineID)
 	if err != nil {
 		log.Error().Err(err).Msgf("cannot find pipeline with id %d", workflow.PipelineID)
@@ -637,6 +651,13 @@ func (s *RPC) Init(c context.Context, strWorkflowID string, state rpc.WorkflowSt
 	if err := s.checkAgentPermissionByWorkflow(c, agent, strWorkflowID, currentPipeline, repo); err != nil {
 		return err
 	}
+
+	// #418: only the agent that polled the workflow may start it; that agent
+	// is then recorded on it, for calls after it leaves the queue.
+	if err := s.checkWorkflowOwner(agent, workflow, true); err != nil {
+		return err
+	}
+	workflow.AgentID = agent.ID
 
 	if currentPipeline.Status == model.StatusPending {
 		if currentPipeline, err = pipeline.UpdateToStatusRunning(s.store, *currentPipeline, state.Started); err != nil {
@@ -712,6 +733,11 @@ func (s *RPC) Done(c context.Context, strWorkflowID string, state rpc.WorkflowSt
 
 	// check before agent can alter some state
 	if err := s.checkAgentPermissionByWorkflow(c, agent, strWorkflowID, currentPipeline, repo); err != nil {
+		return err
+	}
+
+	// #418: only the holder finishes the workflow.
+	if err := s.checkWorkflowOwner(agent, workflow, false); err != nil {
 		return err
 	}
 
@@ -873,6 +899,15 @@ func (s *RPC) Log(c context.Context, stepUUID string, rpcLogEntries []*rpc.LogEn
 
 	// check before agent can alter some state
 	if err := s.checkAgentPermissionByWorkflow(c, agent, "", currentPipeline, nil); err != nil {
+		return err
+	}
+
+	// #418: logs only for a step of a workflow this agent holds.
+	workflow, err := s.store.WorkflowByStep(step)
+	if err != nil {
+		return fmt.Errorf("cannot find the workflow of step %s: %w", stepUUID, err)
+	}
+	if err := s.checkWorkflowOwner(agent, workflow, false); err != nil {
 		return err
 	}
 

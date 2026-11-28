@@ -118,6 +118,11 @@ type Queue interface {
 	// Extend extends the deadline for a task.
 	Extend(c context.Context, agentID int64, workflowID string) error
 
+	// Holder returns the agent holding a running task, or ErrNotFound when the
+	// task is not running. The RPC uses it to refuse an agent acting on a
+	// workflow it does not hold (#418).
+	Holder(taskID string) (int64, error)
+
 	// Done signals the task is complete.
 	Done(c context.Context, id string, exitStatus model.StatusValue) error
 

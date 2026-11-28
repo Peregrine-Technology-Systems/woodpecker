@@ -33,6 +33,7 @@ import (
 	"go.woodpecker-ci.org/woodpecker/v3/rpc"
 	"go.woodpecker-ci.org/woodpecker/v3/rpc/proto"
 	"go.woodpecker-ci.org/woodpecker/v3/server/model"
+	queue_mocks "go.woodpecker-ci.org/woodpecker/v3/server/queue/mocks"
 	grpcserver "go.woodpecker-ci.org/woodpecker/v3/server/rpc"
 	store_mocks "go.woodpecker-ci.org/woodpecker/v3/server/store/mocks"
 )
@@ -97,7 +98,10 @@ func newGRPCTerminalFixture(t *testing.T) *grpcTerminalFixture {
 	s.On("StepByUUID", successStepUUID).Return(&model.Step{
 		ID: 2, UUID: successStepUUID, PipelineID: 100, State: model.StatusSuccess,
 	}, nil).Maybe()
-	f.peer = grpcClientFor(t, grpcserver.NewWoodpeckerServer(grpcserver.NewRPCForTesting(nil, s)))
+	// #418: the workflow is held by the agent under test.
+	q := queue_mocks.NewMockQueue(t)
+	q.On("Holder", mock.Anything).Return(int64(61493), nil).Maybe()
+	f.peer = grpcClientFor(t, grpcserver.NewWoodpeckerServer(grpcserver.NewRPCForTesting(q, s)))
 	return f
 }
 

@@ -464,6 +464,7 @@ func (q *failingPushQueue) Poll(context.Context, int64, FilterFn) (*model.Task, 
 	return nil, nil
 }
 func (q *failingPushQueue) Extend(context.Context, int64, string) error           { return nil }
+func (q *failingPushQueue) Holder(string) (int64, error)                          { return 0, ErrNotFound }
 func (q *failingPushQueue) Done(context.Context, string, model.StatusValue) error { return nil }
 func (q *failingPushQueue) Error(context.Context, string, error) error            { return nil }
 func (q *failingPushQueue) ErrorAtOnce(context.Context, []string, error) error    { return nil }
