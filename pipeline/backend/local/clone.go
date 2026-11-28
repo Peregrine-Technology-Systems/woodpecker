@@ -99,6 +99,7 @@ func (e *local) execClone(ctx context.Context, step *types.Step, state *workflow
 	}
 	cmd.Env = env
 	cmd.Dir = state.workspaceDir
+	bornInCgroup(cmd, state.cgroup)
 
 	reader, err := cmd.StdoutPipe()
 	if err != nil {

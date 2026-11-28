@@ -30,7 +30,7 @@ import (
 var backends = []backendTypes.Backend{
 	kubernetes.New(),
 	docker.New(),
-	local.New(),
+	local.NewAgent(),
 }
 
 func main() {

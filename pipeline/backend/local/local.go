@@ -38,6 +38,8 @@ type workflowState struct {
 	homeDir         string
 	workspaceDir    string
 	pluginGitBinary string
+	cgroup          *workflowCgroup // nil when the workflow is not contained (#412)
+	cgroupRoot      string
 }
 
 type stepState struct {
@@ -51,6 +53,8 @@ type local struct {
 	workflows       sync.Map
 	pluginGitBinary string
 	os, arch        string
+	contain         bool // run each workflow in its own cgroup (#412)
+	cgroups         *cgroupFS
 }
 
 var CLIWorkaroundExecAtDir string // To handle edge case for running local backend via cli exec
@@ -60,6 +64,19 @@ func New() types.Backend {
 	return &local{
 		os:   runtime.GOOS,
 		arch: runtime.GOARCH,
+	}
+}
+
+// NewAgent returns the local backend as the agent runs it. On Linux every
+// workflow is contained in its own cgroup and killed as a whole when it ends,
+// and a workflow that cannot be contained is refused (#412). Elsewhere it is
+// New. woodpecker-cli exec keeps using New.
+func NewAgent() types.Backend {
+	return &local{
+		os:      runtime.GOOS,
+		arch:    runtime.GOARCH,
+		contain: containmentSupported,
+		cgroups: newCgroupFS(),
 	}
 }
 
@@ -90,6 +107,20 @@ func (e *local) Load(ctx context.Context) (*types.BackendInfo, error) {
 
 	e.loadClone()
 
+	if e.contain {
+		// Clear what a previous agent left. A resolve failure is not fatal
+		// here: every workflow is then refused in SetupWorkflow, by name.
+		root, own, err := e.cgroups.resolve()
+		if err != nil {
+			log.Error().Err(err).Msg("local backend: workflows will be refused until this is fixed")
+		} else {
+			log.Info().Str("root", root).Msg("local backend: each workflow runs in its own cgroup")
+			e.cgroups.sweep(root, own)
+		}
+	} else if containmentSupported {
+		log.Warn().Msg("local backend: workflows run uncontained (woodpecker-cli exec), so a child a step detaches can outlive it")
+	}
+
 	return &types.BackendInfo{
 		Platform: e.os + "/" + e.arch,
 	}, nil
@@ -98,14 +129,34 @@ func (e *local) Load(ctx context.Context) (*types.BackendInfo, error) {
 func (e *local) SetupWorkflow(_ context.Context, _ *types.Config, taskUUID string) error {
 	log.Trace().Str("taskUUID", taskUUID).Msg("create workflow environment")
 
+	// Contain first: a workflow that cannot be contained must not start,
+	// and must leave nothing behind (#412).
+	var cgroup *workflowCgroup
+	var cgroupRoot string
+	if e.contain {
+		root, _, err := e.cgroups.resolve()
+		if err != nil {
+			return err
+		}
+		if cgroup, err = e.cgroups.create(root, taskUUID); err != nil {
+			return err
+		}
+		cgroupRoot = root
+	}
+
 	baseDir, err := os.MkdirTemp(e.tempDir, "woodpecker-local-*")
 	if err != nil {
+		if cgroup != nil {
+			err = errors.Join(err, e.cgroups.destroy(cgroupRoot, cgroup))
+		}
 		return err
 	}
 
 	state := &workflowState{
-		baseDir: baseDir,
-		homeDir: filepath.Join(baseDir, "home"),
+		baseDir:    baseDir,
+		homeDir:    filepath.Join(baseDir, "home"),
+		cgroup:     cgroup,
+		cgroupRoot: cgroupRoot,
 	}
 	e.workflows.Store(taskUUID, state)
 
@@ -283,16 +334,26 @@ func (e *local) DestroyWorkflow(_ context.Context, _ *types.Config, taskUUID str
 		return true
 	})
 
-	err = os.RemoveAll(state.baseDir)
-	if err != nil {
-		return err
+	// Kill everything the workflow started, detached children included,
+	// and verify it is gone (#412). A cgroup that would not empty is an
+	// error and stays in place as evidence.
+	var cgroupErr error
+	if state.cgroup != nil {
+		if cgroupErr = e.cgroups.destroy(state.cgroupRoot, state.cgroup); cgroupErr != nil {
+			log.Error().Err(cgroupErr).Str("taskUUID", taskUUID).Msg("local backend: workflow processes survived teardown")
+		}
+		state.cgroup = nil
+	}
+
+	if err := os.RemoveAll(state.baseDir); err != nil {
+		return errors.Join(cgroupErr, err)
 	}
 
 	// hint for the gc to clean stuff
 	state.stepState.Clear()
 	e.workflows.Delete(taskUUID)
 
-	return err
+	return cgroupErr
 }
 
 func (e *local) getWorkflowState(taskUUID string) (*workflowState, error) {
