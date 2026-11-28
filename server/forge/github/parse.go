@@ -21,6 +21,7 @@ import (
 	"mime"
 	"net/http"
 	"net/url"
+	"reflect"
 	"strings"
 
 	"github.com/google/go-github/v84/github"
@@ -88,6 +89,11 @@ func parseHook(r *http.Request, merge bool) (_ *github.PullRequest, _ *model.Rep
 	if err != nil {
 		return nil, nil, nil, "", "", err
 	}
+	// #422 (upstream #7257): a JSON null body parses into a typed nil event,
+	// which every hook parser below would dereference.
+	if isNilEvent(payload) {
+		return nil, nil, nil, "", "", fmt.Errorf("empty payload for webhook type %q", github.WebHookType(r))
+	}
 
 	switch hook := payload.(type) {
 	case *github.PushEvent:
@@ -143,7 +149,20 @@ func parsePushHook(hook *github.PushEvent) (_ *model.Repo, _ *model.Pipeline, cu
 		return repo, pipeline, "", ""
 	}
 
+	// #422 (upstream #6697): after a force push the "before" commit is no
+	// longer in the branch's history, so the changed files are listed from the
+	// head commit alone, as for a tag.
+	if hook.GetForced() {
+		return repo, pipeline, hook.GetHeadCommit().GetID(), ""
+	}
+
 	return repo, pipeline, hook.GetHeadCommit().GetID(), hook.GetBefore()
+}
+
+// isNilEvent reports whether a parsed webhook event is a nil pointer.
+func isNilEvent(event any) bool {
+	v := reflect.ValueOf(event)
+	return !v.IsValid() || (v.Kind() == reflect.Pointer && v.IsNil())
 }
 
 // parseDeployHook parses a deployment and returns the Repo and Pipeline details.
