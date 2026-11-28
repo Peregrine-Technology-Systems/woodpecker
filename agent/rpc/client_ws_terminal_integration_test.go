@@ -113,6 +113,20 @@ func newTerminalFixture(t *testing.T) *terminalFixture {
 	q.On("Wait", mock.Anything, mock.Anything).Return(nil).Maybe()
 	q.On("Info", mock.Anything).Return(queue.InfoT{}).Maybe()
 	q.On("KickAgentWorkers", mock.Anything).Maybe()
+	// #418: the workflow is held by the agent under test, the latest one to
+	// register, so the ownership check lets its updates through.
+	q.On("Holder", mock.Anything).Return(func(string) (int64, error) {
+		f.agentsMu.Lock()
+		defer f.agentsMu.Unlock()
+		var latest int64
+		for id := range f.agents {
+			latest = max(latest, id)
+		}
+		if latest == 0 {
+			return 0, queue.ErrNotFound
+		}
+		return latest, nil
+	}).Maybe()
 
 	server.Config.Services.WSAgentRPC = grpcserver.NewRPCForTesting(q, s)
 	t.Cleanup(func() { server.Config.Services.WSAgentRPC = nil })

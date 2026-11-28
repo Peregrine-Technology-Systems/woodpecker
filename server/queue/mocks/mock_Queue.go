@@ -802,6 +802,66 @@ func (_c *MockQueue_SetDispatchHook_Call) RunAndReturn(run func(fn queue.Dispatc
 	return _c
 }
 
+// Holder provides a mock function for the type MockQueue
+func (_mock *MockQueue) Holder(taskID string) (int64, error) {
+	ret := _mock.Called(taskID)
+
+	if len(ret) == 0 {
+		panic("no return value specified for Holder")
+	}
+
+	var r0 int64
+	var r1 error
+	if returnFunc, ok := ret.Get(0).(func(string) (int64, error)); ok {
+		return returnFunc(taskID)
+	}
+	if returnFunc, ok := ret.Get(0).(func(string) int64); ok {
+		r0 = returnFunc(taskID)
+	} else {
+		r0 = ret.Get(0).(int64)
+	}
+	if returnFunc, ok := ret.Get(1).(func(string) error); ok {
+		r1 = returnFunc(taskID)
+	} else {
+		r1 = ret.Error(1)
+	}
+	return r0, r1
+}
+
+// MockQueue_Holder_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'Holder'
+type MockQueue_Holder_Call struct {
+	*mock.Call
+}
+
+// Holder is a helper method to define mock.On call
+//   - taskID string
+func (_e *MockQueue_Expecter) Holder(taskID interface{}) *MockQueue_Holder_Call {
+	return &MockQueue_Holder_Call{Call: _e.mock.On("Holder", taskID)}
+}
+
+func (_c *MockQueue_Holder_Call) Run(run func(taskID string)) *MockQueue_Holder_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		var arg0 string
+		if args[0] != nil {
+			arg0 = args[0].(string)
+		}
+		run(
+			arg0,
+		)
+	})
+	return _c
+}
+
+func (_c *MockQueue_Holder_Call) Return(agentID int64, err error) *MockQueue_Holder_Call {
+	_c.Call.Return(agentID, err)
+	return _c
+}
+
+func (_c *MockQueue_Holder_Call) RunAndReturn(run func(taskID string) (int64, error)) *MockQueue_Holder_Call {
+	_c.Call.Return(run)
+	return _c
+}
+
 // UpdatePriority provides a mock function for the type MockQueue
 func (_mock *MockQueue) UpdatePriority(taskID string, newPriority int64) (int64, error) {
 	ret := _mock.Called(taskID, newPriority)
