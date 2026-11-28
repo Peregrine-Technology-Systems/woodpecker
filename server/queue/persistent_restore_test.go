@@ -204,7 +204,7 @@ func TestWithTaskStore_RestoredTaskWithoutRenewalIsReleasedNotRerun(t *testing.T
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	inner := NewMemoryQueue(ctx)
-	inner.(*fifo).extension = 50 * time.Millisecond
+	inner.(*fifo).restoredLease = 50 * time.Millisecond // a restored task's first lease (#427)
 	released := make(chan []*model.Task, 4)
 	inner.SetRestoredExpiryFn(func(tasks []*model.Task) { released <- tasks })
 	after := WithTaskStore(ctx, inner, s)
